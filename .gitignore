@@ -10,3 +10,7 @@ data/*.launch-blocker-backup-*
 *.db
 data/*.sqlite
 data/*.db
+*.sqlite
+*.db
+data/*.sqlite
+data/*.db
