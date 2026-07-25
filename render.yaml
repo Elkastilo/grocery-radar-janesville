@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: grocery-radar-janesville
+    env: node
+    buildCommand: npm install && npm run build:all
+    startCommand: npm start
+    healthCheckPath: /health
+    disk:
+      name: grocery-radar-storage
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUBLIC_APP_URL
+        value: https://thegroceryradar.com
+      - key: DATA_DIR
+        value: /opt/render/project/src/storage
+      - key: UPLOADS_DIR
+        value: /opt/render/project/src/storage/uploads
+      - key: SESSION_SECRET
+        sync: false
+      - key: ADMIN_PIN
+        sync: false
+      - key: ADMIN_NOTIFY_EMAIL
+        sync: false
+      - key: OWNER_EMAIL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false

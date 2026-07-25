@@ -1,0 +1,12 @@
+.env
+.env.local
+node_modules/
+storage/
+uploads/
+data/*.backup*
+data/*.launch-blocker-backup-*
+.DS_Store
+*.sqlite
+*.db
+data/*.sqlite
+data/*.db

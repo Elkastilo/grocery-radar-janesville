@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grocery Radar Janesville</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <header class="site-header app-topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span>
+        </div>
+        <div>
+          <h1>Grocery Radar Janesville</h1>
+          <p>Find local prices fast</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="location-pill" aria-label="Target area">Janesville</div>
+        <button id="currentUserBadge" class="user-status header-user-status" type="button">Sign In</button>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <div id="cartToast" class="cart-toast" aria-live="polite" hidden></div>
+
+      <nav class="tabs bottom-nav" aria-label="Main sections">
+        <button class="tab-button is-active" type="button" data-view-target="searchView" data-public-tab="home">
+          <span class="nav-icon" aria-hidden="true">⌕</span>
+          <span>Search</span>
+        </button>
+        <button class="tab-button" type="button" data-view-target="searchView" data-public-tab="browse">
+          <span class="nav-icon" aria-hidden="true">%</span>
+          <span>Deals</span>
+        </button>
+        <button class="tab-button" type="button" data-view-target="submitView">
+          <span class="nav-icon" aria-hidden="true">▣</span>
+          <span>Submit</span>
+        </button>
+        <button class="tab-button" type="button" data-view-target="cartView">
+          <span class="nav-icon" aria-hidden="true">🛒</span>
+          <span>Cart</span>
+          <span id="cartCountBadge" class="tab-count-badge nav-badge" hidden>0</span>
+        </button>
+        <button class="tab-button" type="button" data-view-target="accountView">
+          <span class="nav-icon" aria-hidden="true">♙</span>
+          <span>Profile</span>
+          <span class="tab-count-badge nav-badge" data-notification-count-mirror hidden>0</span>
+        </button>
+      </nav>
+
+      <section id="accountView" class="view" aria-labelledby="accountHeading">
+        <div class="section-heading app-screen-heading">
+          <h2 id="accountHeading">Profile</h2>
+          <p>Your points, reports, verifications, and settings.</p>
+        </div>
+
+        <div id="accountMessage" class="message" aria-live="polite"></div>
+
+        <section id="signedOutAccount" class="account-panel">
+          <div class="auth-choice">
+            <button class="primary-button big-action" type="button" data-auth-target="loginPanel">Log in</button>
+            <button class="secondary-button big-action" type="button" data-auth-target="registerPanel">Create account</button>
+          </div>
+          <p class="muted">You can browse approved grocery prices without an account, but you need an account to submit or verify.</p>
+
+          <div class="auth-tabs" role="tablist" aria-label="Account forms">
+            <button id="loginTab" class="auth-tab is-active" type="button" data-auth-target="loginPanel" role="tab" aria-controls="loginPanel">Log in</button>
+            <button id="registerTab" class="auth-tab" type="button" data-auth-target="registerPanel" role="tab" aria-controls="registerPanel">Create account</button>
+          </div>
+
+          <div class="auth-stack">
+            <form id="loginForm" class="auth-panel" data-auth-panel="loginPanel" aria-labelledby="loginTab">
+              <h3>Log in</h3>
+              <label>
+                <span>Email</span>
+                <input name="email" type="email" maxlength="254" autocomplete="email" required>
+              </label>
+              <label>
+                <span>Password</span>
+                <input name="password" type="password" autocomplete="current-password" required>
+              </label>
+              <button class="primary-button" type="submit">Log in</button>
+            </form>
+
+            <form id="registerForm" class="auth-panel" data-auth-panel="registerPanel" aria-labelledby="registerTab" hidden>
+              <h3>Create account</h3>
+              <label>
+                <span>Username</span>
+                <input name="username" type="text" minlength="3" maxlength="24" autocomplete="username" required>
+              </label>
+              <label>
+                <span>Email</span>
+                <input name="email" type="email" maxlength="254" autocomplete="email" required>
+              </label>
+              <label>
+                <span>Password</span>
+                <input name="password" type="password" minlength="8" autocomplete="new-password" required>
+              </label>
+              <label>
+                <span>Confirm password</span>
+                <input name="confirmPassword" type="password" minlength="8" autocomplete="new-password" required>
+              </label>
+              <button class="primary-button" type="submit">Create account</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="currentUserPanel" class="account-panel current-user-panel account-screen" hidden>
+          <div id="currentUserDetails" class="muted">No one is logged in.</div>
+          <div id="emailVerificationPanel" class="email-verification-panel"></div>
+
+          <section id="accountActivityPanel" class="account-activity-panel" hidden>
+            <div class="account-card-grid" role="tablist" aria-label="Account sections">
+              <button class="account-section-tab account-action-card is-active" type="button" data-account-section="notifications">
+                <span class="account-card-icon" aria-hidden="true">🔔</span>
+                <strong>Notifications</strong>
+                <small>Review updates</small>
+                <span id="accountUnreadCount" class="tab-count-badge" hidden>0</span>
+              </button>
+              <button class="account-section-tab account-action-card" type="button" data-account-section="reports">
+                <span class="account-card-icon" aria-hidden="true">📋</span>
+                <strong>My Reports</strong>
+                <small>Submitted prices</small>
+              </button>
+              <button class="account-section-tab account-action-card" type="button" data-account-section="cart">
+                <span class="account-card-icon" aria-hidden="true">🛒</span>
+                <strong>Cart</strong>
+                <small>Compare groceries</small>
+              </button>
+              <button class="account-section-tab account-action-card" type="button" data-account-section="avoid">
+                <span class="account-card-icon" aria-hidden="true">⊘</span>
+                <strong>Avoid List</strong>
+                <small>Label reminders</small>
+              </button>
+              <button class="account-section-tab account-action-card" type="button" data-account-section="verifications">
+                <span class="account-card-icon" aria-hidden="true">✓</span>
+                <strong>Verifications</strong>
+                <small>Prices checked</small>
+              </button>
+              <button class="account-section-tab account-action-card" type="button" data-account-section="leaderboard">
+                <span class="account-card-icon" aria-hidden="true">#</span>
+                <strong>Leaderboard</strong>
+                <small>Top contributors</small>
+              </button>
+            </div>
+            <section class="account-recent-card">
+              <div class="card-topline">
+                <h3>Recent Activity</h3>
+                <button class="quiet-button small-action-button" type="button" data-account-section="notifications">View all</button>
+              </div>
+              <div id="accountActivityContent" class="admin-list account-activity-list"></div>
+            </section>
+          </section>
+
+          <details class="settings-panel app-card">
+            <summary>Settings</summary>
+            <div class="settings-section">
+              <h3>Profile</h3>
+              <p class="field-help">Username, email status, and password controls.</p>
+              <form id="changePasswordForm" class="change-password-form">
+                <label>
+                  <span>Current password</span>
+                  <input name="currentPassword" type="password" autocomplete="current-password" required>
+                </label>
+                <label>
+                  <span>New password</span>
+                  <input name="newPassword" type="password" minlength="8" autocomplete="new-password" required>
+                </label>
+                <label>
+                  <span>Confirm new password</span>
+                  <input name="confirmPassword" type="password" minlength="8" autocomplete="new-password" required>
+                </label>
+                <button class="secondary-button" type="submit">Update password</button>
+                <div id="changePasswordMessage" class="message" aria-live="polite"></div>
+              </form>
+            </div>
+
+            <div class="settings-section">
+              <h3>Notifications</h3>
+              <div class="settings-chip-grid">
+                <span>Report approved</span>
+                <span>Report rejected</span>
+                <span>Needs proof/update</span>
+                <span>Price verified</span>
+                <span>Cart price found</span>
+                <span>Store request updates</span>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Shopping preferences</h3>
+              <form id="avoidIngredientsForm" class="change-password-form">
+                <p class="field-help">Ingredient alerts are a helper only. Always check the package label before buying or eating.</p>
+                <div id="avoidIngredientChips" class="quick-group" aria-label="Common ingredients to avoid"></div>
+                <label>
+                  <span>Ingredients to avoid</span>
+                  <input id="avoidIngredientsInput" name="avoid_ingredients" type="text" maxlength="500" placeholder="peanuts, milk, soy" autocomplete="off">
+                </label>
+                <button class="secondary-button" type="submit">Save avoid list</button>
+                <div id="avoidIngredientsMessage" class="message" aria-live="polite"></div>
+              </form>
+            </div>
+
+            <div class="settings-section">
+              <h3>Privacy and safety</h3>
+              <div class="settings-link-grid">
+                <a href="/privacy.html">Privacy Policy</a>
+                <a href="/terms.html">Terms</a>
+                <a href="/price-disclaimer.html">Price Disclaimer</a>
+                <a href="/allergy-disclaimer.html">Allergy Disclaimer</a>
+                <a href="/photo-rules.html">Photo Upload Rules</a>
+                <a href="/community-rules.html">Community Rules</a>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Account</h3>
+              <button id="logoutButton" class="quiet-button" type="button" hidden>Log out</button>
+            </div>
+
+            <div id="adminSettingsTools" class="settings-section admin-settings-tools" hidden>
+              <h3>Admin tools</h3>
+              <p class="field-help">Review reports and manage the community.</p>
+              <div class="admin-settings-actions">
+                <span id="adminAlertBadge" class="admin-alert-badge" hidden></span>
+                <a id="adminReviewLink" class="admin-link" href="/admin.html" hidden>Open admin review</a>
+              </div>
+            </div>
+          </details>
+
+          <button id="notificationBell" class="notification-bell" type="button" hidden>
+            Notifications <span id="notificationCountBadge">0</span>
+          </button>
+        </section>
+      </section>
+
+      <section id="searchView" class="view is-active" aria-labelledby="searchHeading">
+        <section class="home-compact-panel" aria-labelledby="searchHeading">
+          <div class="home-title-row">
+            <div>
+              <span class="hero-kicker">Save before you shop</span>
+              <h2 id="searchHeading">Grocery Radar Janesville</h2>
+              <p>Compare grocery prices across Janesville stores</p>
+            </div>
+          </div>
+
+          <form id="searchForm" class="home-search-form">
+            <label class="home-search-label">
+              <span>Search products or stores</span>
+              <input id="searchInput" name="q" type="search" autocomplete="off" placeholder="Search milk, eggs, bread…">
+              <span class="search-scan-icon" aria-hidden="true">⌗</span>
+            </label>
+            <button class="primary-button" type="submit">Search</button>
+
+            <details class="home-filter-details">
+              <summary>Filters</summary>
+              <div class="home-filter-grid">
+                <label>
+                  <span>Store</span>
+                  <select id="storeFilter" name="store">
+                    <option value="">All Janesville stores</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Category</span>
+                  <select id="categoryFilter" name="category">
+                    <option value="">All categories</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Sort</span>
+                  <select id="sortSelect" name="sort">
+                    <option value="cheapest_unit_price">Cheapest unit price</option>
+                    <option value="newest_report">Newest report</option>
+                    <option value="highest_confidence">Highest confidence</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+          </form>
+
+        </section>
+
+        <div id="resultsSummary" class="summary-line" aria-live="polite"></div>
+        <div id="resultsList" class="cards-grid"></div>
+        <section id="browsePanel" class="browse-panel"></section>
+
+        <aside class="price-reminder-card">
+          <strong>Price reminder</strong>
+          <span>Prices are based on approved reports and may change.</span>
+        </aside>
+        <div id="searchSponsorSlot" class="sponsor-slot"></div>
+
+        <section class="suggestion-panel">
+          <details>
+            <summary>Suggest something</summary>
+            <form id="suggestionForm" class="form-grid">
+              <label>
+                <span>Suggestion type</span>
+                <select name="suggestion_type" required>
+                  <option value="feature_idea">Feature idea</option>
+                  <option value="new_store">New store</option>
+                  <option value="new_item">New item quick button</option>
+                  <option value="new_category">New category</option>
+                  <option value="wrong_price">Wrong price report</option>
+                  <option value="allergy_ingredient_issue">Allergy / ingredient issue</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                <span>Title</span>
+                <input name="title" type="text" maxlength="120" placeholder="Add a quick button for apples" required>
+              </label>
+              <label>
+                <span>Related store</span>
+                <input name="related_store" type="text" maxlength="120" placeholder="Optional">
+              </label>
+              <label>
+                <span>Related item</span>
+                <input name="related_item" type="text" maxlength="120" placeholder="Optional">
+              </label>
+              <label>
+                <span>Screenshot/photo</span>
+                <input name="suggestion_photo" type="file" accept="image/jpeg,image/png,image/webp">
+              </label>
+              <label class="span-full">
+                <span>Message</span>
+                <textarea name="message" maxlength="1000" rows="4" required></textarea>
+              </label>
+              <button class="primary-button span-full" type="submit">Send suggestion</button>
+            </form>
+          </details>
+          <div id="suggestionMessage" class="message" aria-live="polite"></div>
+        </section>
+      </section>
+
+      <section id="productDetailView" class="view" aria-labelledby="productDetailHeading">
+        <div class="section-heading">
+          <button id="backToSearchButton" class="quiet-button" type="button">Back to search</button>
+          <h2 id="productDetailHeading">Product</h2>
+          <p>Approved prices only. Always check the package label.</p>
+        </div>
+        <div id="productDetailContent" class="product-detail"></div>
+        <div id="productSponsorSlot" class="sponsor-slot"></div>
+      </section>
+
+      <section id="submitView" class="view" aria-labelledby="submitHeading">
+        <div class="section-heading app-screen-heading submit-screen-heading">
+          <div>
+            <h2 id="submitHeading">Submit Proof</h2>
+            <p>Upload a receipt, shelf tag, or weekly ad. We’ll review it and add useful prices.</p>
+          </div>
+          <button class="quiet-button small-action-button" type="button" data-home-action="how-submit">How it works</button>
+        </div>
+
+        <div id="submitLoginNotice" class="warning">
+          You must log in before submitting proof.
+        </div>
+
+        <aside class="app-info-banner submit-info-banner">
+          <strong>Send proof first. Item and price are optional hints.</strong>
+          <span>Nothing appears publicly until an admin reviews and approves a price.</span>
+        </aside>
+
+        <details class="submit-help-box compact-help-box">
+          <summary>
+            <span>How to submit proof</span>
+            <small>Quick help and examples</small>
+          </summary>
+          <div class="submit-help-content">
+            <p>Use this page when you have a receipt, shelf tag, weekly ad, or store link. Pick the store, choose the proof type, upload the image or add the link, and add item or price hints only if you want. Admin reviews the proof before any price appears publicly.</p>
+            <div class="example-list" aria-label="Example price reports">
+              <span>Eggs, 12 ct, $2.49</span>
+              <span>Milk, 1 gallon, $3.99</span>
+              <span>Bananas, 1 lb, $0.59</span>
+              <span>Paper towels, 6 rolls, $8.99</span>
+            </div>
+            <ul class="plain-help-list">
+              <li>Receipt photo means a picture of your receipt.</li>
+              <li>Shelf tag photo means a picture of the price tag at the store.</li>
+              <li>Store page/source link means a weekly ad, deal page, or product page.</li>
+              <li>Item, price, brand, and size are hints only. Add what you know.</li>
+            </ul>
+          </div>
+        </details>
+
+        <form id="submitForm" class="guided-submit-form" autocomplete="off" novalidate>
+          <input id="submitProductId" name="product_id" type="hidden">
+
+          <section class="submit-step submit-accordion-step is-open" data-submit-step="store" aria-labelledby="submitStepStore">
+            <button class="step-heading" type="button" data-submit-step-toggle="store" aria-expanded="true">
+              <span class="step-kicker">1</span>
+              <h3 id="submitStepStore">Choose store</h3>
+              <p>Choose where you saw the price.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="store">Choose a store</div>
+            <div class="submit-step-body">
+            <label>
+              <span>Store</span>
+              <select id="submitStore" name="store_id" required>
+                <option value="">Choose store</option>
+              </select>
+              <p class="field-help">Choose where you saw the price.</p>
+              <p class="field-error" data-error-for="store_id" aria-live="polite"></p>
+            </label>
+            <button id="showStoreRequestButton" class="quiet-button" type="button">My store is not listed</button>
+            <section id="storeRequestBox" class="inline-request-box" hidden>
+              <p>If the store is not listed yet, send a request. Admin will review it before the store becomes public.</p>
+              <div id="storeRequestFields" class="guided-grid two-col">
+                <label>
+                  <span>Store name</span>
+                  <input name="store_name" type="text" maxlength="120" placeholder="Store name" autocomplete="off" required>
+                </label>
+                <label>
+                  <span>Address</span>
+                  <input name="address" type="text" maxlength="160" placeholder="Optional" autocomplete="off">
+                </label>
+                <label>
+                  <span>City</span>
+                  <input name="city" type="text" maxlength="80" value="Janesville" required>
+                </label>
+                <label>
+                  <span>Notes</span>
+                  <input name="notes" type="text" maxlength="500" placeholder="Anything reviewers should know">
+                </label>
+                <button id="storeRequestSubmitButton" class="secondary-button span-full" type="button">Send store request</button>
+              </div>
+              <div id="storeRequestMessage" class="message" aria-live="polite"></div>
+            </section>
+            </div>
+          </section>
+
+          <section id="itemStep" class="submit-step submit-accordion-step" data-submit-step="product" aria-labelledby="submitStepItem">
+            <button class="step-heading" type="button" data-submit-step-toggle="product" aria-expanded="false">
+              <span class="step-kicker">2</span>
+              <h3 id="submitStepItem">Find or type product</h3>
+              <p>Optional hint for reviewers.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="product">Optional item hint</div>
+            <div class="submit-step-body">
+            <div id="selectedProductPanel" class="selected-product-panel" hidden></div>
+            <div class="product-picker">
+              <label>
+                <span>Search existing product</span>
+                <input id="productSearchInput" type="search" maxlength="120" placeholder="Search existing product">
+              </label>
+              <button id="productSearchButton" class="secondary-button" type="button">Find product</button>
+              <div id="productSearchResults" class="mini-list"></div>
+            </div>
+            <div id="quickItemGroups" class="quick-group" aria-label="Quick item groups"></div>
+            <div id="quickItemButtons" class="quick-group" aria-label="Quick item choices"></div>
+            <div class="guided-grid two-col">
+              <label>
+                <span>Item I noticed</span>
+                <input id="submitItemName" name="item_name" type="text" maxlength="120" placeholder="Optional, like eggs or bananas" autocomplete="off">
+                <p class="field-help">Optional. Add an item hint if one price stood out.</p>
+                <p class="field-error" data-error-for="item_name" aria-live="polite"></p>
+              </label>
+              <label>
+                <span>Category</span>
+                <select id="submitCategory" name="category"></select>
+                <p class="field-help">Optional. Pick the closest category if you know it.</p>
+                <p class="field-error" data-error-for="category" aria-live="polite"></p>
+              </label>
+            </div>
+
+            </div>
+          </section>
+
+          <section class="submit-step submit-accordion-step" data-submit-step="brand" aria-labelledby="submitStepBrand">
+            <button class="step-heading" type="button" data-submit-step-toggle="brand" aria-expanded="false">
+              <span class="step-kicker">3</span>
+              <h3 id="submitStepBrand">Brand / type</h3>
+              <p>Optional, but helpful for matching.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="brand">Brand/type optional</div>
+            <div class="submit-step-body">
+            <div class="compact-substep">
+              <h4>Common types</h4>
+            <div class="quick-group" aria-label="Quick brand choices">
+              <button type="button" class="quick-button" data-quick-brand="Store brand">Store brand</button>
+              <button type="button" class="quick-button" data-quick-brand="Great Value">Great Value</button>
+              <button type="button" class="quick-button" data-quick-brand="Member's Mark">Member's Mark</button>
+              <button type="button" class="quick-button" data-quick-brand="ALDI brand">ALDI brand</button>
+              <button type="button" class="quick-button" data-quick-brand="Hy-Vee brand">Hy-Vee brand</button>
+              <button type="button" class="quick-button" data-quick-brand="Festival brand">Festival brand</button>
+              <button type="button" class="quick-button" data-quick-brand="Fairlife">Fairlife</button>
+              <button type="button" class="quick-button" data-quick-brand="Bounty">Bounty</button>
+              <button type="button" class="quick-button" data-quick-brand="Charmin">Charmin</button>
+              <button type="button" class="quick-button" data-quick-brand="Unknown">Unknown</button>
+              <button type="button" class="quick-button" data-quick-brand="Custom">Custom</button>
+            </div>
+            <div id="placeholderVariantWrap" class="suggested-size-wrap" hidden>
+              <span>Suggested types for this item</span>
+              <div id="placeholderVariantButtons" class="quick-group"></div>
+            </div>
+            <label>
+              <span>Brand / type</span>
+              <input id="submitBrand" name="brand" type="text" maxlength="80" placeholder="Store brand" autocomplete="off">
+              <p class="field-help">Brand is optional. For produce, you can use the type, like Gala apples or roma tomatoes.</p>
+            </label>
+            </div>
+            </div>
+          </section>
+
+          <section class="submit-step submit-accordion-step" data-submit-step="size" aria-labelledby="submitStepSize">
+            <button class="step-heading" type="button" data-submit-step-toggle="size" aria-expanded="false">
+              <span class="step-kicker">4</span>
+              <h3 id="submitStepSize">Size / quantity</h3>
+              <p>Pick the package size.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="size">Choose size</div>
+            <div class="submit-step-body">
+            <div class="compact-substep">
+              <h4>Common sizes</h4>
+            <div id="suggestedSizeWrap" class="suggested-size-wrap" hidden>
+              <span>Suggested for this item</span>
+              <div id="suggestedSizeButtons" class="quick-group"></div>
+            </div>
+            <div id="genericSizeButtons" class="quick-group" aria-label="Quick package size choices">
+              <button type="button" class="quick-button" data-quick-size="1 each">1 each</button>
+              <button type="button" class="quick-button" data-quick-size="12 ct">12 ct</button>
+              <button type="button" class="quick-button" data-quick-size="18 ct">18 ct</button>
+              <button type="button" class="quick-button" data-quick-size="24 ct">24 ct</button>
+              <button type="button" class="quick-button" data-quick-size="1 lb">1 lb</button>
+              <button type="button" class="quick-button" data-quick-size="3 lb">3 lb</button>
+              <button type="button" class="quick-button" data-quick-size="5 lb">5 lb</button>
+              <button type="button" class="quick-button" data-quick-size="8 oz">8 oz</button>
+              <button type="button" class="quick-button" data-quick-size="12 oz">12 oz</button>
+              <button type="button" class="quick-button" data-quick-size="16 oz">16 oz</button>
+              <button type="button" class="quick-button" data-quick-size="18 oz">18 oz</button>
+              <button type="button" class="quick-button" data-quick-size="32 oz">32 oz</button>
+              <button type="button" class="quick-button" data-quick-size="52 fl oz">52 fl oz</button>
+              <button type="button" class="quick-button" data-quick-size="1 gallon">1 gallon</button>
+              <button type="button" class="quick-button" data-quick-size="6 pack">6 pack</button>
+              <button type="button" class="quick-button" data-quick-size="12 pack">12 pack</button>
+              <button type="button" class="quick-button" data-quick-size="24 pack">24 pack</button>
+              <button type="button" class="quick-button" data-quick-size="6 rolls">6 rolls</button>
+              <button type="button" class="quick-button" data-quick-size="12 rolls">12 rolls</button>
+              <button type="button" class="quick-button" data-quick-size="Custom">Custom</button>
+            </div>
+            <div class="guided-grid three-col">
+              <label>
+                <span>Package size</span>
+                <input id="submitSizeText" name="size_text" type="text" maxlength="80" placeholder="Optional, like 12 ct" autocomplete="off">
+                <p class="field-help">Optional. Example: 12 ct, 1 lb, 16 oz, 1 gallon.</p>
+                <p class="field-error" data-error-for="size_text" aria-live="polite"></p>
+              </label>
+              <label>
+                <span>Quantity</span>
+                <input id="submitQuantity" name="quantity" type="number" min="0.01" max="100000" step="0.01" inputmode="numeric" placeholder="Optional">
+                <p class="field-help">Optional. Example: 12 for 12 ct, 1 for 1 lb, 16 for 16 oz.</p>
+                <p class="field-error" data-error-for="quantity" aria-live="polite"></p>
+              </label>
+              <label>
+                <span>Unit</span>
+                <select id="submitUnit" name="unit">
+                  <option value="each">each</option>
+                  <option value="count">count</option>
+                  <option value="ct">ct</option>
+                  <option value="oz">oz</option>
+                  <option value="lb">lb</option>
+                  <option value="fl oz">fl oz</option>
+                  <option value="gallon">gallon</option>
+                  <option value="pack">pack</option>
+                  <option value="roll">roll</option>
+                  <option value="bottle">bottle</option>
+                  <option value="can">can</option>
+                  <option value="bag">bag</option>
+                </select>
+                <p class="field-help">What the quantity means. Example: each, lb, oz, fl oz, gallon, roll, pack.</p>
+                <p class="field-error" data-error-for="unit" aria-live="polite"></p>
+              </label>
+            </div>
+            </div>
+            </div>
+          </section>
+
+          <section class="submit-step submit-accordion-step" data-submit-step="price" aria-labelledby="submitStepPrice">
+            <button class="step-heading" type="button" data-submit-step-toggle="price" aria-expanded="false">
+              <span class="step-kicker">5</span>
+              <h3 id="submitStepPrice">Price</h3>
+              <p>Tap a common price or type the exact price.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="price">Enter price</div>
+            <div class="submit-step-body">
+            <div class="quick-group" aria-label="Quick price choices">
+              <button type="button" class="quick-button" data-quick-price="0.79">$0.79</button>
+              <button type="button" class="quick-button" data-quick-price="0.99">$0.99</button>
+              <button type="button" class="quick-button" data-quick-price="1.49">$1.49</button>
+              <button type="button" class="quick-button" data-quick-price="1.99">$1.99</button>
+              <button type="button" class="quick-button" data-quick-price="2.49">$2.49</button>
+              <button type="button" class="quick-button" data-quick-price="2.99">$2.99</button>
+              <button type="button" class="quick-button" data-quick-price="3.49">$3.49</button>
+              <button type="button" class="quick-button" data-quick-price="3.99">$3.99</button>
+              <button type="button" class="quick-button" data-quick-price="4.99">$4.99</button>
+              <button type="button" class="quick-button" data-quick-price="5.99">$5.99</button>
+              <button type="button" class="quick-button" data-quick-price="6.99">$6.99</button>
+              <button type="button" class="quick-button" data-quick-price="7.99">$7.99</button>
+              <button type="button" class="quick-button" data-quick-price="9.99">$9.99</button>
+              <button type="button" class="quick-button" data-quick-price="Custom">Custom</button>
+            </div>
+            <div class="guided-grid three-col">
+              <label>
+                <span>Price I noticed</span>
+                <input id="submitPrice" name="price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" placeholder="Optional">
+                <p class="field-help">Optional. Enter a shelf or receipt price before tax if one stood out.</p>
+                <p class="field-error" data-error-for="price" aria-live="polite"></p>
+              </label>
+              <label>
+                <span>Regular price</span>
+                <input id="submitRegularPrice" name="regular_price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" placeholder="Optional">
+                <p class="field-help">Optional. Leave blank if unknown.</p>
+                <p class="field-error" data-error-for="regular_price" aria-live="polite"></p>
+              </label>
+              <label>
+                <span>Sale expiration date</span>
+                <input id="submitExpiresAt" name="expires_at" type="date">
+                <p class="field-help">Only required if you know when the deal ends.</p>
+              </label>
+            </div>
+            <label class="checkbox-row easy-checkbox">
+              <input id="submitSalePrice" name="sale_price" type="checkbox">
+              <span>Sale price</span>
+            </label>
+            <p class="field-help">If this is a sale, weekly ad, clearance, or temporary deal, check this.</p>
+            </div>
+          </section>
+
+          <section class="submit-step submit-accordion-step" data-submit-step="proof" aria-labelledby="submitStepProof">
+            <button class="step-heading" type="button" data-submit-step-toggle="proof" aria-expanded="false">
+              <span class="step-kicker">6</span>
+              <h3 id="submitStepProof">Proof</h3>
+              <p>Upload an image or add a source link.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="proof">Choose proof</div>
+            <div class="submit-step-body">
+            <div class="inline-help">
+              Receipts, shelf tags, and weekly ad screenshots are saved privately for admin review. Public users see approved prices, not raw receipts.
+            </div>
+            <div class="proof-choice-grid" aria-label="Proof type choices">
+              <button type="button" class="proof-choice" data-proof-choice="receipt">
+                <strong>Receipt</strong>
+              </button>
+              <button type="button" class="proof-choice" data-proof-choice="shelf_tag">
+                <strong>Shelf tag</strong>
+              </button>
+              <button type="button" class="proof-choice" data-proof-choice="weekly_ad">
+                <strong>Weekly ad</strong>
+              </button>
+              <button type="button" class="proof-choice" data-proof-choice="store_page">
+                <strong>Store page</strong>
+              </button>
+            </div>
+            <label>
+              <span>Proof type</span>
+              <select id="proofTypeSelect" name="proof_type" required>
+                <option value="receipt">Receipt</option>
+                <option value="shelf_tag">Shelf tag</option>
+                <option value="weekly_ad">Weekly ad</option>
+                <option value="store_page">Store page / source link</option>
+              </select>
+              <p class="field-help">Proof is private until admin review. Raw receipts are admin-only.</p>
+              <p class="field-error" data-error-for="proof_type" aria-live="polite"></p>
+            </label>
+            <label id="proofPhotoField" class="proof-upload-box">
+              <span>Proof image</span>
+              <input id="proofPhotoInput" name="proof_photo" type="file" accept="image/jpeg,image/png,image/webp">
+              <p id="proofPhotoStatus" class="field-help">No file selected.</p>
+              <p class="field-error" data-error-for="proof_photo" aria-live="polite"></p>
+            </label>
+            <label>
+              <span>Source link optional</span>
+              <input id="submitSourceUrl" name="source_url" type="url" maxlength="1000" placeholder="Optional weekly ad or store page link">
+              <p class="field-help">Optional. Add a store page or weekly ad link if you used one.</p>
+              <p class="field-error" data-error-for="source_url" aria-live="polite"></p>
+            </label>
+            <div id="proofPhotoRequirement" class="inline-help" aria-live="polite">
+              Upload an image, or add a source link.
+            </div>
+            <p class="field-help photo-safety-note">Show price clearly. Avoid faces and payment info.</p>
+            </div>
+          </section>
+
+          <section class="submit-step submit-step-final submit-accordion-step" data-submit-step="review" aria-labelledby="submitStepSubmit">
+            <button class="step-heading" type="button" data-submit-step-toggle="review" aria-expanded="false">
+              <span class="step-kicker">7</span>
+              <h3 id="submitStepSubmit">Submit</h3>
+              <p>Check details before review.</p>
+            </button>
+            <div class="step-summary" data-submit-summary="review">Ready when details are complete</div>
+            <div class="submit-step-body">
+            <div id="submitReviewCard" class="review-card" aria-live="polite"></div>
+            <label>
+              <span>Notes</span>
+              <textarea id="submitNotes" name="notes" maxlength="500" rows="4" placeholder="Sale ends Sunday, app coupon needed, receipt date, or aisle."></textarea>
+              <p class="field-help">Optional. Add anything useful, like sale ends Sunday or app coupon needed.</p>
+            </label>
+            <div class="warning">
+              Submit only proof you personally checked. No scraped prices, fake products, or guessed reports belong here.
+            </div>
+            <button class="primary-button submit-price-button" type="submit">Submit Proof</button>
+            <p class="field-help">Proof is reviewed before anything appears publicly.</p>
+            </div>
+          </section>
+        </form>
+
+        <div id="submitMessage" class="message" aria-live="polite"></div>
+        <div id="submitSuccessActions" class="submit-success-actions" hidden>
+          <p>Accepted proof can earn beta points and build trust. Points are not cash or guaranteed rewards.</p>
+          <div class="submit-success-buttons">
+            <button class="secondary-button" type="button" data-submit-next="same-store">Submit another proof from same store</button>
+            <button class="quiet-button" type="button" data-submit-next="my-reports">View my reports</button>
+            <button class="quiet-button" type="button" data-submit-next="done">Done</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="cartView" class="view" aria-labelledby="cartHeading">
+        <div class="cart-hero-panel">
+          <div>
+            <h2 id="cartHeading">My Cart</h2>
+            <p id="cartSubtitle"><strong id="cartPageCount">0</strong> items</p>
+          </div>
+          <button class="quiet-button small-action-button" type="button" data-cart-edit-all>Edit All</button>
+        </div>
+
+        <section class="cart-summary-panel" aria-label="Cart summary">
+          <div class="cart-summary-icon" aria-hidden="true">🛍</div>
+          <div>
+            <strong><span data-cart-count-mirror>0</span></strong>
+            <span>items</span>
+          </div>
+          <div>
+            <span>Estimated total</span>
+            <strong id="cartEstimatedTotal">Compare to estimate</strong>
+            <small id="cartEstimateRange">Approved prices only</small>
+          </div>
+        </section>
+
+        <div id="cartAvoidReminder" class="label-reminder-card"></div>
+
+        <div class="cart-actions cart-primary-actions">
+          <button id="compareCartButton" class="secondary-button" type="button">Compare cart</button>
+          <button id="cartAddToggle" class="primary-button" type="button">Add item</button>
+          <button id="clearCartButton" class="danger-button" type="button">Clear cart</button>
+        </div>
+
+        <details id="cartAddDetails" class="cart-add-details">
+          <summary>Add item</summary>
+          <form id="cartAddForm" class="form-grid cart-add-form">
+            <input name="product_id" type="hidden">
+            <input name="brand_mode" type="hidden" value="any">
+            <label>
+              <span>Item</span>
+              <input name="item_name" type="text" maxlength="120" placeholder="Eggs" required>
+            </label>
+            <label>
+              <span>Type / brand preference</span>
+              <input name="preferred_brand" type="text" maxlength="80" placeholder="Optional">
+            </label>
+            <label>
+              <span>Size</span>
+              <input name="size_preference" type="text" maxlength="80" placeholder="Optional, like 12 ct or 1 lb">
+            </label>
+            <label>
+              <span>Quantity</span>
+              <input name="quantity_needed" type="text" maxlength="80" placeholder="Optional">
+            </label>
+            <select id="cartCategory" name="category" hidden></select>
+            <label>
+              <span>Avoid ingredients</span>
+              <input name="avoid_ingredients" type="text" maxlength="500" placeholder="Optional">
+            </label>
+            <label class="checkbox-row">
+              <input name="must_have" type="checkbox">
+              <span>Must have</span>
+            </label>
+            <label class="checkbox-row">
+              <input name="optional_item" type="checkbox">
+              <span>Optional</span>
+            </label>
+            <label class="span-full">
+              <span>Notes</span>
+              <textarea name="notes" maxlength="500" rows="3"></textarea>
+            </label>
+            <button class="primary-button span-full" type="submit">Add item to cart</button>
+          </form>
+        </details>
+
+        <div id="cartMessage" class="message" aria-live="polite"></div>
+        <div class="cart-list-heading">
+          <h3>Your items</h3>
+          <button class="quiet-button small-action-button" type="button" data-view-target="submitView">Submit missing price</button>
+        </div>
+        <div id="cartItemsList" class="admin-list cart-items-list"></div>
+        <div class="cart-compare-panel">
+          <h3>Compare mode</h3>
+          <div id="cartModeSegments" class="segmented-control" aria-label="Compare mode">
+            <button class="segment-button" type="button" data-cart-mode="best_one_store">Best one store</button>
+            <button class="segment-button is-active" type="button" data-cart-mode="cheapest_split">Cheapest split cart</button>
+            <button class="segment-button" type="button" data-cart-mode="best_balance">Balance</button>
+            <button class="segment-button" type="button" data-cart-mode="high_confidence">High confidence</button>
+          </div>
+          <label class="cart-mode-picker">
+            <span>Compare mode</span>
+            <select id="cartCompareMode">
+              <option value="cheapest_split">Cheapest split cart</option>
+              <option value="best_one_store">Best one-store trip</option>
+              <option value="best_balance">Best balance</option>
+              <option value="high_confidence">High-confidence only</option>
+              <option value="avoid_list_careful">Avoid-list careful mode</option>
+            </select>
+          </label>
+          <p id="cartCompareHint" class="field-help">Add items first.</p>
+        </div>
+        <div id="cartComparison" class="cart-comparison"></div>
+        <aside class="price-reminder-card cart-price-note">
+          <strong>Price reminder</strong>
+          <span>Prices are based on approved local reports and may change.</span>
+        </aside>
+        <div id="cartSponsorSlot" class="sponsor-slot"></div>
+      </section>
+
+      <section id="rewardsView" class="view" aria-labelledby="rewardsHeading">
+        <div class="section-heading">
+          <h2 id="rewardsHeading">Points And Rewards</h2>
+          <p>Rewards are informational only in Version 1.</p>
+        </div>
+
+        <div id="profileCard" class="profile-card"></div>
+        <div class="warning">
+          Verify your email to keep your contributor account trusted for beta point features.
+        </div>
+        <div id="rewardRules" class="cards-grid"></div>
+      </section>
+
+      <section id="leaderboardView" class="view" aria-labelledby="leaderboardHeading">
+        <div class="section-heading">
+          <h2 id="leaderboardHeading">Top Contributors</h2>
+          <p>Leaderboard rows come only from real local usernames that submit or verify reports.</p>
+        </div>
+        <div id="leaderboardList" class="leaderboard"></div>
+      </section>
+    </main>
+
+    <dialog id="verifyDialog" class="modal">
+      <form id="verifyForm" class="modal-body">
+        <div class="modal-heading">
+          <h2>Verify Report</h2>
+          <button id="closeVerifyDialog" class="icon-button" type="button" aria-label="Close">x</button>
+        </div>
+
+        <input id="verifyReportId" name="report_id" type="hidden">
+
+        <fieldset class="radio-list">
+          <legend>Verification option</legend>
+          <label><input type="radio" name="verification_type" value="confirmed" checked> Yes, I saw this price too</label>
+          <label><input type="radio" name="verification_type" value="price_different"> Price is different</label>
+          <label><input type="radio" name="verification_type" value="item_unavailable"> Item unavailable</label>
+          <label><input type="radio" name="verification_type" value="wrong_item_store"> Wrong item/store</label>
+          <label><input type="radio" name="verification_type" value="expired_sale"> Expired sale</label>
+        </fieldset>
+
+        <label>
+          <span>Note</span>
+          <textarea name="note" maxlength="300" rows="3"></textarea>
+        </label>
+
+        <button class="primary-button" type="submit">Submit verification</button>
+        <div id="verifyMessage" class="message" aria-live="polite"></div>
+      </form>
+    </dialog>
+
+    <footer class="site-footer">
+      <nav aria-label="Safety and policy links">
+        <a href="/privacy.html">Privacy</a>
+        <a href="/terms.html">Terms</a>
+        <a href="/price-disclaimer.html">Price Disclaimer</a>
+        <a href="/photo-rules.html">Photo Rules</a>
+        <a href="/allergy-disclaimer.html">Allergy Disclaimer</a>
+        <a href="/community-rules.html">Community Rules</a>
+        <a href="/rewards-disclaimer.html">Rewards</a>
+      </nav>
+      <p>Prices are user-submitted and can change. Always check the shelf tag, receipt, or store before buying.</p>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

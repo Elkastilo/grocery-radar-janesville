@@ -1,0 +1,3646 @@
+const categories = [
+  "meat",
+  "dairy",
+  "produce",
+  "pantry",
+  "frozen",
+  "drinks",
+  "snacks",
+  "bakery",
+  "household",
+  "personal care",
+  "baby",
+  "pet",
+  "other"
+];
+
+const productStatuses = [
+  "active",
+  "needs_review",
+  "hidden",
+  "merged"
+];
+
+const pinForm = document.querySelector("#adminPinForm");
+const pinInput = document.querySelector("#adminPin");
+const adminNotifications = document.querySelector("#adminNotifications");
+const betaReadinessGenerated = document.querySelector("#betaReadinessGenerated");
+const betaReadinessSummary = document.querySelector("#betaReadinessSummary");
+const phoneTestingCard = document.querySelector("#phoneTestingCard");
+const betaChecklist = document.querySelector("#betaChecklist");
+const analyticsSummary = document.querySelector("#analyticsSummary");
+const analyticsContent = document.querySelector("#analyticsContent");
+const sponsorForm = document.querySelector("#sponsorForm");
+const sponsorMessage = document.querySelector("#sponsorMessage");
+const sponsorsContent = document.querySelector("#sponsorsContent");
+const reviewReports = document.querySelector("#reviewReports");
+const approvedReports = document.querySelector("#approvedReports");
+const historyReports = document.querySelector("#historyReports");
+const adminUsers = document.querySelector("#adminUsers");
+const usernameBlockForm = document.querySelector("#usernameBlockForm");
+const usernameBlockedPhrases = document.querySelector("#usernameBlockedPhrases");
+const adminAccessCleanup = document.querySelector("#adminAccessCleanup");
+const adminStoreForm = document.querySelector("#adminStoreForm");
+const adminStoreMessage = document.querySelector("#adminStoreMessage");
+const storeRequestsList = document.querySelector("#storeRequestsList");
+const adminStoresList = document.querySelector("#adminStoresList");
+const storeRequestCount = document.querySelector("#storeRequestCount");
+const adminSuggestionsList = document.querySelector("#adminSuggestionsList");
+const suggestionsCount = document.querySelector("#suggestionsCount");
+const productToolsContent = document.querySelector("#productToolsContent");
+const emailSetupStatus = document.querySelector("#emailSetupStatus");
+const emailTestForm = document.querySelector("#emailTestForm");
+const emailTestTo = document.querySelector("#emailTestTo");
+const emailTestMessage = document.querySelector("#emailTestMessage");
+const runEmailDiagnosticButton = document.querySelector("#runEmailDiagnosticButton");
+const emailDiagnosticResult = document.querySelector("#emailDiagnosticResult");
+const manualEntryForm = document.querySelector("#manualEntryForm");
+const manualStore = document.querySelector("#manualStore");
+const manualCategory = document.querySelector("#manualCategory");
+const manualProofType = document.querySelector("#manualProofType");
+const manualProofPhotoField = document.querySelector("#manualProofPhotoField");
+const manualProofPhotoInput = document.querySelector("#manualProofPhotoInput");
+const manualProofPhotoStatus = document.querySelector("#manualProofPhotoStatus");
+const manualProofPhotoRequirement = document.querySelector("#manualProofPhotoRequirement");
+const manualEntryMessage = document.querySelector("#manualEntryMessage");
+const priceImportModeTabs = document.querySelector("#priceImportModeTabs");
+const priceImportUploadForm = document.querySelector("#priceImportUploadForm");
+const priceImportSourceTextForm = document.querySelector("#priceImportSourceTextForm");
+const priceImportReceiptTextForm = document.querySelector("#priceImportReceiptTextForm");
+const priceImportReceiptSummary = document.querySelector("#priceImportReceiptSummary");
+const priceImporterMessage = document.querySelector("#priceImporterMessage");
+const priceImportCleanupReport = document.querySelector("#priceImportCleanupReport");
+const proofInboxList = document.querySelector("#proofInboxList");
+const proofInboxCount = document.querySelector("#proofInboxCount");
+const priceImportProofList = document.querySelector("#priceImportProofList");
+const priceImportSelectedBatchLabel = document.querySelector("#priceImportSelectedBatchLabel");
+const priceImportRowForm = document.querySelector("#priceImportRowForm");
+const priceImportRows = document.querySelector("#priceImportRows");
+const priceImporterCount = document.querySelector("#priceImporterCount");
+const priceImportApproveSelected = document.querySelector("#priceImportApproveSelected");
+const priceImportRejectSelected = document.querySelector("#priceImportRejectSelected");
+const priceImportResetRow = document.querySelector("#priceImportResetRow");
+const adminMessage = document.querySelector("#adminMessage");
+
+let allReports = [];
+let allUsers = [];
+let adminAccessData = { accounts: [] };
+let usernameModerationData = { phrases: [] };
+let allStores = [];
+let allStoreRequests = [];
+let allSuggestions = [];
+let productTools = null;
+let betaReadiness = null;
+let analyticsData = null;
+let sponsorData = null;
+let priceImporterData = null;
+let adminSession = { loggedIn: false, is_admin: false };
+let activePriceImportMode = "weekly_ad";
+let selectedPriceImportBatchId = "";
+let selectedPriceImportRows = new Set();
+let adminHistoryFilter = "";
+let pendingAdminRoute = {};
+let proofInboxFilter = "needs_review";
+
+const rejectionReasons = [
+  "No photo uploaded even though photo proof was selected",
+  "Wrong store",
+  "Wrong item",
+  "Wrong price",
+  "Blurry or unreadable photo",
+  "Duplicate report",
+  "Expired sale",
+  "Suspicious or fake report",
+  "Inappropriate content",
+  "Other"
+];
+
+const banReasons = [
+  "Fake price reports",
+  "Repeated rejected reports",
+  "Abusive username",
+  "Harassment",
+  "Spam",
+  "Multiple fake accounts",
+  "Reward abuse",
+  "Inappropriate uploads",
+  "Other"
+];
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
+}
+
+function formatDateOnly(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium"
+  }).format(date);
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+
+  if (!bytes) {
+    return "Unknown size";
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function setMessage(element, text, type = "info") {
+  element.textContent = text;
+  element.dataset.type = type;
+}
+
+function setAdminMessage(text, type = "info") {
+  setMessage(adminMessage, text, type);
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(data.error || "Request failed.");
+    error.data = data;
+    error.status = response.status;
+    throw error;
+  }
+
+  return data;
+}
+
+function getPin() {
+  return pinInput.value.trim();
+}
+
+function adminQuery() {
+  const pin = getPin();
+  return pin ? `?pin=${encodeURIComponent(pin)}` : "";
+}
+
+function adminUploadUrl(photoPath) {
+  const filename = String(photoPath || "").split("/").pop();
+  return filename ? `/api/admin/uploads/${encodeURIComponent(filename)}${adminQuery()}` : "";
+}
+
+function switchAdminTab(tabId) {
+  for (const button of document.querySelectorAll("[data-admin-tab]")) {
+    button.classList.toggle("is-active", button.dataset.adminTab === tabId);
+  }
+
+  for (const panel of document.querySelectorAll(".admin-panel")) {
+    panel.classList.toggle("is-active", panel.id === tabId);
+  }
+}
+
+function highlightAdminItem(type, id) {
+  if (!type || !id) {
+    return false;
+  }
+
+  const selectorByType = {
+    report: `[data-report-card="${id}"]`,
+    user: `[data-user-card="${id}"]`,
+    store_request: `[data-store-request-card="${id}"]`,
+    suggestion: `[data-suggestion-card="${id}"]`,
+    product: `[data-product-admin-card="${id}"]`,
+    price_import_batch: `[data-price-import-batch="${id}"]`
+  };
+  const target = document.querySelector(selectorByType[type] || "");
+
+  if (target) {
+    target.classList.add("is-highlighted");
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    return true;
+  }
+
+  return false;
+}
+
+function highlightAdminTarget(options = {}) {
+  const targets = [
+    ["report", options.reportId],
+    ["user", options.userId],
+    ["store_request", options.storeRequestId],
+    ["suggestion", options.suggestionId],
+    ["product", options.productId],
+    ["price_import_batch", options.priceImportBatchId]
+  ];
+
+  for (const [type, id] of targets) {
+    if (highlightAdminItem(type, id)) {
+      return;
+    }
+  }
+
+  if (targets.some(([, id]) => id)) {
+    setAdminMessage("That notification item is no longer visible. Opened the closest admin section instead.", "info");
+  }
+}
+
+function openAdminTab(tabId, options = {}) {
+  pendingAdminRoute = options;
+  adminHistoryFilter = options.filter || "";
+  switchAdminTab(tabId);
+
+  if (tabId === "pricesTab") {
+    renderReportTabs();
+  }
+
+  if (tabId === "priceImporterTab") {
+    renderPriceImporter();
+  }
+
+  window.setTimeout(() => highlightAdminTarget(options), 80);
+}
+
+function goToAdminTab(tabId, options = {}) {
+  openAdminTab(tabId, options);
+}
+
+async function markAdminNotificationRead(notificationId) {
+  try {
+    await fetchJson(`/api/admin/notifications/${notificationId}/read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
+    });
+  } catch (error) {
+    // Notification read state should not block routing.
+  }
+}
+
+function optionRows(options, selected = "") {
+  return options
+    .map((option) => `<option value="${escapeHtml(option)}" ${option === selected ? "selected" : ""}>${escapeHtml(option)}</option>`)
+    .join("");
+}
+
+function productOptions(selected = "") {
+  const products = productTools?.products || [];
+  return '<option value="">Unlinked</option>' + products
+    .filter((product) => product.status !== "hidden" && product.status !== "merged")
+    .map((product) => `
+      <option value="${product.id}" ${String(product.id) === String(selected || "") ? "selected" : ""}>
+        ${escapeHtml(product.display_name)} (${escapeHtml(product.status)})
+      </option>
+    `)
+    .join("");
+}
+
+function storeOptions(selected = "") {
+  return '<option value="">Choose store</option>' + allStores
+    .filter((store) => store.active !== 0 && store.active !== false)
+    .map((store) => `
+      <option value="${store.id}" ${String(store.id) === String(selected || "") ? "selected" : ""}>
+        ${escapeHtml(store.name)}
+      </option>
+    `)
+    .join("");
+}
+
+function productFormFields(product = {}) {
+  return `
+    <label><span>Name</span><input data-product-field="display_name" type="text" maxlength="160" value="${escapeHtml(product.display_name || "")}"></label>
+    <label><span>Canonical name</span><input data-product-field="canonical_name" type="text" maxlength="160" value="${escapeHtml(product.canonical_name || "")}" placeholder="lowercase search name"></label>
+    <label><span>Category</span><select data-product-field="category">${optionRows(categories, product.category || "other")}</select></label>
+    <label><span>Default size</span><input data-product-field="default_size_text" type="text" maxlength="80" value="${escapeHtml(product.default_size_text || "")}"></label>
+    <label><span>Default quantity</span><input data-product-field="default_quantity" type="number" min="0.01" step="0.01" value="${product.default_quantity ?? ""}"></label>
+    <label><span>Default unit</span><input data-product-field="default_unit" type="text" maxlength="30" value="${escapeHtml(product.default_unit || "")}" placeholder="each, lb, oz"></label>
+    <label><span>Preferred brand</span><input data-product-field="preferred_brand" type="text" maxlength="80" value="${escapeHtml(product.preferred_brand || "")}"></label>
+    <label><span>Status</span><select data-product-field="status">${optionRows(productStatuses, product.status || "active")}</select></label>
+    <label class="span-full"><span>Aliases</span><textarea data-product-field="common_aliases" rows="2" maxlength="1000">${escapeHtml(product.common_aliases || "")}</textarea></label>
+    <label class="span-full"><span>Ingredient/allergy source</span><input data-product-field="ingredient_info_url" type="url" maxlength="300" value="${escapeHtml(product.ingredient_info_url || "")}"></label>
+    <label class="span-full"><span>Allergen note</span><input data-product-field="allergen_note" type="text" maxlength="500" value="${escapeHtml(product.allergen_note || "")}"></label>
+    <label class="span-full"><span>Admin safety note</span><input data-product-field="admin_safety_note" type="text" maxlength="500" value="${escapeHtml(product.admin_safety_note || "")}"></label>
+    <label class="span-full"><span>Admin note</span><input data-product-field="admin_note" type="text" maxlength="500" value="${escapeHtml(product.admin_note || "")}"></label>
+  `;
+}
+
+function populateCategorySelect(select) {
+  select.innerHTML = "";
+
+  for (const category of categories) {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = titleCase(category);
+    select.appendChild(option);
+  }
+}
+
+async function loadStores() {
+  const data = await fetchJson("/api/stores");
+  manualStore.innerHTML = '<option value="">Choose store</option>';
+
+  for (const store of data.stores) {
+    const option = document.createElement("option");
+    option.value = store.id;
+    option.textContent = store.name;
+    manualStore.appendChild(option);
+  }
+}
+
+async function loadAdminData() {
+  if (getPin()) {
+    localStorage.setItem("groceryRadarAdminPin", getPin());
+  }
+
+  setAdminMessage("Loading admin data...");
+  const [authData, notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData] = await Promise.all([
+    fetchJson("/api/auth/me"),
+    fetchJson(`/api/admin/notifications${adminQuery()}`),
+    fetchJson(`/api/admin/beta-readiness${adminQuery()}`),
+    fetchJson(`/api/admin/analytics${adminQuery()}`),
+    fetchJson(`/api/admin/sponsors${adminQuery()}`),
+    fetchJson(`/api/admin/email/status${adminQuery()}`),
+    fetchJson(`/api/admin/reports${adminQuery()}`),
+    fetchJson(`/api/admin/users${adminQuery()}`),
+    fetchJson(`/api/admin/admin-accounts${adminQuery()}`),
+    fetchJson(`/api/admin/username-moderation${adminQuery()}`),
+    fetchJson(`/api/admin/stores${adminQuery()}`),
+    fetchJson(`/api/admin/suggestions${adminQuery()}`),
+    fetchJson(`/api/admin/product-tools${adminQuery()}`),
+    fetchJson(`/api/admin/price-imports${adminQuery()}`)
+  ]);
+
+  allReports = reportData.reports || [];
+  allUsers = userData.users || [];
+  adminAccessData = adminAccessResponse || { accounts: [] };
+  usernameModerationData = usernameData || { phrases: [] };
+  allStores = storeData.stores || [];
+  allStoreRequests = storeData.store_requests || [];
+  allSuggestions = suggestionData.suggestions || [];
+  productTools = productData || {};
+  betaReadiness = betaData || {};
+  analyticsData = analyticsResponse || {};
+  sponsorData = sponsorResponse || {};
+  priceImporterData = priceImportData || { batches: [] };
+  adminSession = authData || { loggedIn: false, is_admin: false };
+
+  renderDashboard(notificationData.notifications);
+  renderBetaReadiness(betaReadiness);
+  renderAnalytics(analyticsData);
+  renderSponsors(sponsorData);
+  renderEmailSetup(emailData, notificationData.notifications?.last_email_diagnostic || null);
+  renderReportTabs();
+  renderUsernameModeration();
+  renderAdminAccessCleanup(adminAccessData);
+  renderUsers(allUsers);
+  renderStores();
+  renderSuggestions();
+  renderProductTools();
+  renderPriceImporter();
+  setAdminMessage("Admin data loaded.", "success");
+}
+
+function renderDashboard(notifications = {}) {
+  const lastDiagnostic = notifications.last_email_diagnostic;
+  const diagnosticLabel = lastDiagnostic
+    ? lastDiagnostic.send?.ok ? "Passed" : "Needs attention"
+    : "Not run";
+  const rows = [
+    { label: "Pending proofs", value: notifications.pending_proofs || 0, tab: "priceImporterTab" },
+    { label: "Approved prices", value: notifications.public_approved_prices || 0, tab: "pricesTab" },
+    { label: "Users", value: notifications.total_registered_users || 0, tab: "usersTab" },
+    { label: "Active contributors", value: notifications.active_contributors || 0, tab: "analyticsTab" },
+    { label: "Admin accounts", value: notifications.admin_accounts || 0, tab: "usersTab" },
+    { label: "Duplicate/flagged proofs", value: notifications.duplicate_flagged_proofs || 0, tab: "priceImporterTab" },
+    { label: "Needs clearer photo", value: notifications.needs_clearer_photo_proofs || 0, tab: "priceImporterTab" },
+    { label: "Rejected proofs", value: notifications.rejected_proofs || 0, tab: "priceImporterTab" },
+    { label: "Points awarded this week", value: notifications.points_awarded_this_week || 0, tab: "analyticsTab" },
+    { label: "Public approved products", value: notifications.public_approved_products || 0, tab: "productToolsTab" },
+    { label: "Pending price reviews", value: notifications.pending_reviews || 0, tab: "reviewTab" },
+    { label: "Proofs used for prices", value: notifications.proofs_used_for_prices || 0, tab: "priceImporterTab" },
+    { label: "Email status", value: notifications.email_configured ? "Configured" : "Not configured", tab: "emailTab" },
+    { label: "Last diagnostic", value: diagnosticLabel, tab: "emailTab" }
+  ];
+  const recentAdminNotifications = notifications.recent_admin_notifications || [];
+
+  adminNotifications.innerHTML = `${notifications.admin_cleanup_warning ? `
+      <article class="admin-card compact-card span-full warning">
+        <h3>Admin access warning</h3>
+        <p>${escapeHtml(notifications.admin_cleanup_warning)}</p>
+        <button class="secondary-button" type="button" data-jump-tab="usersTab">Open Admin Access Cleanup</button>
+      </article>
+    ` : ""}` + rows
+    .map((row) => `
+      <article class="notification-card actionable-card" role="button" tabindex="0" data-dashboard-tab="${escapeHtml(row.tab)}" data-dashboard-filter="${escapeHtml(row.filter || "")}">
+        <strong>${escapeHtml(row.value)}</strong>
+        <span>${escapeHtml(row.label)}</span>
+        <span class="notification-open-affordance" aria-hidden="true">Open →</span>
+      </article>
+    `)
+    .join("") + `
+      <article class="notification-card action-card">
+        <button class="secondary-button" type="button" data-jump-tab="reviewTab">Review pending reports</button>
+        <button class="quiet-button" type="button" data-jump-tab="manualTab">Add manual price</button>
+        <button class="quiet-button" type="button" data-jump-tab="usersTab">View users</button>
+        <button class="quiet-button" type="button" data-jump-tab="storesTab">View store requests</button>
+        <button class="quiet-button" type="button" data-jump-tab="emailTab">Run email diagnostic</button>
+        <button class="secondary-button" type="button" data-jump-tab="betaReadinessTab">Open beta checklist</button>
+      </article>
+      <article class="admin-card compact-card span-full">
+        <h3>Recent admin notifications</h3>
+        <div class="admin-list">
+          ${recentAdminNotifications.length ? recentAdminNotifications.map((notification) => `
+            <button class="notification-list-button ${notification.is_read ? "" : "is-unread"}" type="button"
+              data-admin-notification="${notification.id}"
+              data-admin-target-tab="${escapeHtml(notification.target_tab || "dashboardTab")}"
+              data-admin-related-type="${escapeHtml(notification.related_type || "")}"
+              data-admin-related-id="${escapeHtml(notification.related_id || "")}">
+              <strong>${escapeHtml(notification.title)}</strong>
+              <span>${escapeHtml(notification.message)} · ${escapeHtml(formatDate(notification.created_at))}</span>
+              <span class="notification-open-affordance" aria-hidden="true">Open →</span>
+            </button>
+          `).join("") : '<div class="empty-state">No admin notifications yet.</div>'}
+        </div>
+      </article>
+    `;
+
+  for (const card of adminNotifications.querySelectorAll("[data-dashboard-tab]")) {
+    card.addEventListener("click", () => openAdminTab(card.dataset.dashboardTab, { filter: card.dataset.dashboardFilter || "" }));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openAdminTab(card.dataset.dashboardTab, { filter: card.dataset.dashboardFilter || "" });
+      }
+    });
+  }
+
+  for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) {
+    button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
+  }
+
+  for (const button of adminNotifications.querySelectorAll("[data-admin-notification]")) {
+    button.addEventListener("click", async () => {
+      await markAdminNotificationRead(button.dataset.adminNotification);
+      const relatedType = button.dataset.adminRelatedType;
+      const relatedId = button.dataset.adminRelatedId;
+      openAdminTab(button.dataset.adminTargetTab || "dashboardTab", {
+        reportId: relatedType === "report" ? relatedId : "",
+        userId: relatedType === "user" ? relatedId : "",
+        storeRequestId: relatedType === "store_request" ? relatedId : "",
+        suggestionId: relatedType === "suggestion" ? relatedId : "",
+        priceImportBatchId: relatedType === "price_import_batch" ? relatedId : "",
+        filter: button.dataset.adminTargetTab === "pricesTab" ? "disputed" : ""
+      });
+    });
+  }
+}
+
+function renderEmailSetup(status = {}, lastDiagnostic = null) {
+  const technical = status.technical || {};
+  const missing = Array.isArray(technical.missing) ? technical.missing : [];
+  const yesNo = (value) => value ? "Yes" : "No";
+
+  emailSetupStatus.innerHTML = `
+    <article class="admin-card compact-card email-setup-card">
+      <div class="card-topline">
+        <span class="badge ${status.configured ? "confidence-high" : "confidence-low"}">
+          ${status.configured ? "Configured" : "Not configured"}
+        </span>
+      </div>
+      <dl class="details-list">
+        <div><dt>Status</dt><dd>${status.configured ? "Configured" : "Not configured"}</dd></div>
+        <div><dt>Admin alerts</dt><dd>${escapeHtml(status.adminNotifyEmail || "Not configured")}</dd></div>
+        <div><dt>Last diagnostic</dt><dd>${escapeHtml(lastDiagnostic ? formatDate(lastDiagnostic.finished_at || lastDiagnostic.started_at) : "Not run")}</dd></div>
+      </dl>
+      <details class="technical-details">
+        <summary>Show technical details</summary>
+        <dl class="details-list">
+          <div><dt>SMTP provider</dt><dd>${escapeHtml(status.provider || "Brevo")}</dd></div>
+          <div><dt>Host configured</dt><dd>${yesNo(technical.hostConfigured)}</dd></div>
+          <div><dt>Port configured</dt><dd>${yesNo(technical.portConfigured)}</dd></div>
+          <div><dt>User configured</dt><dd>${yesNo(technical.userConfigured)}</dd></div>
+          <div><dt>Password configured</dt><dd>${yesNo(technical.passwordConfigured)}</dd></div>
+          <div><dt>SMTP user</dt><dd>${escapeHtml(technical.maskedUser || "Not configured")}</dd></div>
+          <div><dt>From address</dt><dd>${escapeHtml(technical.from || "Not configured")}</dd></div>
+          <div><dt>App base URL</dt><dd>${escapeHtml(status.appBaseUrl || "Not configured")}</dd></div>
+          <div><dt>Missing settings</dt><dd>${missing.length ? escapeHtml(missing.join(", ")) : "None"}</dd></div>
+        </dl>
+      </details>
+    </article>
+  `;
+
+  if (status.adminNotifyEmail && emailTestTo && !emailTestTo.value.trim()) {
+    emailTestTo.value = status.adminNotifyEmail;
+  }
+
+  renderEmailDiagnostic(lastDiagnostic);
+}
+
+function betaStatusClass(status) {
+  const normalized = String(status || "").toLowerCase().replace(/\s+/g, "-");
+
+  if (normalized === "ready") {
+    return "status-ready";
+  }
+
+  if (normalized === "critical") {
+    return "status-critical";
+  }
+
+  if (normalized === "needs-setup") {
+    return "status-needs-setup";
+  }
+
+  return "status-warning";
+}
+
+function renderCountDetails(counts = {}) {
+  const entries = Object.entries(counts);
+
+  if (!entries.length) {
+    return "";
+  }
+
+  return `
+    <dl class="details-list beta-counts">
+      ${entries.map(([label, value]) => `
+        <div>
+          <dt>${escapeHtml(titleCase(label))}</dt>
+          <dd>${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</dd>
+        </div>
+      `).join("")}
+    </dl>
+  `;
+}
+
+function renderBetaAction(action = {}) {
+  const type = action.type || "";
+  const target = action.target || "";
+  const label = action.label || "Open";
+  const buttonClass = type === "diagnostic" ? "secondary-button" : "quiet-button";
+
+  return `
+    <button class="${buttonClass}" type="button" data-beta-action-type="${escapeHtml(type)}" data-beta-action-target="${escapeHtml(target)}">
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function bindBetaActions(container) {
+  for (const button of container.querySelectorAll("[data-beta-action-type]")) {
+    button.addEventListener("click", () => {
+      const type = button.dataset.betaActionType;
+      const target = button.dataset.betaActionTarget;
+
+      if (type === "tab") {
+        goToAdminTab(target);
+        return;
+      }
+
+      if (type === "page") {
+        window.open(target, "_blank", "noopener");
+        return;
+      }
+
+      if (type === "diagnostic") {
+        goToAdminTab("emailTab");
+        runEmailDiagnostic();
+      }
+    });
+  }
+}
+
+function renderPhoneTesting(phone = {}) {
+  phoneTestingCard.innerHTML = `
+    <article class="admin-card compact-card phone-testing-card">
+      <div class="card-topline">
+        <h3>Phone Testing</h3>
+        <span class="badge status-${phone.host === "0.0.0.0" ? "ready" : "warning"}">${phone.host === "0.0.0.0" ? "LAN ready" : "Check HOST"}</span>
+      </div>
+      <ol class="phone-steps">
+        <li>Make sure your phone and Mac are on the same Wi-Fi.</li>
+        <li>Find your Mac IP in Terminal: <code>${escapeHtml(phone.findIpCommand || "ipconfig getifaddr en0")}</code></li>
+        <li>Open on phone: <code>${escapeHtml(phone.phoneUrl || "http://YOUR-MAC-IP:3000")}</code></li>
+        <li>Admin: <code>${escapeHtml(phone.adminPhoneUrl || "http://YOUR-MAC-IP:3000/admin.html?pin=YOUR_ADMIN_PIN")}</code></li>
+      </ol>
+      <p class="field-help">${escapeHtml(phone.firewallHint || "If phone cannot connect, the server may need HOST=0.0.0.0 or the Mac firewall may be blocking Node.")}</p>
+      <dl class="details-list">
+        <div><dt>Local URL</dt><dd>${escapeHtml(phone.localUrl || "http://localhost:3000")}</dd></div>
+        <div><dt>Host</dt><dd>${escapeHtml(phone.host || "unknown")}</dd></div>
+        <div><dt>Port</dt><dd>${escapeHtml(phone.port || "3000")}</dd></div>
+        <div><dt>APP_BASE_URL</dt><dd>${escapeHtml(phone.appBaseUrl || "http://localhost:3000")}</dd></div>
+      </dl>
+    </article>
+  `;
+}
+
+function renderBetaReadiness(data = {}) {
+  if (!betaReadinessSummary || !phoneTestingCard || !betaChecklist) {
+    return;
+  }
+
+  const summary = data.summary || {};
+  const checks = data.checks || [];
+  const summaryRows = [
+    ["Ready", summary.ready || 0, "status-ready"],
+    ["Warning", summary.warning || 0, "status-warning"],
+    ["Critical", summary.critical || 0, "status-critical"],
+    ["Needs setup", summary.needs_setup || 0, "status-needs-setup"]
+  ];
+
+  betaReadinessGenerated.textContent = data.generated_at
+    ? `Updated ${formatDate(data.generated_at)}`
+    : "";
+  betaReadinessSummary.innerHTML = summaryRows
+    .map(([label, value, className]) => `
+      <article class="notification-card beta-summary-card">
+        <strong class="${className}">${escapeHtml(value)}</strong>
+        <span>${escapeHtml(label)}</span>
+      </article>
+    `)
+    .join("");
+
+  renderPhoneTesting(data.phone_testing || {});
+
+  betaChecklist.innerHTML = checks.length
+    ? checks.map((check) => `
+      <article class="admin-card compact-card beta-check-card">
+        <div class="card-topline">
+          <h3>${escapeHtml(check.label)}</h3>
+          <span class="badge ${betaStatusClass(check.status)}">${escapeHtml(check.status)}</span>
+        </div>
+        <p>${escapeHtml(check.explanation || "")}</p>
+        ${check.reminder ? `<div class="inline-help">${escapeHtml(check.reminder)}</div>` : ""}
+        ${renderCountDetails(check.counts)}
+        ${Array.isArray(check.actions) && check.actions.length ? `
+          <div class="card-actions beta-actions">
+            ${check.actions.map(renderBetaAction).join("")}
+          </div>
+        ` : ""}
+      </article>
+    `).join("")
+    : '<div class="empty-state">Beta readiness checklist is not available yet.</div>';
+
+  bindBetaActions(betaChecklist);
+}
+
+function renderMiniTable(title, rows = [], columns = [], emptyText = "No aggregate data yet.", missingActions = false) {
+  return `
+    <article class="admin-card compact-card">
+      <h3>${escapeHtml(title)}</h3>
+      ${rows.length ? `
+        <div class="analytics-table">
+          ${rows.map((row) => `
+            <div class="mini-row">
+              <div>
+                <strong>${escapeHtml(row[columns[0].key] || "Unknown")}</strong>
+                <span>${columns.slice(1).map((column) => `${column.label}: ${escapeHtml(row[column.key] ?? "")}`).join(" · ")}</span>
+              </div>
+              ${missingActions && row.item_name ? `
+                <div class="card-actions">
+                  <button class="quiet-button" type="button" data-missing-action="priority" data-missing-item="${escapeHtml(row.item_name)}" data-missing-category="${escapeHtml(row.category || "")}">Mark priority</button>
+                  <button class="quiet-button" type="button" data-missing-action="manual_price_needed" data-missing-item="${escapeHtml(row.item_name)}" data-missing-category="${escapeHtml(row.category || "")}">Add manual price</button>
+                  <button class="quiet-button" type="button" data-missing-action="suggested_quick_item" data-missing-item="${escapeHtml(row.item_name)}" data-missing-category="${escapeHtml(row.category || "")}">Add to quick items</button>
+                </div>
+              ` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="empty-state">${escapeHtml(emptyText)}</div>`}
+    </article>
+  `;
+}
+
+function renderAnalytics(data = {}) {
+  const cards = data.cards || {};
+  const summaryRows = [
+    ["Total users", cards.total_users || cards.total_registered_users || 0],
+    ["Active contributors", cards.active_contributors || 0],
+    ["Approved prices", cards.total_approved_prices || 0],
+    ["Products with prices", cards.products_with_approved_prices || 0],
+    ["Stores with prices", cards.stores_with_prices || 0],
+    ["Pending proofs", cards.pending_proofs || 0],
+    ["Accepted proofs", cards.accepted_proofs || 0],
+    ["Proofs used for prices", cards.proofs_used_for_prices || 0],
+    ["Needs clearer photo", cards.needs_clearer_photo_count || 0],
+    ["Rejected proofs", cards.rejected_proof_count || 0],
+    ["Duplicate proofs", cards.duplicate_proof_count || 0],
+    ["Points total", cards.points_awarded_total || 0],
+    ["Points this week", cards.points_awarded_this_week || 0],
+    ["Approval rate", `${cards.approval_rate || 0}%`],
+    ["Rejection rate", `${cards.rejection_rate || 0}%`],
+    ["Admin accounts", cards.admin_accounts || 0]
+  ];
+
+  analyticsSummary.innerHTML = summaryRows
+    .map(([label, value]) => `
+      <article class="notification-card">
+        <strong>${escapeHtml(value)}</strong>
+        <span>${escapeHtml(label)}</span>
+      </article>
+    `)
+    .join("");
+
+  analyticsContent.innerHTML = `
+    <div class="inline-help">${escapeHtml(data.privacy_note || "Analytics are aggregate counts only.")}</div>
+    ${data.admin_account_audit?.cleanup_needed ? `<div class="warning">${escapeHtml(data.admin_account_audit.recommendation || "Review admin account cleanup.")}</div>` : ""}
+    ${renderMiniTable("Proof type breakdown", data.proof_type_breakdown || [], [
+      { key: "proof_type", label: "Proof type" },
+      { key: "count", label: "Count" }
+    ])}
+    ${renderMiniTable("Top products by approved prices", data.top_approved_products || [], [
+      { key: "product_name", label: "Product" },
+      { key: "approved_prices", label: "Approved prices" },
+      { key: "lowest_price", label: "Lowest price" }
+    ])}
+    ${renderMiniTable("Approved price categories", data.top_approved_categories || [], [
+      { key: "category", label: "Category" },
+      { key: "approved_prices", label: "Approved prices" }
+    ])}
+    <article class="admin-card compact-card">
+      <h3>Public data health</h3>
+      ${renderCountDetails(data.public_data_health || {})}
+    </article>
+    ${renderMiniTable("Most searched items", data.most_searched_items || [], [
+      { key: "item_name", label: "Item" },
+      { key: "count", label: "Searches" }
+    ])}
+    ${renderMiniTable("Most viewed products", data.most_viewed_products || [], [
+      { key: "product_name", label: "Product" },
+      { key: "count", label: "Views" }
+    ])}
+    ${renderMiniTable("Most added-to-cart items", data.most_added_to_cart_items || [], [
+      { key: "item_name", label: "Item" },
+      { key: "count", label: "Adds" },
+      { key: "category", label: "Category" }
+    ])}
+    ${renderMiniTable("People need prices for", data.most_missing_price_items || [], [
+      { key: "item_name", label: "Item" },
+      { key: "count", label: "Requests" },
+      { key: "category", label: "Category" },
+      { key: "priority_status", label: "Status" }
+    ], "No missing-price demand yet.", true)}
+    ${renderMiniTable("Most compared categories", data.most_compared_categories || [], [
+      { key: "category", label: "Category" },
+      { key: "count", label: "Count" }
+    ])}
+    ${renderMiniTable("Stores with most approved reports", data.stores_with_most_approved_reports || [], [
+      { key: "name", label: "Store" },
+      { key: "approved_reports", label: "Approved reports" }
+    ])}
+    ${renderMiniTable("Stores with missing requested items", data.stores_with_missing_requested_items || [], [
+      { key: "name", label: "Store" },
+      { key: "count", label: "Missing requests" }
+    ], "Missing demand is item-level for now, not store-specific.")}
+    ${renderMiniTable("Top categories", data.top_categories || [], [
+      { key: "category", label: "Category" },
+      { key: "count", label: "Count" }
+    ])}
+    ${renderMiniTable("Popular avoid ingredients", data.popular_avoid_ingredients || [], [
+      { key: "ingredient", label: "Ingredient" },
+      { key: "count", label: "Count" }
+    ], "No aggregate avoid ingredient data yet.")}
+  `;
+
+  for (const button of analyticsContent.querySelectorAll("[data-missing-action]")) {
+    button.addEventListener("click", () => handleMissingDemandAction(button));
+  }
+}
+
+async function handleMissingDemandAction(button) {
+  const action = button.dataset.missingAction;
+  const itemName = button.dataset.missingItem;
+  const category = button.dataset.missingCategory || "";
+
+  if (action === "manual_price_needed") {
+    goToAdminTab("manualTab");
+    const itemInput = manualEntryForm.querySelector("[name='item_name']");
+    if (itemInput) {
+      itemInput.value = itemName;
+    }
+  }
+
+  try {
+    const data = await fetchJson("/api/admin/analytics/missing-demand/priority", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        item_name: itemName,
+        category,
+        status: action,
+        admin_note: `Marked from Analytics as ${action}`
+      })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+function sponsorPayloadFromForm() {
+  const formData = new FormData(sponsorForm);
+
+  return {
+    sponsor_id: formData.get("sponsor_id"),
+    sponsor_name: formData.get("sponsor_name"),
+    sponsor_type: formData.get("sponsor_type"),
+    title: formData.get("title"),
+    message: formData.get("message"),
+    link_url: formData.get("link_url"),
+    image_url: formData.get("image_url"),
+    starts_at: formData.get("starts_at"),
+    ends_at: formData.get("ends_at"),
+    status: formData.get("status"),
+    weekly_price_note: formData.get("weekly_price_note"),
+    admin_note: formData.get("admin_note")
+  };
+}
+
+function fillSponsorForm(sponsor = {}) {
+  sponsorForm.elements.sponsor_id.value = sponsor.id || "";
+  sponsorForm.elements.sponsor_name.value = sponsor.sponsor_name || "";
+  sponsorForm.elements.sponsor_type.value = sponsor.sponsor_type || "business";
+  sponsorForm.elements.status.value = sponsor.status || "draft";
+  sponsorForm.elements.title.value = sponsor.title || "";
+  sponsorForm.elements.message.value = sponsor.message || "";
+  sponsorForm.elements.link_url.value = sponsor.link_url || "";
+  sponsorForm.elements.image_url.value = sponsor.image_url || "";
+  sponsorForm.elements.starts_at.value = sponsor.starts_at ? String(sponsor.starts_at).slice(0, 10) : "";
+  sponsorForm.elements.ends_at.value = sponsor.ends_at ? String(sponsor.ends_at).slice(0, 10) : "";
+  sponsorForm.elements.weekly_price_note.value = sponsor.weekly_price_note || "";
+  sponsorForm.elements.admin_note.value = sponsor.admin_note || "";
+}
+
+function renderSponsors(data = {}) {
+  const sponsors = data.sponsors || [];
+
+  sponsorsContent.innerHTML = `
+    <div class="inline-help">${escapeHtml(data.privacy_note || "Sponsor stats are anonymous aggregate counts.")}</div>
+    ${sponsors.length ? sponsors.map((sponsor) => `
+      <article class="admin-card compact-card">
+        <div class="card-topline">
+          <h3>${escapeHtml(sponsor.title)}</h3>
+          <span class="badge confidence-${sponsor.status === "active" ? "high" : "low"}">${escapeHtml(titleCase(sponsor.status))}</span>
+        </div>
+        <dl class="details-list">
+          <div><dt>Sponsor</dt><dd>${escapeHtml(sponsor.sponsor_name)}</dd></div>
+          <div><dt>Type</dt><dd>${escapeHtml(titleCase(sponsor.sponsor_type))}</dd></div>
+          <div><dt>Message</dt><dd>${escapeHtml(sponsor.message)}</dd></div>
+          <div><dt>Link</dt><dd>${escapeHtml(sponsor.link_url || "None")}</dd></div>
+          <div><dt>Active dates</dt><dd>${escapeHtml(sponsor.starts_at || "No start")} to ${escapeHtml(sponsor.ends_at || "No end")}</dd></div>
+          <div><dt>Views</dt><dd>${sponsor.stats.views}</dd></div>
+          <div><dt>Clicks</dt><dd>${sponsor.stats.clicks}</dd></div>
+          <div><dt>Interested taps</dt><dd>${sponsor.stats.interested}</dd></div>
+          <div><dt>Not interested taps</dt><dd>${sponsor.stats.not_interested}</dd></div>
+          <div><dt>Admin note</dt><dd>${escapeHtml(sponsor.admin_note || "None")}</dd></div>
+        </dl>
+        <div class="card-actions">
+          <button class="secondary-button" type="button" data-edit-sponsor="${sponsor.id}">Edit</button>
+          <button class="quiet-button" type="button" data-sponsor-status="active" data-sponsor-id="${sponsor.id}">Activate</button>
+          <button class="quiet-button" type="button" data-sponsor-status="paused" data-sponsor-id="${sponsor.id}">Pause</button>
+          <button class="quiet-button" type="button" data-sponsor-status="expired" data-sponsor-id="${sponsor.id}">Expire</button>
+        </div>
+      </article>
+    `).join("") : '<div class="empty-state">No sponsor cards yet.</div>'}
+  `;
+
+  for (const button of sponsorsContent.querySelectorAll("[data-edit-sponsor]")) {
+    button.addEventListener("click", () => {
+      const sponsor = sponsors.find((item) => String(item.id) === button.dataset.editSponsor);
+      fillSponsorForm(sponsor);
+      sponsorForm.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  for (const button of sponsorsContent.querySelectorAll("[data-sponsor-status]")) {
+    button.addEventListener("click", () => updateSponsorStatus(button.dataset.sponsorId, button.dataset.sponsorStatus));
+  }
+}
+
+async function saveSponsor(event) {
+  event.preventDefault();
+  const payload = sponsorPayloadFromForm();
+  const sponsorId = payload.sponsor_id;
+  delete payload.sponsor_id;
+
+  try {
+    const data = await fetchJson(sponsorId ? `/api/admin/sponsors/${sponsorId}` : "/api/admin/sponsors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), ...payload })
+    });
+    sponsorForm.reset();
+    setMessage(sponsorMessage, data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setMessage(sponsorMessage, error.message, "error");
+  }
+}
+
+async function updateSponsorStatus(sponsorId, status) {
+  try {
+    const data = await fetchJson(`/api/admin/sponsors/${sponsorId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        status_only: true,
+        status
+      })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+function reportWarnings(report) {
+  const warnings = [];
+
+  if (report.proof_type !== "no_photo" && !report.photo_path) {
+    warnings.push("photo proof selected but no upload");
+  }
+
+  if (report.price > 100 && report.proof_type === "no_photo") {
+    warnings.push("high price without photo");
+  }
+
+  if (report.dispute_count > 0) {
+    warnings.push("has disputes");
+  }
+
+  if (Array.isArray(report.suspicious_activity)) {
+    warnings.push(...report.suspicious_activity);
+  }
+
+  return [...new Set(warnings)];
+}
+
+function proofPreview(report) {
+  const proofUrl = adminUploadUrl(report.photo_path);
+
+  if (!proofUrl) {
+    return '<div class="inline-help">No uploaded photo proof.</div>';
+  }
+
+  return `
+    <div class="proof-preview admin-proof-preview">
+      <img src="${escapeHtml(proofUrl)}" alt="Uploaded proof for ${escapeHtml(report.item_name)}">
+      <a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof</a>
+    </div>
+  `;
+}
+
+function reportSummary(report) {
+  return `
+    <div class="card-topline">
+      <span class="badge confidence-${escapeHtml(report.confidence)}">${escapeHtml(titleCase(report.confidence))}</span>
+      <span>${escapeHtml(titleCase(report.status))}</span>
+    </div>
+    <h3>${escapeHtml(report.item_name)}</h3>
+    <div class="brand-line">${escapeHtml(report.brand || "No brand entered")}</div>
+    <dl class="details-list">
+      <div><dt>Store</dt><dd>${escapeHtml(report.store_name)}</dd></div>
+      <div><dt>Category</dt><dd>${escapeHtml(titleCase(report.category))}</dd></div>
+      <div><dt>Price</dt><dd>${escapeHtml(report.price_label)} / ${escapeHtml(report.unit_price_label)}</dd></div>
+      <div><dt>Size</dt><dd>${escapeHtml(report.size_text || `${report.quantity} ${report.unit}`)}</dd></div>
+      <div><dt>Proof</dt><dd>${escapeHtml(titleCase(report.proof_type))}</dd></div>
+      <div><dt>Source</dt><dd>${report.source_url ? `<a href="${escapeHtml(report.source_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(report.source_domain || "View source")}</a>` : "None"}</dd></div>
+      <div><dt>Submitted by</dt><dd>${escapeHtml(report.username || "Unknown")}</dd></div>
+      <div><dt>Submitted</dt><dd>${escapeHtml(formatDate(report.submitted_at))}</dd></div>
+    </dl>
+    ${proofPreview(report)}
+  `;
+}
+
+function reportTechnicalDetails(report) {
+  const warnings = reportWarnings(report);
+
+  return `
+    <details class="technical-details">
+      <summary>Show technical details</summary>
+      <dl class="details-list">
+        <div><dt>Report ID</dt><dd>${report.id}</dd></div>
+        <div><dt>User ID</dt><dd>${report.user_id}</dd></div>
+        <div><dt>User email</dt><dd>${escapeHtml(report.user_email || "No email")}</dd></div>
+        <div><dt>Status</dt><dd>${escapeHtml(report.status)}</dd></div>
+        <div><dt>Confidence score</dt><dd>${escapeHtml(report.confidence)}</dd></div>
+        <div><dt>Photo path/status</dt><dd>${escapeHtml(report.photo_path || "No photo")}</dd></div>
+        <div><dt>Created at</dt><dd>${escapeHtml(formatDate(report.submitted_at))}</dd></div>
+        <div><dt>Reviewed at</dt><dd>${escapeHtml(formatDate(report.reviewed_at) || "Not reviewed")}</dd></div>
+        <div><dt>Verification count</dt><dd>${report.verification_count}</dd></div>
+        <div><dt>Dispute count</dt><dd>${report.dispute_count}</dd></div>
+        <div><dt>Raw quantity/unit</dt><dd>${escapeHtml(`${report.quantity} ${report.unit}`)}</dd></div>
+        <div><dt>Edited at</dt><dd>${escapeHtml(formatDate(report.last_edited_at || report.edited_at) || "Not edited")}</dd></div>
+        <div><dt>Edit note</dt><dd>${escapeHtml(report.edit_note || report.admin_edit_note || "None")}</dd></div>
+        <div><dt>Ingredient link</dt><dd>${escapeHtml(report.ingredient_info_url || "None")}</dd></div>
+        <div><dt>Allergen note</dt><dd>${escapeHtml(report.allergen_note || "None")}</dd></div>
+        <div><dt>Photo file</dt><dd>${escapeHtml(report.photo_original_name || "None")} (${escapeHtml(report.photo_mime_type || "none")}, ${escapeHtml(formatBytes(report.photo_size_bytes))})</dd></div>
+        <div><dt>Validation warnings</dt><dd>${warnings.length ? escapeHtml(warnings.join(", ")) : "None"}</dd></div>
+      </dl>
+    </details>
+  `;
+}
+
+function reportEditControls(report, mode) {
+  return `
+    <details class="technical-details report-edit-details">
+      <summary>${mode === "review" ? "Edit before approving" : "Edit price"}</summary>
+      <div class="admin-control-grid" data-edit-form="${report.id}">
+        <label><span>Item</span><input data-edit-field="item_name" type="text" maxlength="120" value="${escapeHtml(report.item_name)}"></label>
+        <label><span>Brand</span><input data-edit-field="brand" type="text" maxlength="80" value="${escapeHtml(report.brand)}"></label>
+        <label><span>Linked product</span><select data-edit-field="product_id">${productOptions(report.product_id)}</select></label>
+        <label><span>Store</span><select data-edit-field="store_id">${allStores.map((store) => `<option value="${store.id}" ${store.id === report.store_id ? "selected" : ""}>${escapeHtml(store.name)}</option>`).join("")}</select></label>
+        <label><span>Category</span><select data-edit-field="category">${optionRows(categories, report.category)}</select></label>
+        <label><span>Price</span><input data-edit-field="price" type="number" min="0.01" max="999" step="0.01" value="${escapeHtml(report.price)}"></label>
+        <label><span>Regular price</span><input data-edit-field="regular_price" type="number" min="0.01" max="999" step="0.01" value="${report.regular_price === null ? "" : escapeHtml(report.regular_price)}"></label>
+        <label><span>Size</span><input data-edit-field="size_text" type="text" maxlength="80" value="${escapeHtml(report.size_text)}"></label>
+        <label><span>Quantity</span><input data-edit-field="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(report.quantity)}"></label>
+        <label><span>Unit</span><select data-edit-field="unit">${optionRows(["each", "count", "ct", "oz", "lb", "fl oz", "gallon", "pack", "roll", "bottle", "can", "bag"], report.unit)}</select></label>
+        <label><span>Proof</span><select data-edit-field="proof_type">${optionRows(["shelf_tag_photo", "receipt_photo", "weekly_ad", "no_photo"], report.proof_type)}</select></label>
+        <label><span>Product link</span><input data-edit-field="official_product_url" type="url" maxlength="300" value="${escapeHtml(report.official_product_url || "")}"></label>
+        <label><span>Allergy link</span><input data-edit-field="ingredient_info_url" type="url" maxlength="300" value="${escapeHtml(report.ingredient_info_url || "")}"></label>
+        <label class="span-full"><span>Allergen note</span><input data-edit-field="allergen_note" type="text" maxlength="500" value="${escapeHtml(report.allergen_note || "")}"></label>
+        <label class="span-full"><span>Admin safety note</span><input data-edit-field="admin_safety_note" type="text" maxlength="500" value="${escapeHtml(report.admin_safety_note || "")}"></label>
+        <label class="span-full"><span>Notes</span><textarea data-edit-field="notes" rows="3" maxlength="500">${escapeHtml(report.notes)}</textarea></label>
+        <label class="span-full"><span>Audit note</span><input data-edit-field="admin_edit_note" type="text" maxlength="500" placeholder="Why this edit was made"></label>
+        <button class="secondary-button" type="button" data-edit-report="${report.id}" data-approve-after-edit="0">Save edits</button>
+        ${mode === "review" ? `<button class="primary-button" type="button" data-edit-report="${report.id}" data-approve-after-edit="1">Save edits and approve</button>` : ""}
+      </div>
+    </details>
+  `;
+}
+
+function reportActionControls(report, mode) {
+  if (mode === "review") {
+    return `
+      <div class="card-actions">
+        <button class="secondary-button" type="button" data-status="approved" data-id="${report.id}">Approve</button>
+        <button class="quiet-button" type="button" data-status="needs_proof" data-id="${report.id}">Needs proof</button>
+        <button class="quiet-button" type="button" data-status="needs_update" data-id="${report.id}">Needs update</button>
+        <button class="quiet-button" type="button" data-status="disputed" data-id="${report.id}">Mark disputed</button>
+        <button class="danger-button" type="button" data-status="removed" data-id="${report.id}">Remove</button>
+      </div>
+      ${reportEditControls(report, "review")}
+      <div class="admin-control-grid">
+        <label>
+          <span>Reject reason</span>
+          <select data-rejection-reason="${report.id}">
+            <option value="">Choose reason</option>
+            ${optionRows(rejectionReasons, report.admin_rejection_reason)}
+          </select>
+        </label>
+        <label>
+          <span>Admin note</span>
+          <input data-rejection-note="${report.id}" type="text" maxlength="500" value="${escapeHtml(report.admin_rejection_note || "")}">
+        </label>
+        <button class="danger-button" type="button" data-status="rejected" data-id="${report.id}">Reject with reason</button>
+      </div>
+      <div class="card-actions">
+        <button class="quiet-button" type="button" data-view-user="${report.user_id}">View user history</button>
+        <button class="danger-button" type="button" data-ban-user="${report.user_id}">Ban user</button>
+      </div>
+    `;
+  }
+
+  if (mode === "approved") {
+    return `
+      <div class="card-actions">
+        <button class="quiet-button" type="button" data-status="expired" data-id="${report.id}">Mark expired</button>
+        <button class="quiet-button" type="button" data-status="needs_update" data-id="${report.id}">Needs update</button>
+        <button class="danger-button" type="button" data-status="removed" data-id="${report.id}">Remove from public</button>
+        ${report.photo_path ? `<a class="quiet-button" href="${escapeHtml(adminUploadUrl(report.photo_path))}" target="_blank" rel="noopener">View proof</a>` : ""}
+      </div>
+      ${reportEditControls(report, "approved")}
+    `;
+  }
+
+  return "";
+}
+
+function renderReportCard(report, mode) {
+  const historyDetails = mode === "history"
+    ? `
+      <dl class="details-list">
+        <div><dt>Reason</dt><dd>${escapeHtml(report.admin_rejection_reason || titleCase(report.status))}</dd></div>
+        <div><dt>Note</dt><dd>${escapeHtml(report.admin_rejection_note || "None")}</dd></div>
+        <div><dt>Reviewer</dt><dd>${escapeHtml(report.reviewed_by_username || "Unknown")}</dd></div>
+        <div><dt>Review date</dt><dd>${escapeHtml(formatDate(report.reviewed_at) || "Not reviewed")}</dd></div>
+      </dl>
+    `
+    : "";
+
+  return `
+    <article class="admin-card" data-report-card="${report.id}">
+      ${reportSummary(report)}
+      ${historyDetails}
+      ${reportTechnicalDetails(report)}
+      ${reportActionControls(report, mode)}
+    </article>
+  `;
+}
+
+function bindReportActions(container) {
+  for (const button of container.querySelectorAll("[data-status]")) {
+    button.addEventListener("click", () => {
+      updateReportStatus(button.dataset.id, button.dataset.status);
+    });
+  }
+
+  for (const button of container.querySelectorAll("[data-view-user]")) {
+    button.addEventListener("click", () => {
+      goToAdminTab("usersTab", { userId: button.dataset.viewUser });
+      setAdminMessage(`Viewing users. User ID ${button.dataset.viewUser} is associated with that report.`, "info");
+    });
+  }
+
+  for (const button of container.querySelectorAll("[data-ban-user]")) {
+    button.addEventListener("click", () => {
+      moderateUser(button.dataset.banUser, "banned");
+    });
+  }
+
+  for (const button of container.querySelectorAll("[data-edit-report]")) {
+    button.addEventListener("click", () => {
+      editReport(button.dataset.editReport, button.dataset.approveAfterEdit === "1");
+    });
+  }
+}
+
+function renderReportList(container, reports, mode, emptyText) {
+  if (!reports.length) {
+    container.innerHTML = `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+    return;
+  }
+
+  container.innerHTML = reports.map((report) => renderReportCard(report, mode)).join("");
+  bindReportActions(container);
+}
+
+function renderReportTabs() {
+  const pending = allReports.filter((report) => report.status === "pending");
+  const approved = allReports.filter((report) => report.status === "approved");
+  const history = allReports.filter((report) =>
+    ["rejected", "disputed", "removed", "expired", "needs_proof", "needs_update"].includes(report.status)
+  );
+  const filteredHistory = adminHistoryFilter === "disputed"
+    ? history.filter((report) => report.status === "disputed" || report.dispute_count > 0)
+    : history;
+
+  document.querySelector("#reviewCount").textContent = `${pending.length} pending`;
+  document.querySelector("#approvedCount").textContent = `${approved.length} live`;
+  document.querySelector("#historyCount").textContent = adminHistoryFilter === "disputed"
+    ? `${filteredHistory.length} disputed`
+    : `${history.length} records`;
+
+  renderReportList(reviewReports, pending, "review", "No pending reports.");
+  renderReportList(approvedReports, approved, "approved", "No approved reports.");
+  renderReportList(
+    historyReports,
+    filteredHistory,
+    "history",
+    adminHistoryFilter === "disputed" ? "No disputed reports." : "No rejected, disputed, or removed reports."
+  );
+}
+
+function renderUsernameModeration() {
+  if (!usernameBlockedPhrases) {
+    return;
+  }
+
+  const phrases = usernameModerationData.phrases || [];
+
+  if (!phrases.length) {
+    usernameBlockedPhrases.innerHTML = '<div class="empty-state">No custom blocked username phrases yet.</div>';
+    return;
+  }
+
+  usernameBlockedPhrases.innerHTML = phrases.map((phrase) => `
+    <article class="admin-card compact-card">
+      <div class="card-topline">
+        <strong>${escapeHtml(phrase.phrase)}</strong>
+        <span>${escapeHtml(formatDate(phrase.created_at))}</span>
+      </div>
+      <p class="field-help">${escapeHtml(phrase.reason || "Blocked by username moderation.")}</p>
+      <div class="card-actions">
+        <button class="danger-button" type="button" data-remove-username-phrase="${phrase.id}">Remove</button>
+      </div>
+    </article>
+  `).join("");
+
+  for (const button of usernameBlockedPhrases.querySelectorAll("[data-remove-username-phrase]")) {
+    button.addEventListener("click", () => removeUsernamePhrase(button.dataset.removeUsernamePhrase));
+  }
+}
+
+function renderAdminAccessCleanup(data = {}) {
+  if (!adminAccessCleanup) {
+    return;
+  }
+
+  const accounts = data.accounts || [];
+  const canChangeRoles = Boolean(adminSession?.loggedIn && adminSession?.is_admin);
+  const warning = data.multiple_admins
+    ? "Multiple admin accounts found. Review Admin Access Cleanup before beta."
+    : "Admin access count looks safe.";
+
+  adminAccessCleanup.innerHTML = `
+    <div class="${data.cleanup_needed ? "warning" : "inline-help"}">${escapeHtml(warning)}</div>
+    <div class="inline-help">${escapeHtml(data.recommendation || "Choose the trusted owner before changing admin access.")}</div>
+    ${canChangeRoles ? "" : '<div class="warning">Log in as admin to change admin access. The ADMIN_PIN fallback cannot demote, promote, or suspend admin accounts.</div>'}
+    ${accounts.length ? accounts.map((account) => `
+      <article class="admin-card compact-card" data-admin-account-card="${account.id}">
+        <div class="card-topline">
+          <h4>${escapeHtml(account.username)}</h4>
+          <span class="badge ${account.admin_capable ? "status-warning" : "status-ready"}">${escapeHtml(titleCase(account.role))}</span>
+        </div>
+        <dl class="details-list">
+          <div><dt>User ID</dt><dd>${account.id}</dd></div>
+          <div><dt>Email</dt><dd>${escapeHtml(account.email || "No email")}</dd></div>
+          <div><dt>Status</dt><dd>${escapeHtml(titleCase(account.account_status || "active"))}</dd></div>
+          <div><dt>Created</dt><dd>${escapeHtml(formatDate(account.created_at) || "Unknown")}</dd></div>
+          <div><dt>Last active</dt><dd>${escapeHtml(formatDate(account.last_active_at) || "Unknown")}</dd></div>
+          <div><dt>Test/dev?</dt><dd>${account.is_test_or_dev ? `Yes — ${escapeHtml(account.test_or_dev_reason)}` : "No obvious signal"}</dd></div>
+          <div><dt>Approved reports</dt><dd>${account.counts?.approved_reports || 0}</dd></div>
+          <div><dt>Reviewed reports</dt><dd>${account.counts?.reviewed_reports || 0}</dd></div>
+          <div><dt>Imports created</dt><dd>${account.counts?.import_batches || 0}</dd></div>
+          <div><dt>Import rows approved</dt><dd>${account.counts?.approved_import_rows || 0}</dd></div>
+          <div><dt>Point events</dt><dd>${account.counts?.point_events || 0}</dd></div>
+          <div><dt>Admin point events</dt><dd>${account.counts?.admin_point_events || 0}</dd></div>
+        </dl>
+        <div class="card-actions">
+          ${account.admin_capable ? `
+            <button class="danger-button" type="button" data-admin-role-action="demote_admin" data-admin-role-user="${account.id}" ${canChangeRoles ? "" : "disabled"}>
+              Demote to user
+            </button>
+          ` : `
+            <button class="quiet-button" type="button" data-admin-role-action="promote_admin" data-admin-role-user="${account.id}" ${canChangeRoles ? "" : "disabled"}>
+              Promote to admin
+            </button>
+          `}
+          ${account.is_test_or_dev ? `
+            <button class="danger-button" type="button" data-admin-role-action="suspend_test" data-admin-role-user="${account.id}" ${canChangeRoles ? "" : "disabled"}>
+              Suspend test account
+            </button>
+          ` : ""}
+        </div>
+      </article>
+    `).join("") : '<div class="empty-state">No admin-capable or staff-like accounts found.</div>'}
+  `;
+
+  for (const button of adminAccessCleanup.querySelectorAll("[data-admin-role-action]")) {
+    button.addEventListener("click", () => updateAdminAccountRole(button.dataset.adminRoleUser, button.dataset.adminRoleAction));
+  }
+}
+
+function renderUsers(users) {
+  if (!users.length) {
+    adminUsers.innerHTML = '<div class="empty-state">No users yet.</div>';
+    return;
+  }
+
+  adminUsers.innerHTML = users
+    .map((user) => `
+      <article class="admin-card compact-card" data-user-card="${user.id}">
+        <h3>${escapeHtml(user.username)}</h3>
+        <dl class="details-list">
+          <div><dt>User ID</dt><dd>${user.id}</dd></div>
+          <div><dt>Email</dt><dd>${escapeHtml(user.email || "No email")}</dd></div>
+          <div><dt>Email verified</dt><dd>${user.email_verified ? "Yes" : "No"}</dd></div>
+          <div><dt>Admin</dt><dd>${user.is_admin ? "Yes" : "No"}</dd></div>
+          <div><dt>Status</dt><dd>${escapeHtml(titleCase(user.account_status || "active"))}</dd></div>
+          <div><dt>Points</dt><dd>${user.points}</dd></div>
+          <div><dt>Trust</dt><dd>${escapeHtml(user.trust_level || "new/normal")}</dd></div>
+          <div><dt>Username safety</dt><dd>${escapeHtml(user.username_status || "approved")}</dd></div>
+          <div><dt>Username note</dt><dd>${escapeHtml(user.username_moderation_note || "None")}</dd></div>
+          <div><dt>Accuracy</dt><dd>${user.accuracy_score || 0}%</dd></div>
+          <div><dt>Reports</dt><dd>${user.report_count || 0}</dd></div>
+          <div><dt>Approved</dt><dd>${user.approved_report_count || 0}</dd></div>
+          <div><dt>Rejected</dt><dd>${user.rejected_report_count || 0}</dd></div>
+          <div><dt>Disputed</dt><dd>${user.disputed_submissions || 0}</dd></div>
+          <div><dt>Verifications</dt><dd>${user.verification_count || 0}</dd></div>
+          <div><dt>Created</dt><dd>${escapeHtml(formatDate(user.created_at))}</dd></div>
+          <div><dt>Last activity</dt><dd>${escapeHtml(formatDate(user.last_activity_at) || "Unknown")}</dd></div>
+          <div><dt>Avoid list</dt><dd>${escapeHtml(user.avoid_ingredients || "None")}</dd></div>
+          <div><dt>Admin note</dt><dd>${escapeHtml(user.admin_note || user.latest_admin_note || "None")}</dd></div>
+        </dl>
+        <div class="flag-row">
+          ${user.suspicious_activity_notes.length
+            ? user.suspicious_activity_notes.map((note) => `<span>${escapeHtml(note)}</span>`).join("")
+            : "<span>No flags</span>"}
+        </div>
+        <div class="admin-control-grid">
+          <button class="quiet-button" type="button" data-user-action="warning" data-user-id="${user.id}">Warn</button>
+          <button class="quiet-button" type="button" data-user-action="suspended" data-user-id="${user.id}">Suspend</button>
+          <button class="quiet-button" type="button" data-user-action="deactivated" data-user-id="${user.id}">Deactivate</button>
+          <button class="quiet-button" type="button" data-user-action="active" data-user-id="${user.id}">Set active</button>
+          <button class="quiet-button" type="button" data-user-action="${user.hide_from_leaderboard ? "show_leaderboard" : "hide_leaderboard"}" data-user-id="${user.id}">
+            ${user.hide_from_leaderboard ? "Show leaderboard" : "Hide leaderboard"}
+          </button>
+          <button class="quiet-button" type="button" data-user-action="force_username_change" data-user-id="${user.id}">Require new username</button>
+          <button class="quiet-button" type="button" data-user-action="approve_username" data-user-id="${user.id}">Approve username</button>
+          <button class="quiet-button" type="button" data-user-flag="is_email_verified" data-user-flag-value="${user.email_verified ? "0" : "1"}" data-user-id="${user.id}">
+            ${user.email_verified ? "Mark unverified" : "Mark verified"}
+          </button>
+          <button class="quiet-button" type="button" data-jump-admin-cleanup="${user.id}">Admin cleanup</button>
+          <button class="danger-button" type="button" data-reset-user="${user.id}">Reset points</button>
+        </div>
+        <div class="admin-control-grid" data-point-adjust="${user.id}">
+          <label>
+            <span>Point adjustment</span>
+            <input data-point-adjust-field="points" type="number" step="1" min="-1000" max="1000" placeholder="+5 or -5">
+          </label>
+          <label>
+            <span>Reason required</span>
+            <input data-point-adjust-field="reason" type="text" maxlength="300" placeholder="Approved proof correction, abuse cleanup">
+          </label>
+          <label class="span-full">
+            <span>Admin note optional</span>
+            <input data-point-adjust-field="admin_note" type="text" maxlength="500" placeholder="Internal audit note">
+          </label>
+          <button class="secondary-button" type="button" data-adjust-points="${user.id}">Save point adjustment</button>
+          <button class="quiet-button" type="button" data-view-points="${user.id}">View point history</button>
+        </div>
+        <div class="admin-control-grid" data-user-profile="${user.id}">
+          <label><span>Edit username</span><input data-user-profile-field="username" type="text" maxlength="24" value="${escapeHtml(user.username)}"></label>
+          <label><span>Edit email</span><input data-user-profile-field="email" type="email" maxlength="254" value="${escapeHtml(user.email || "")}"></label>
+          <label><span>Confirm email edit</span><input data-user-profile-field="confirm_email_edit" type="text" placeholder="Type EDIT EMAIL if changing email"></label>
+          <label class="span-full"><span>Admin note</span><input data-user-profile-field="admin_note" type="text" maxlength="1000" value="${escapeHtml(user.admin_note || "")}"></label>
+          <button class="secondary-button" type="button" data-save-user-profile="${user.id}">Save profile/admin note</button>
+          <button class="danger-button" type="button" data-delete-user="${user.id}">Delete/deactivate user</button>
+        </div>
+        <div class="admin-control-grid">
+          <label>
+            <span>Temporary password</span>
+            <input data-temp-password="${user.id}" type="text" minlength="8" autocomplete="off" placeholder="Leave blank to generate">
+          </label>
+          <button class="secondary-button" type="button" data-reset-password="${user.id}">Reset password</button>
+          <div class="inline-help span-full" data-temp-password-result="${user.id}"></div>
+        </div>
+        <div class="admin-control-grid">
+          <label>
+            <span>Ban reason</span>
+            <select data-ban-reason="${user.id}">
+              <option value="">Choose reason</option>
+              ${optionRows(banReasons, user.ban_reason)}
+            </select>
+          </label>
+          <label>
+            <span>Ban note</span>
+            <input data-ban-note="${user.id}" type="text" maxlength="500" value="${escapeHtml(user.ban_note || "")}">
+          </label>
+          <button class="danger-button" type="button" data-user-action="banned" data-user-id="${user.id}">Ban</button>
+        </div>
+      </article>
+    `)
+    .join("");
+
+  for (const button of adminUsers.querySelectorAll("[data-reset-user]")) {
+    button.addEventListener("click", () => resetUserPoints(button.dataset.resetUser));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-adjust-points]")) {
+    button.addEventListener("click", () => adjustUserPoints(button.dataset.adjustPoints));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-view-points]")) {
+    button.addEventListener("click", () => viewUserPointHistory(button.dataset.viewPoints));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-reset-password]")) {
+    button.addEventListener("click", () => resetUserPassword(button.dataset.resetPassword));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-user-action]")) {
+    button.addEventListener("click", () => moderateUser(button.dataset.userId, button.dataset.userAction));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-user-flag]")) {
+    button.addEventListener("click", () => {
+      updateUserFlag(button.dataset.userId, button.dataset.userFlag, button.dataset.userFlagValue === "1");
+    });
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-jump-admin-cleanup]")) {
+    button.addEventListener("click", () => {
+      adminAccessCleanup?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const target = adminAccessCleanup?.querySelector(`[data-admin-account-card="${button.dataset.jumpAdminCleanup}"]`);
+      if (target) {
+        target.classList.add("is-highlighted");
+        window.setTimeout(() => target.classList.remove("is-highlighted"), 1800);
+      }
+    });
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-save-user-profile]")) {
+    button.addEventListener("click", () => saveUserProfile(button.dataset.saveUserProfile));
+  }
+
+  for (const button of adminUsers.querySelectorAll("[data-delete-user]")) {
+    button.addEventListener("click", () => softDeleteUser(button.dataset.deleteUser));
+  }
+}
+
+function renderStores() {
+  const pendingRequests = allStoreRequests.filter((request) => request.status === "pending");
+  storeRequestCount.textContent = `${pendingRequests.length} pending`;
+
+  storeRequestsList.innerHTML = pendingRequests.length
+    ? pendingRequests.map((request) => `
+      <article class="admin-card compact-card" data-store-request-card="${request.id}">
+        <h3>${escapeHtml(request.store_name)}</h3>
+        <dl class="details-list">
+          <div><dt>Address</dt><dd>${escapeHtml(request.address || "Not entered")}</dd></div>
+          <div><dt>City</dt><dd>${escapeHtml(request.city)}</dd></div>
+          <div><dt>User</dt><dd>${escapeHtml(request.username)} (${escapeHtml(request.user_email)})</dd></div>
+          <div><dt>Notes</dt><dd>${escapeHtml(request.notes || "None")}</dd></div>
+          <div><dt>Created</dt><dd>${escapeHtml(formatDate(request.created_at))}</dd></div>
+        </dl>
+        <label>
+          <span>Admin note</span>
+          <input data-store-request-note="${request.id}" type="text" maxlength="500">
+        </label>
+        <div class="card-actions">
+          <button class="secondary-button" type="button" data-store-request-status="approved" data-store-request-id="${request.id}">Approve and create store</button>
+          <button class="quiet-button" type="button" data-store-request-status="duplicate" data-store-request-id="${request.id}">Mark duplicate</button>
+          <button class="danger-button" type="button" data-store-request-status="rejected" data-store-request-id="${request.id}">Reject</button>
+        </div>
+      </article>
+    `).join("")
+    : '<div class="empty-state">No pending store requests.</div>';
+
+  adminStoresList.innerHTML = allStores.length
+    ? allStores.map((store) => `
+      <article class="admin-card compact-card">
+        <h3>${escapeHtml(store.name)}</h3>
+        <dl class="details-list">
+          <div><dt>Address</dt><dd>${escapeHtml(store.address || "Not entered")}</dd></div>
+          <div><dt>City</dt><dd>${escapeHtml(store.city)}, ${escapeHtml(store.state)}</dd></div>
+          <div><dt>Type</dt><dd>${escapeHtml(store.store_type)}</dd></div>
+          <div><dt>Active</dt><dd>${store.active ? "Yes" : "No"}</dd></div>
+          <div><dt>Reports</dt><dd>${store.report_count}</dd></div>
+          <div><dt>Created</dt><dd>${escapeHtml(formatDate(store.created_at) || "Unknown")}</dd></div>
+        </dl>
+        <div class="admin-control-grid" data-store-edit="${store.id}">
+          <label><span>Name</span><input data-store-field="name" type="text" maxlength="120" value="${escapeHtml(store.name)}"></label>
+          <label><span>Address</span><input data-store-field="address" type="text" maxlength="160" value="${escapeHtml(store.address)}"></label>
+          <label><span>City</span><input data-store-field="city" type="text" maxlength="80" value="${escapeHtml(store.city)}"></label>
+          <label><span>Type</span><input data-store-field="store_type" type="text" maxlength="80" value="${escapeHtml(store.store_type)}"></label>
+          <button class="secondary-button" type="button" data-store-save="${store.id}">Save store</button>
+          <button class="${store.active ? "danger-button" : "quiet-button"}" type="button" data-store-action="${store.active ? "disable" : "enable"}" data-store-id="${store.id}">
+            ${store.active ? "Disable store" : "Re-enable store"}
+          </button>
+        </div>
+      </article>
+    `).join("")
+    : '<div class="empty-state">No stores yet.</div>';
+
+  for (const button of storeRequestsList.querySelectorAll("[data-store-request-status]")) {
+    button.addEventListener("click", () => updateStoreRequest(button.dataset.storeRequestId, button.dataset.storeRequestStatus));
+  }
+
+  for (const button of adminStoresList.querySelectorAll("[data-store-action]")) {
+    button.addEventListener("click", () => updateStoreAction(button.dataset.storeId, button.dataset.storeAction));
+  }
+
+  for (const button of adminStoresList.querySelectorAll("[data-store-save]")) {
+    button.addEventListener("click", () => saveStore(button.dataset.storeSave));
+  }
+}
+
+function renderSuggestions() {
+  const pending = allSuggestions.filter((suggestion) => suggestion.status === "pending");
+  suggestionsCount.textContent = `${pending.length} pending`;
+
+  adminSuggestionsList.innerHTML = allSuggestions.length
+    ? allSuggestions.map((suggestion) => `
+      <article class="admin-card compact-card" data-suggestion-card="${suggestion.id}">
+        <div class="card-topline">
+          <span class="badge confidence-low">${escapeHtml(titleCase(suggestion.suggestion_type))}</span>
+          <span>${escapeHtml(titleCase(suggestion.status))}</span>
+        </div>
+        <h3>${escapeHtml(suggestion.title)}</h3>
+        <dl class="details-list">
+          <div><dt>User</dt><dd>${escapeHtml(suggestion.username)} (${escapeHtml(suggestion.user_email)})</dd></div>
+          <div><dt>Related store</dt><dd>${escapeHtml(suggestion.related_store || "None")}</dd></div>
+          <div><dt>Related item</dt><dd>${escapeHtml(suggestion.related_item || "None")}</dd></div>
+          <div><dt>Message</dt><dd>${escapeHtml(suggestion.message)}</dd></div>
+          <div><dt>Admin note</dt><dd>${escapeHtml(suggestion.admin_note || "None")}</dd></div>
+          <div><dt>Created</dt><dd>${escapeHtml(formatDate(suggestion.created_at))}</dd></div>
+        </dl>
+        ${suggestion.photo_path ? `<a class="quiet-button" href="${escapeHtml(adminUploadUrl(suggestion.photo_path))}" target="_blank" rel="noopener">View photo</a>` : ""}
+        <label>
+          <span>Admin note</span>
+          <input data-suggestion-note="${suggestion.id}" type="text" maxlength="500" value="${escapeHtml(suggestion.admin_note || "")}">
+        </label>
+        <div class="card-actions">
+          <button class="secondary-button" type="button" data-suggestion-status="reviewed" data-suggestion-id="${suggestion.id}">Mark reviewed</button>
+          <button class="quiet-button" type="button" data-suggestion-status="planned" data-suggestion-id="${suggestion.id}">Mark planned</button>
+          <button class="danger-button" type="button" data-suggestion-status="rejected" data-suggestion-id="${suggestion.id}">Reject</button>
+        </div>
+      </article>
+    `).join("")
+    : '<div class="empty-state">No suggestions yet.</div>';
+
+  for (const button of adminSuggestionsList.querySelectorAll("[data-suggestion-status]")) {
+    button.addEventListener("click", () => updateSuggestion(button.dataset.suggestionId, button.dataset.suggestionStatus));
+  }
+}
+
+function renderProductTools() {
+  const products = productTools?.products || [];
+  const pendingProducts = productTools?.pending_product_candidates || [];
+  const unlinkedReports = productTools?.unlinked_reports || [];
+  const reports = productTools?.reports_missing_product_info || [];
+  const cartItems = productTools?.popular_cart_items || [];
+
+  productToolsContent.innerHTML = `
+    <article class="admin-card compact-card">
+      <h3>Create product</h3>
+      <p class="field-help">${escapeHtml(productTools?.message || "Product tools coming next.")}</p>
+      <div class="admin-control-grid" data-product-create>
+        ${productFormFields({ status: "active" })}
+        <button class="primary-button" type="button" data-create-product>Create product</button>
+      </div>
+    </article>
+    <article class="admin-card compact-card">
+      <h3>Products</h3>
+      ${products.length ? products.map((product) => `
+        <details class="technical-details product-admin-row" data-product-admin-card="${product.id}">
+          <summary>
+            ${escapeHtml(product.display_name)}
+            <span class="badge confidence-${product.status === "active" ? "high" : "low"}">${escapeHtml(product.status)}</span>
+            <span>${product.approved_price_count} approved · ${product.pending_report_count} pending</span>
+          </summary>
+          <dl class="details-list">
+            <div><dt>Category</dt><dd>${escapeHtml(titleCase(product.category))}</dd></div>
+            <div><dt>Default size</dt><dd>${escapeHtml(product.default_size_text || "Not set")}</dd></div>
+            <div><dt>Aliases</dt><dd>${escapeHtml(product.common_aliases || "None")}</dd></div>
+            <div><dt>Updated</dt><dd>${escapeHtml(formatDate(product.updated_at))}</dd></div>
+          </dl>
+          <div class="admin-control-grid" data-product-form="${product.id}">
+            ${productFormFields(product)}
+            <label><span>Merge into product ID</span><input data-merge-target="${product.id}" type="number" min="1" placeholder="Surviving product ID"></label>
+            <label><span>Merge note</span><input data-merge-note="${product.id}" type="text" maxlength="500" placeholder="Why this merge is needed"></label>
+            <button class="secondary-button" type="button" data-save-product="${product.id}">Save product</button>
+            <button class="quiet-button" type="button" data-hide-product="${product.id}">Hide product</button>
+            <button class="danger-button" type="button" data-merge-product="${product.id}">Merge duplicate</button>
+          </div>
+        </details>
+      `).join("") : '<div class="empty-state">No products yet. Create one here or from an unlinked report.</div>'}
+    </article>
+    <article class="admin-card compact-card">
+      <h3>Pending product candidates</h3>
+      ${pendingProducts.length ? pendingProducts.map((product) => `
+        <div class="mini-row">
+          <div>
+            <strong>${escapeHtml(product.display_name)}</strong>
+            <span>${escapeHtml(titleCase(product.category))} · ${escapeHtml(product.default_size_text || "No default size")}</span>
+          </div>
+          <button class="secondary-button" type="button" data-activate-product="${product.id}">Mark active</button>
+        </div>
+      `).join("") : '<div class="empty-state">No pending product candidates.</div>'}
+    </article>
+    <article class="admin-card compact-card">
+      <h3>Unlinked / messy reports</h3>
+      ${unlinkedReports.length ? unlinkedReports.map((report) => `
+        <article class="admin-card compact-card" data-report-card="${report.id}">
+          ${reportSummary(report)}
+          <div class="admin-control-grid">
+            <label><span>Link product</span><select data-link-product="${report.id}">${productOptions(report.product_id)}</select></label>
+            <label><span>Admin note</span><input data-link-note="${report.id}" type="text" maxlength="500" placeholder="Link/create note"></label>
+            <button class="secondary-button" type="button" data-link-report-product="${report.id}">Link report</button>
+            <button class="quiet-button" type="button" data-create-product-report="${report.id}">Create product from report</button>
+            <button class="quiet-button" type="button" data-unlink-report-product="${report.id}">Unlink</button>
+          </div>
+          ${reportEditControls(report, report.status === "pending" ? "review" : "approved")}
+        </article>
+      `).join("") : '<div class="empty-state">No unlinked or messy reports right now.</div>'}
+    </article>
+    <article class="admin-card compact-card">
+      <h3>Popular cart items</h3>
+      <div class="flag-row">
+        ${cartItems.length ? cartItems.map((item) => `<span>${escapeHtml(item.product_display_name || item.item_name)} (${item.count})</span>`).join("") : "<span>No cart activity yet</span>"}
+      </div>
+    </article>
+    <article class="admin-card compact-card">
+      <h3>Reports missing product/allergy info</h3>
+      <p class="field-help">Use product edits for shared ingredient/allergy links. Keep public language cautious.</p>
+    </article>
+    ${reports.length ? reports.map((report) => `
+      <article class="admin-card compact-card" data-report-card="${report.id}">
+        ${reportSummary(report)}
+        ${reportEditControls(report, "approved")}
+      </article>
+    `).join("") : '<div class="empty-state">No approved reports need product info yet.</div>'}
+  `;
+
+  bindReportActions(productToolsContent);
+
+  productToolsContent.querySelector("[data-create-product]").addEventListener("click", createProduct);
+
+  for (const button of productToolsContent.querySelectorAll("[data-save-product]")) {
+    button.addEventListener("click", () => saveProduct(button.dataset.saveProduct));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-hide-product]")) {
+    button.addEventListener("click", () => saveProduct(button.dataset.hideProduct, { status: "hidden" }));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-activate-product]")) {
+    button.addEventListener("click", () => saveProduct(button.dataset.activateProduct, { status: "active" }));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-merge-product]")) {
+    button.addEventListener("click", () => mergeProduct(button.dataset.mergeProduct));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-link-report-product]")) {
+    button.addEventListener("click", () => linkReportProduct(button.dataset.linkReportProduct));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-create-product-report]")) {
+    button.addEventListener("click", () => createProductFromReport(button.dataset.createProductReport));
+  }
+
+  for (const button of productToolsContent.querySelectorAll("[data-unlink-report-product]")) {
+    button.addEventListener("click", () => unlinkReportProduct(button.dataset.unlinkReportProduct));
+  }
+}
+
+function collectProductPayload(container, overrides = {}) {
+  const payload = {};
+
+  for (const field of container.querySelectorAll("[data-product-field]")) {
+    payload[field.dataset.productField] = field.value;
+  }
+
+  return {
+    ...payload,
+    ...overrides
+  };
+}
+
+async function createProduct() {
+  const container = productToolsContent.querySelector("[data-product-create]");
+
+  try {
+    const data = await fetchJson("/api/admin/products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), ...collectProductPayload(container) })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function saveProduct(productId, overrides = {}) {
+  const container = productToolsContent.querySelector(`[data-product-form="${productId}"]`);
+
+  if (overrides.status === "hidden" && !window.confirm("Hide this product from public product search? Linked reports are not deleted.")) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/products/${productId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), ...collectProductPayload(container, overrides) })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function mergeProduct(productId) {
+  const target = productToolsContent.querySelector(`[data-merge-target="${productId}"]`)?.value;
+  const note = productToolsContent.querySelector(`[data-merge-note="${productId}"]`)?.value || "";
+
+  if (!target) {
+    setAdminMessage("Enter the surviving product ID before merging.", "error");
+    return;
+  }
+
+  if (!window.confirm("Merge this duplicate product? Reports and cart items move to the surviving product. The duplicate is not deleted.")) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/products/${productId}/merge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), target_product_id: target, admin_note: note })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function linkReportProduct(reportId) {
+  const productId = productToolsContent.querySelector(`[data-link-product="${reportId}"]`)?.value;
+  const note = productToolsContent.querySelector(`[data-link-note="${reportId}"]`)?.value || "";
+
+  if (!productId) {
+    setAdminMessage("Choose a product to link.", "error");
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/reports/${reportId}/link-product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), product_id: productId, admin_note: note })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function createProductFromReport(reportId) {
+  const report = allReports.find((item) => String(item.id) === String(reportId)) ||
+    (productTools?.unlinked_reports || []).find((item) => String(item.id) === String(reportId));
+  const note = productToolsContent.querySelector(`[data-link-note="${reportId}"]`)?.value || "Created from report";
+
+  if (!report) {
+    setAdminMessage("Report was not found in admin data.", "error");
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/reports/${reportId}/link-product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        action: "create",
+        display_name: report.item_name,
+        canonical_name: report.item_name,
+        category: report.category,
+        default_size_text: report.size_text,
+        default_quantity: report.quantity,
+        default_unit: report.unit,
+        preferred_brand: report.brand,
+        common_aliases: report.item_name,
+        status: "active",
+        admin_note: note
+      })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function unlinkReportProduct(reportId) {
+  if (!window.confirm("Unlink this report from its product? The report stays in review/history.")) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/reports/${reportId}/link-product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), action: "unlink", admin_note: "Unlinked in Product Tools" })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateStoreRequest(requestId, status) {
+  const note = document.querySelector(`[data-store-request-note="${requestId}"]`)?.value || "";
+
+  try {
+    const data = await fetchJson(`/api/admin/store-requests/${requestId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), status, admin_note: note })
+    });
+    await loadStores();
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateSuggestion(suggestionId, status) {
+  const note = document.querySelector(`[data-suggestion-note="${suggestionId}"]`)?.value || "";
+
+  try {
+    const data = await fetchJson(`/api/admin/suggestions/${suggestionId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), status, admin_note: note })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function addStore(event) {
+  event.preventDefault();
+  const formData = new FormData(adminStoreForm);
+
+  try {
+    const data = await fetchJson("/api/admin/stores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        name: formData.get("name"),
+        address: formData.get("address"),
+        city: formData.get("city"),
+        store_type: formData.get("store_type"),
+        active: true
+      })
+    });
+    adminStoreForm.reset();
+    adminStoreForm.elements.city.value = "Janesville";
+    adminStoreForm.elements.store_type.value = "grocery";
+    setMessage(adminStoreMessage, data.message, "success");
+    await loadStores();
+    await loadAdminData();
+  } catch (error) {
+    setMessage(adminStoreMessage, error.message, "error");
+  }
+}
+
+async function saveStore(storeId) {
+  const form = document.querySelector(`[data-store-edit="${storeId}"]`);
+  const payload = { pin: getPin() };
+
+  for (const field of form.querySelectorAll("[data-store-field]")) {
+    payload[field.dataset.storeField] = field.value;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/stores/${storeId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadStores();
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateStoreAction(storeId, action) {
+  if (action === "disable" && !window.confirm("Disable this store? Existing reports remain for audit.")) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/stores/${storeId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin(), action })
+    });
+    await loadStores();
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateReportStatus(reportId, status) {
+  if (status === "removed" && !window.confirm("Remove this report from public/admin workflow?")) {
+    return;
+  }
+
+  const payload = {
+    pin: getPin(),
+    status
+  };
+
+  const reasonInput = document.querySelector(`[data-rejection-reason="${reportId}"]`);
+  const noteInput = document.querySelector(`[data-rejection-note="${reportId}"]`);
+
+  if (status === "rejected") {
+    payload.rejection_reason = reasonInput?.value || "";
+    payload.rejection_note = noteInput?.value || "";
+  } else {
+    payload.rejection_reason = titleCase(status);
+    payload.rejection_note = noteInput?.value || "";
+  }
+
+  try {
+    setAdminMessage(`Updating report ${reportId}...`);
+    await fetchJson(`/api/admin/reports/${reportId}/status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    await loadAdminData();
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function editReport(reportId, approveAfterEdit) {
+  const form = document.querySelector(`[data-edit-form="${reportId}"]`);
+  const payload = {
+    pin: getPin(),
+    approve_after_edit: approveAfterEdit
+  };
+
+  for (const field of form.querySelectorAll("[data-edit-field]")) {
+    payload[field.dataset.editField] = field.value;
+  }
+
+  try {
+    setAdminMessage(`Saving report ${reportId} edits...`);
+    const data = await fetchJson(`/api/admin/reports/${reportId}/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function moderateUser(userId, action) {
+  if (["banned", "deleted", "suspended"].includes(action) && !window.confirm(`Apply ${action} status to this user?`)) {
+    return;
+  }
+
+  const payload = {
+    pin: getPin(),
+    action
+  };
+
+  if (action === "banned") {
+    payload.ban_reason = document.querySelector(`[data-ban-reason="${userId}"]`)?.value || "Other";
+    payload.ban_note = document.querySelector(`[data-ban-note="${userId}"]`)?.value || "Banned from report review.";
+  }
+
+  try {
+    setAdminMessage(`Updating user ${userId}...`);
+    const data = await fetchJson(`/api/admin/users/${userId}/moderation`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    await loadAdminData();
+    setAdminMessage(data.warning ? `${data.message} ${data.warning}` : data.message, data.warning ? "info" : "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function addUsernamePhrase(event) {
+  event.preventDefault();
+  const formData = new FormData(usernameBlockForm);
+
+  try {
+    const data = await fetchJson("/api/admin/username-moderation/phrases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        phrase: formData.get("phrase"),
+        reason: formData.get("reason")
+      })
+    });
+    usernameBlockForm.reset();
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function removeUsernamePhrase(phraseId) {
+  if (!window.confirm("Remove this blocked username phrase?")) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/username-moderation/phrases/${phraseId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function resetUserPoints(userId) {
+  if (!window.confirm("Reset this user's points to zero?")) {
+    return;
+  }
+
+  try {
+    await fetchJson(`/api/admin/users/${userId}/reset-points`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
+    });
+    await loadAdminData();
+    setAdminMessage("User points reset.", "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function adjustUserPoints(userId) {
+  const form = document.querySelector(`[data-point-adjust="${userId}"]`);
+  const payload = { pin: getPin() };
+
+  for (const field of form.querySelectorAll("[data-point-adjust-field]")) {
+    payload[field.dataset.pointAdjustField] = field.value;
+  }
+
+  if (!payload.reason?.trim()) {
+    setAdminMessage("A reason is required for manual point adjustments.", "error");
+    return;
+  }
+
+  if (!window.confirm(`Apply ${payload.points || 0} point adjustment to this user?`)) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/users/${userId}/points`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadAdminData();
+    setAdminMessage(`${data.message} New total: ${data.user?.points ?? "unknown"}.`, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function viewUserPointHistory(userId) {
+  try {
+    const data = await fetchJson(`/api/admin/users/${userId}/points${adminQuery()}`);
+    const lines = (data.events || []).slice(0, 20).map((event) => {
+      const sign = Number(event.points) > 0 ? "+" : "";
+      return `${sign}${event.points} · ${event.reason || event.action} · ${formatDate(event.created_at)}`;
+    });
+    window.alert(lines.length
+      ? `Point history for ${data.user?.username || `user ${userId}`}:\n\n${lines.join("\n")}`
+      : "No point history yet.");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function resetUserPassword(userId) {
+  const passwordInput = document.querySelector(`[data-temp-password="${userId}"]`);
+  const output = document.querySelector(`[data-temp-password-result="${userId}"]`);
+
+  try {
+    const data = await fetchJson(`/api/admin/users/${userId}/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        newPassword: passwordInput?.value || ""
+      })
+    });
+
+    if (passwordInput) {
+      passwordInput.value = "";
+    }
+
+    if (output) {
+      output.textContent = data.temporary_password
+        ? `${data.message} Temporary password: ${data.temporary_password}`
+        : data.message;
+    }
+
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    if (output) {
+      output.textContent = error.message;
+    }
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateUserFlag(userId, flag, value) {
+  if (flag === "is_admin") {
+    setAdminMessage("Use Admin Access Cleanup for admin role changes.", "error");
+    return;
+  }
+
+  const label = value ? "mark this email verified" : "mark this email unverified";
+
+  if (!window.confirm(`Apply change: ${label}?`)) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/users/${userId}/flags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        [flag]: value
+      })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function updateAdminAccountRole(userId, action) {
+  const confirmationByAction = {
+    demote_admin: "DEMOTE ADMIN",
+    promote_admin: "MAKE ADMIN",
+    suspend_test: "SUSPEND TEST"
+  };
+  const labelByAction = {
+    demote_admin: "remove admin access",
+    promote_admin: "grant admin access",
+    suspend_test: "suspend this test/dev account"
+  };
+  const confirmation = confirmationByAction[action];
+
+  if (!confirmation) {
+    setAdminMessage("Admin cleanup action is not valid.", "error");
+    return;
+  }
+
+  const typed = window.prompt(`Type ${confirmation} to ${labelByAction[action]}. Data will not be deleted.`);
+
+  if (typed !== confirmation) {
+    setAdminMessage("Admin cleanup cancelled.", "info");
+    return;
+  }
+
+  const adminNote = window.prompt("Private admin audit note", `Admin Access Cleanup: ${labelByAction[action]}.`);
+
+  if (adminNote === null) {
+    setAdminMessage("Admin cleanup cancelled.", "info");
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/admin-accounts/${userId}/role`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        action,
+        confirmation: typed,
+        admin_note: adminNote
+      })
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function saveUserProfile(userId) {
+  const form = document.querySelector(`[data-user-profile="${userId}"]`);
+  const payload = { pin: getPin() };
+
+  for (const field of form.querySelectorAll("[data-user-profile-field]")) {
+    if (field.dataset.userProfileField === "confirm_email_edit" && !field.value.trim()) {
+      continue;
+    }
+
+    payload[field.dataset.userProfileField] = field.value;
+  }
+
+  try {
+    const data = await fetchJson(`/api/admin/users/${userId}/profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadAdminData();
+    setAdminMessage(data.message, "success");
+  } catch (error) {
+    setAdminMessage(error.message, "error");
+  }
+}
+
+async function softDeleteUser(userId) {
+  const confirmation = window.prompt("Type DELETE to deactivate this user. Reports remain for audit unless removed separately.");
+
+  if (confirmation !== "DELETE") {
+    setAdminMessage("User deactivation cancelled.", "info");
+    return;
+  }
+
+  await moderateUser(userId, "deleted");
+}
+
+async function sendEmailTest(event) {
+  event.preventDefault();
+  setMessage(emailTestMessage, "Sending test email...");
+
+  try {
+    const data = await fetchJson("/api/admin/email/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        to: emailTestTo.value.trim()
+      })
+    });
+
+    setMessage(
+      emailTestMessage,
+      data.success ? data.message || "Test email sent. Check inbox/spam." : data.error || "Email could not be sent. Check SMTP setup in .env or Brevo.",
+      data.success ? "success" : "error"
+    );
+  } catch (error) {
+    setMessage(emailTestMessage, error.message || "Email could not be sent. Check SMTP setup in .env or Brevo.", "error");
+  }
+}
+
+function renderEmailDiagnostic(diagnostic) {
+  if (!diagnostic) {
+    emailDiagnosticResult.innerHTML = '<div class="empty-state">No diagnostic run in this server session.</div>';
+    return;
+  }
+
+  emailDiagnosticResult.innerHTML = `
+    <article class="admin-card compact-card">
+      <h3>${diagnostic.send?.ok ? "Diagnostic passed" : "Diagnostic needs attention"}</h3>
+      <dl class="details-list">
+        <div><dt>Finished</dt><dd>${escapeHtml(formatDate(diagnostic.finished_at || diagnostic.started_at))}</dd></div>
+        <div><dt>Provider</dt><dd>${escapeHtml(diagnostic.provider || "Brevo")}</dd></div>
+        <div><dt>SMTP user</dt><dd>${escapeHtml(diagnostic.maskedUser || "Not configured")}</dd></div>
+        <div><dt>Verify</dt><dd>${diagnostic.verify?.ok ? "Passed" : "Failed"}</dd></div>
+        <div><dt>Send</dt><dd>${diagnostic.send?.ok ? "Passed" : "Failed"}</dd></div>
+        <div><dt>Suggested fix</dt><dd>${escapeHtml(diagnostic.suggestedFix || "None")}</dd></div>
+      </dl>
+      <details class="technical-details">
+        <summary>Show safe diagnostic details</summary>
+        <pre class="safe-json">${escapeHtml(JSON.stringify(diagnostic, null, 2))}</pre>
+      </details>
+    </article>
+  `;
+}
+
+async function runEmailDiagnostic() {
+  setMessage(emailTestMessage, "Running email diagnostic...");
+
+  try {
+    const data = await fetchJson("/api/admin/email/diagnostic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        to: emailTestTo.value.trim()
+      })
+    });
+    renderEmailDiagnostic(data.diagnostic);
+    setMessage(emailTestMessage, data.diagnostic?.send?.ok ? "Email diagnostic passed." : "Email diagnostic needs attention.", data.diagnostic?.send?.ok ? "success" : "error");
+    await loadAdminData();
+  } catch (error) {
+    setMessage(emailTestMessage, error.message, "error");
+  }
+}
+
+function proofTypeNeedsPhoto(proofType) {
+  return proofType === "shelf_tag_photo" ||
+    proofType === "receipt_photo" ||
+    proofType === "weekly_ad";
+}
+
+function updateManualPhotoRequirement() {
+  const needsPhoto = proofTypeNeedsPhoto(manualProofType.value);
+  manualProofPhotoInput.required = needsPhoto;
+  manualProofPhotoField.hidden = !needsPhoto;
+  manualProofPhotoRequirement.textContent = needsPhoto ? "Photo required." : "Photo optional.";
+  updateManualPhotoStatus();
+}
+
+function updateManualPhotoStatus() {
+  const file = manualProofPhotoInput.files && manualProofPhotoInput.files[0];
+
+  if (!proofTypeNeedsPhoto(manualProofType.value)) {
+    manualProofPhotoStatus.textContent = "No photo selected.";
+    return;
+  }
+
+  manualProofPhotoStatus.textContent = file
+    ? `Selected: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`
+    : "No file selected.";
+}
+
+async function submitManualEntry(event) {
+  event.preventDefault();
+  setMessage(manualEntryMessage, "Creating manual report...");
+
+  const formData = new FormData(manualEntryForm);
+  formData.append("pin", getPin());
+
+  try {
+    const data = await fetchJson("/api/admin/reports/manual", {
+      method: "POST",
+      body: formData
+    });
+    manualEntryForm.reset();
+    updateManualPhotoRequirement();
+    setMessage(manualEntryMessage, `${data.message} Unit price: ${data.unit_price_label}.`, "success");
+    await loadAdminData();
+  } catch (error) {
+    setMessage(manualEntryMessage, error.message, "error");
+  }
+}
+
+function setPriceImporterMessage(text, type = "info") {
+  setMessage(priceImporterMessage, text, type);
+}
+
+function canApproveImportedPrices() {
+  return Boolean(adminSession?.loggedIn && adminSession?.is_admin);
+}
+
+function setPriceImportMode(mode, options = {}) {
+  activePriceImportMode = ["weekly_ad", "receipt", "shelf_tag"].includes(mode) ? mode : "weekly_ad";
+
+  if (priceImportModeTabs) {
+    for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]")) {
+      button.classList.toggle("is-active", button.dataset.importMode === activePriceImportMode);
+    }
+  }
+
+  if (priceImportUploadForm) {
+    const sourceType = priceImportUploadForm.elements.source_type;
+    const proofType = priceImportUploadForm.elements.proof_type;
+
+    if (activePriceImportMode === "receipt") {
+      sourceType.value = "receipt";
+      proofType.value = "receipt_photo";
+    } else if (activePriceImportMode === "shelf_tag") {
+      sourceType.value = "shelf_tag";
+      proofType.value = "shelf_tag_photo";
+    } else {
+      sourceType.value = "weekly_ad";
+      proofType.value = "weekly_ad";
+    }
+  }
+
+  if (priceImportSourceTextForm) {
+    priceImportSourceTextForm.hidden = activePriceImportMode === "receipt";
+  }
+
+  if (priceImportReceiptTextForm) {
+    priceImportReceiptTextForm.hidden = activePriceImportMode !== "receipt";
+  }
+
+  if (!options.skipRender) {
+    renderPriceImporter();
+  }
+}
+
+function importProofLabel(batch) {
+  return batch ? `${titleCase(batch.source_type || "proof")} #${batch.id}` : "Proof";
+}
+
+function proofSubmissionLabel(batch) {
+  if (!batch) {
+    return "Proof submission";
+  }
+
+  return batch.proof_public_type
+    ? `${titleCase(batch.proof_public_type)} proof #${batch.id}`
+    : `${importProofLabel(batch)} submission`;
+}
+
+function proofSubmissionStoreId(batch) {
+  if (!batch) {
+    return "";
+  }
+
+  if (batch.proof_store_id) {
+    return batch.proof_store_id;
+  }
+
+  const storeName = String(batch.proof_store_name || batch.receipt_store_name || "").toLowerCase();
+  const store = allStores.find((item) => String(item.name || "").toLowerCase() === storeName);
+
+  return store ? String(store.id) : "";
+}
+
+function proofRowProofType(batch) {
+  if (!batch) {
+    return "weekly_ad";
+  }
+
+  if (!batch.photo_path && batch.source_url && batch.proof_type === "no_photo") {
+    return "weekly_ad";
+  }
+
+  return batch.proof_type || "weekly_ad";
+}
+
+function selectedImportBatch() {
+  const batches = priceImporterData?.batches || [];
+  return batches.find((batch) => String(batch.id) === String(selectedPriceImportBatchId)) || null;
+}
+
+function importRowsForCurrentBatch() {
+  return selectedImportBatch()?.rows || [];
+}
+
+function findImportRow(rowId) {
+  const batches = priceImporterData?.batches || [];
+
+  for (const batch of batches) {
+    const row = (batch.rows || []).find((item) => String(item.id) === String(rowId));
+
+    if (row) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
+function scrollToImportRow(rowId) {
+  const card = priceImportRows?.querySelector(`[data-import-row-card="${CSS.escape(String(rowId))}"]`);
+
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("is-highlighted");
+    window.setTimeout(() => card.classList.remove("is-highlighted"), 1800);
+    return;
+  }
+
+  priceImportRows?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function formatImportDateRange(row) {
+  if (!row.valid_start_at && !row.valid_end_at) {
+    return "No valid date range";
+  }
+
+  return `${formatDateOnly(row.valid_start_at) || "Unknown"} to ${formatDateOnly(row.valid_end_at) || "Unknown"}`;
+}
+
+function importStatusClass(status) {
+  if (["approved", "accepted_for_review", "used_for_prices"].includes(status)) {
+    return "confidence-high";
+  }
+
+  if (["rejected", "proof_rejected", "needs_clearer_photo", "duplicate"].includes(status)) {
+    return "confidence-low";
+  }
+
+  return "confidence-medium";
+}
+
+function resetPriceImportRowForm(row = {}) {
+  if (!priceImportRowForm) {
+    return;
+  }
+
+  const batchId = row.batch_id || selectedPriceImportBatchId || "";
+  const batch = selectedImportBatch();
+  const saveButton = document.querySelector("#priceImportSaveRow");
+  priceImportRowForm.reset();
+  priceImportRowForm.elements.row_id.value = row.id || "";
+  priceImportRowForm.elements.batch_id.value = batchId;
+  priceImportRowForm.elements.product_id.innerHTML = productOptions(row.product_id || "");
+  priceImportRowForm.elements.store_id.innerHTML = storeOptions(row.store_id || "");
+  priceImportRowForm.elements.category.innerHTML = optionRows(categories, row.category || "other");
+  priceImportRowForm.elements.item_name.value = row.item_name || "";
+  priceImportRowForm.elements.brand.value = row.brand || "";
+  priceImportRowForm.elements.price.value = row.price ?? "";
+  priceImportRowForm.elements.size_text.value = row.size_text || "";
+  priceImportRowForm.elements.quantity.value = row.quantity ?? "";
+
+  if (row.unit && !Array.from(priceImportRowForm.elements.unit.options).some((option) => option.value === row.unit)) {
+    const option = document.createElement("option");
+    option.value = row.unit;
+    option.textContent = row.unit;
+    priceImportRowForm.elements.unit.appendChild(option);
+  }
+
+  priceImportRowForm.elements.unit.value = row.unit || "each";
+  priceImportRowForm.elements.proof_type.value = row.proof_type || selectedImportBatch()?.proof_type || "weekly_ad";
+  priceImportRowForm.elements.regular_price.value = row.regular_price ?? "";
+  priceImportRowForm.elements.sale_price.checked = Boolean(row.sale_price);
+  priceImportRowForm.elements.coupon_required.checked = Boolean(row.coupon_required);
+  priceImportRowForm.elements.deal_limit.value = row.deal_limit || "";
+  priceImportRowForm.elements.valid_start_at.value = row.valid_start_date || "";
+  priceImportRowForm.elements.valid_end_at.value = row.valid_end_date || "";
+  priceImportRowForm.elements.source_url.value = row.source_url || batch?.source_url || "";
+  priceImportRowForm.elements.source_title.value = row.source_title || batch?.source_title || "";
+  priceImportRowForm.elements.source_checked_at.value = row.source_checked_date || batch?.source_checked_date || "";
+  priceImportRowForm.elements.extraction_confidence.value = row.extraction_confidence || "low";
+  priceImportRowForm.elements.extraction_notes.value = row.extraction_notes || "";
+  priceImportRowForm.elements.status.value = ["import_draft", "ready_for_review", "needs_edit"].includes(row.status)
+    ? row.status
+    : "ready_for_review";
+  priceImportRowForm.elements.notes.value = row.notes || "";
+
+  if (saveButton) {
+    saveButton.disabled = !batchId || row.status === "approved";
+    saveButton.textContent = row.id ? "Save row changes" : "Save draft row";
+  }
+}
+
+function renderPriceImportCleanupReport() {
+  if (!priceImportCleanupReport) {
+    return;
+  }
+
+  const report = priceImporterData?.cleanup_report;
+
+  if (!report) {
+    priceImportCleanupReport.hidden = true;
+    priceImportCleanupReport.innerHTML = "";
+    return;
+  }
+
+  const candidates = report.candidates || [];
+  priceImportCleanupReport.hidden = false;
+
+  if (!candidates.length) {
+    priceImportCleanupReport.innerHTML = `
+      <div class="card-topline">
+        <h3>Approved Receipt Cleanup</h3>
+        <span class="badge confidence-high">Clear</span>
+      </div>
+      <p class="field-help">${escapeHtml(report.message || "No suspicious approved receipt rows found.")}</p>
+    `;
+    return;
+  }
+
+  priceImportCleanupReport.innerHTML = `
+    <div class="card-topline">
+      <h3>Approved Receipt Cleanup</h3>
+      <span class="badge confidence-low">${candidates.length} to review</span>
+    </div>
+    <p class="field-help">${escapeHtml(report.message)}</p>
+    <div class="admin-list cleanup-report-list">
+      ${candidates.map((candidate) => {
+        const approvedReport = candidate.report || {};
+        const suggested = candidate.suggested || {};
+
+        return `
+          <article class="cleanup-report-card">
+            <div class="card-topline">
+              <div>
+                <strong>#${escapeHtml(approvedReport.id)} ${escapeHtml(approvedReport.item_name || "Approved receipt row")}</strong>
+                <div class="brand-line">${escapeHtml(approvedReport.store_name || "Unknown store")} · approved ${escapeHtml(formatDate(approvedReport.reviewed_at) || "date unknown")}</div>
+              </div>
+              <strong>${escapeHtml(approvedReport.price_label || "")}</strong>
+            </div>
+            <dl class="details-list">
+              <div><dt>Receipt line</dt><dd>${escapeHtml(candidate.raw_receipt_line || "Not captured")}</dd></div>
+              <div><dt>Current</dt><dd>${escapeHtml(`${approvedReport.item_name || ""} · ${approvedReport.price_label || ""} · ${approvedReport.size_text || "no size"}`)}</dd></div>
+              <div><dt>Suggested</dt><dd>${suggested.item_name ? escapeHtml(`${suggested.item_name} · ${suggested.price_label} · ${suggested.size_text || `${suggested.quantity || 1} ${suggested.unit || "each"}`}`) : "Needs manual review"}</dd></div>
+              <div><dt>Flags</dt><dd>${escapeHtml((candidate.flags || []).join(" "))}</dd></div>
+            </dl>
+            <div class="card-actions">
+              <button class="secondary-button" type="button" data-cleanup-report-id="${approvedReport.id}">Open approved report</button>
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+
+  for (const button of priceImportCleanupReport.querySelectorAll("[data-cleanup-report-id]")) {
+    button.addEventListener("click", () => {
+      goToAdminTab("pricesTab", { reportId: button.dataset.cleanupReportId });
+      setAdminMessage("Review the approved receipt row, then edit it or remove it from public if needed.", "info");
+    });
+  }
+}
+
+function renderProofInbox() {
+  if (!proofInboxList || !proofInboxCount) {
+    return;
+  }
+
+  const inbox = priceImporterData?.proof_inbox || (priceImporterData?.batches || []).filter((batch) => batch.is_proof_submission);
+  const closedProofStatuses = ["proof_reviewed", "proof_rejected", "rejected", "reviewed_no_prices", "used_for_prices", "duplicate"];
+  const active = inbox.filter((batch) => !closedProofStatuses.includes(batch.status));
+  const filterDefinitions = [
+    ["needs_review", "Needs review"],
+    ["high_priority", "High priority"],
+    ["low_trust", "Low trust"],
+    ["duplicates", "Duplicates"],
+    ["needs_clearer_photo", "Needs clearer photo"],
+    ["old_proof", "Old proof"],
+    ["has_source", "Has source link"],
+    ["receipt", "Receipt"],
+    ["weekly_ad", "Weekly ad"],
+    ["shelf_tag", "Shelf tag"]
+  ];
+  const matchesFilter = (batch) => {
+    const flags = batch.proof_quality_flags || [];
+
+    if (proofInboxFilter === "needs_review") {
+      return !closedProofStatuses.includes(batch.status);
+    }
+
+    if (proofInboxFilter === "high_priority") {
+      return batch.review_priority === "high";
+    }
+
+    if (proofInboxFilter === "low_trust") {
+      return batch.review_priority === "low" || flags.includes("same_user_duplicate");
+    }
+
+    if (proofInboxFilter === "duplicates") {
+      return Boolean(batch.duplicate_scope);
+    }
+
+    if (proofInboxFilter === "needs_clearer_photo") {
+      return batch.status === "needs_clearer_photo";
+    }
+
+    if (proofInboxFilter === "old_proof") {
+      return flags.some((flag) => flag.includes("older_than_7_days") || flag.includes("expired"));
+    }
+
+    if (proofInboxFilter === "has_source") {
+      return Boolean(batch.source_url);
+    }
+
+    if (proofInboxFilter === "receipt") {
+      return batch.source_type === "receipt" || batch.proof_type === "receipt_photo";
+    }
+
+    if (proofInboxFilter === "weekly_ad") {
+      return batch.source_type === "weekly_ad" || batch.proof_type === "weekly_ad";
+    }
+
+    if (proofInboxFilter === "shelf_tag") {
+      return batch.source_type === "shelf_tag" || batch.proof_type === "shelf_tag_photo";
+    }
+
+    return true;
+  };
+  const visibleInbox = inbox.filter(matchesFilter);
+  proofInboxCount.textContent = active.length
+    ? `${active.length} needing review`
+    : "No pending proof";
+
+  if (!inbox.length) {
+    proofInboxList.innerHTML = '<div class="empty-state">No proof-only submissions yet.</div>';
+    return;
+  }
+
+  proofInboxList.innerHTML = `
+    <div class="filter-chip-row">
+      ${filterDefinitions.map(([value, label]) => `
+        <button class="filter-chip ${proofInboxFilter === value ? "is-active" : ""}" type="button" data-proof-inbox-filter="${escapeHtml(value)}">${escapeHtml(label)}</button>
+      `).join("")}
+    </div>
+    ${visibleInbox.length ? visibleInbox.map((batch) => {
+    const proofUrl = adminUploadUrl(batch.photo_path);
+    const rows = batch.rows || [];
+    const rowSummary = rows.length
+      ? `${rows.length} draft row${rows.length === 1 ? "" : "s"} linked`
+      : "No draft rows yet";
+    const sourceLink = batch.source_url
+      ? `<a href="${escapeHtml(batch.source_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(batch.source_domain || "View source")}</a>`
+      : "No source link";
+    const ocrText = batch.receipt_ocr_text
+      ? `<details class="ocr-debug"><summary>OCR helper text</summary><pre>${escapeHtml(batch.receipt_ocr_text)}</pre></details>`
+      : "";
+    const flags = batch.proof_quality_flags || [];
+
+    return `
+      <article class="admin-card compact-card" data-price-import-batch="${batch.id}">
+        <div class="card-topline">
+          <div>
+            <h3>${escapeHtml(proofSubmissionLabel(batch))}</h3>
+            <div class="brand-line">${escapeHtml(batch.proof_store_name || batch.receipt_store_name || "Store needs review")} · ${escapeHtml(formatDate(batch.created_at))}</div>
+          </div>
+          <span class="badge ${importStatusClass(batch.status)}">${escapeHtml(titleCase(batch.status || "needs_admin_review"))}</span>
+        </div>
+        <div class="card-topline">
+          <span class="badge confidence-${batch.review_priority === "high" ? "high" : batch.review_priority === "low" ? "low" : "medium"}">${escapeHtml(titleCase(batch.review_priority || "normal"))} priority</span>
+          ${batch.duplicate_scope ? `<span class="badge confidence-low">${escapeHtml(titleCase(batch.duplicate_scope))}</span>` : ""}
+        </div>
+        <dl class="details-list">
+          <div><dt>User</dt><dd>${escapeHtml(batch.created_by_username || `User #${batch.created_by || ""}`.trim() || "Unknown")}</dd></div>
+          <div><dt>Proof type</dt><dd>${escapeHtml(titleCase(batch.proof_public_type || batch.source_type || batch.proof_type))}</dd></div>
+          <div><dt>Source</dt><dd>${sourceLink}</dd></div>
+          <div><dt>Item hint</dt><dd>${escapeHtml(batch.proof_item_hint || "None")}</dd></div>
+          <div><dt>Price hint</dt><dd>${escapeHtml(batch.proof_price_hint || "None")}</dd></div>
+          <div><dt>Rows</dt><dd>${escapeHtml(rowSummary)}</dd></div>
+        </dl>
+        ${batch.proof_user_notes ? `<p class="inline-help">${escapeHtml(batch.proof_user_notes)}</p>` : ""}
+        ${!batch.source_url ? '<p class="source-link-warning">No source link saved — ask for one if the photo is not enough.</p>' : ""}
+        ${flags.length ? `<p class="inline-help">Flags: ${escapeHtml(flags.join(", "))}</p>` : ""}
+        ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof image</a>` : '<p class="inline-help">No image uploaded. Use the source link before creating rows.</p>'}
+        ${ocrText}
+        <div class="card-actions">
+          <button class="secondary-button" type="button" data-proof-status="${batch.id}" data-proof-action="accept_for_review">Accept for review</button>
+          <button class="primary-button" type="button" data-proof-create-row="${batch.id}">Create price row from proof</button>
+          <button class="secondary-button" type="button" data-proof-status="${batch.id}" data-proof-action="reviewed_no_prices">Reviewed, no prices added</button>
+          <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="duplicate">Mark duplicate</button>
+          <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="needs_clearer_photo">Needs clearer photo</button>
+          <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="needs_source_link">Needs source link</button>
+          <button class="danger-button" type="button" data-proof-status="${batch.id}" data-proof-action="reject">Reject proof</button>
+        </div>
+      </article>
+    `;
+  }).join("") : '<div class="empty-state">No proof submissions match this filter.</div>'}
+  `;
+
+  for (const button of proofInboxList.querySelectorAll("[data-proof-inbox-filter]")) {
+    button.addEventListener("click", () => {
+      proofInboxFilter = button.dataset.proofInboxFilter;
+      renderProofInbox();
+    });
+  }
+
+  for (const button of proofInboxList.querySelectorAll("[data-proof-create-row]")) {
+    button.addEventListener("click", () => startPriceRowFromProof(button.dataset.proofCreateRow));
+  }
+
+  for (const button of proofInboxList.querySelectorAll("[data-proof-status]")) {
+    button.addEventListener("click", () => updateProofSubmissionStatus(button.dataset.proofStatus, button.dataset.proofAction));
+  }
+}
+
+function startPriceRowFromProof(batchId) {
+  const batch = (priceImporterData?.batches || []).find((item) => String(item.id) === String(batchId));
+
+  if (!batch) {
+    setPriceImporterMessage("That proof submission is no longer visible.", "error");
+    return;
+  }
+
+  selectedPriceImportBatchId = String(batch.id);
+  selectedPriceImportRows.clear();
+  renderPriceImporter();
+
+  const priceHint = String(batch.proof_price_hint || "").replace(/[^\d.]/g, "");
+  resetPriceImportRowForm({
+    batch_id: batch.id,
+    store_id: proofSubmissionStoreId(batch),
+    item_name: batch.proof_item_hint || "",
+    category: "other",
+    price: priceHint,
+    quantity: 1,
+    unit: "each",
+    proof_type: proofRowProofType(batch),
+    source_url: batch.source_url || "",
+    source_title: batch.source_title || "",
+    source_checked_date: batch.source_checked_date || "",
+    extraction_confidence: "low",
+    extraction_notes: "Created manually from proof inbox. Admin review required.",
+    notes: [
+      `Created from proof submission #${batch.id}.`,
+      batch.proof_user_notes ? `User notes: ${batch.proof_user_notes}` : ""
+    ].filter(Boolean).join(" ")
+  });
+  setPriceImporterMessage("Proof loaded into the draft row form. Review and save the row before approval.", "info");
+  priceImportRowForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function updateProofSubmissionStatus(batchId, action) {
+  const labels = {
+    accept_for_review: "accept this proof for review",
+    reviewed_no_prices: "mark this proof reviewed with no prices added",
+    duplicate: "mark this proof duplicate",
+    reject: "reject this proof",
+    needs_clearer_photo: "ask for a clearer photo",
+    needs_source_link: "ask for a source link"
+  };
+
+  let adminReason = "";
+
+  if (action === "reject") {
+    adminReason = window.prompt("Safe reason shown to the user", "We could not verify the proof.");
+
+    if (adminReason === null) {
+      return;
+    }
+  }
+
+  try {
+    setPriceImporterMessage(`Updating proof inbox status to ${labels[action] || action}...`);
+    const data = await fetchJson(`/api/admin/proof-submissions/${batchId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        action,
+        admin_reason: adminReason
+      })
+    });
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+function renderPriceImporter() {
+  if (!priceImportProofList || !priceImportRows) {
+    return;
+  }
+
+  const batches = priceImporterData?.batches || [];
+
+  if (batches.length && !batches.some((batch) => String(batch.id) === String(selectedPriceImportBatchId))) {
+    selectedPriceImportBatchId = String(batches[0].id);
+    selectedPriceImportRows.clear();
+  }
+
+  if (!batches.length) {
+    selectedPriceImportBatchId = "";
+    selectedPriceImportRows.clear();
+  }
+
+  const rows = batches.flatMap((batch) => batch.rows || []);
+  const pendingCount = rows.filter((row) => !["approved", "rejected"].includes(row.status)).length;
+  const selected = selectedImportBatch();
+
+  if (selected?.source_type === "receipt" || selected?.proof_type === "receipt_photo") {
+    setPriceImportMode("receipt", { skipRender: true });
+  } else if (selected?.source_type === "shelf_tag" || selected?.proof_type === "shelf_tag_photo") {
+    setPriceImportMode("shelf_tag", { skipRender: true });
+  } else if (selected) {
+    setPriceImportMode("weekly_ad", { skipRender: true });
+  }
+
+  priceImporterCount.textContent = batches.length
+    ? `${batches.length} proof upload${batches.length === 1 ? "" : "s"} · ${pendingCount} row${pendingCount === 1 ? "" : "s"} pending`
+    : "No proof uploads yet";
+
+  renderPriceImportProofList();
+  renderPriceImportRows();
+  renderPriceImportCleanupReport();
+  renderProofInbox();
+  syncPriceImportSourceTextForm();
+  syncPriceImportReceiptTextForm();
+  renderPriceImportReceiptSummary();
+
+  if (!priceImportRowForm.elements.row_id.value) {
+    resetPriceImportRowForm();
+  }
+}
+
+function syncPriceImportSourceTextForm() {
+  if (!priceImportSourceTextForm) {
+    return;
+  }
+
+  const batch = selectedImportBatch();
+  const batchId = batch ? String(batch.id) : "";
+
+  if (priceImportSourceTextForm.dataset.batchId !== batchId) {
+    priceImportSourceTextForm.elements.source_url.value = batch?.source_url || "";
+    priceImportSourceTextForm.elements.source_title.value = batch?.source_title || "";
+    priceImportSourceTextForm.dataset.batchId = batchId;
+  }
+}
+
+function syncPriceImportReceiptTextForm() {
+  if (!priceImportReceiptTextForm) {
+    return;
+  }
+
+  const batch = selectedImportBatch();
+  const batchId = batch ? String(batch.id) : "";
+
+  if (priceImportReceiptTextForm.dataset.batchId !== batchId) {
+    priceImportReceiptTextForm.elements.receipt_text.value = batch?.receipt_ocr_text || "";
+    priceImportReceiptTextForm.dataset.batchId = batchId;
+  }
+}
+
+function renderPriceImportReceiptSummary() {
+  if (!priceImportReceiptSummary) {
+    return;
+  }
+
+  const batch = selectedImportBatch();
+  const isReceipt = activePriceImportMode === "receipt" || batch?.source_type === "receipt" || batch?.proof_type === "receipt_photo";
+  priceImportReceiptSummary.hidden = !isReceipt;
+
+  if (!isReceipt) {
+    priceImportReceiptSummary.innerHTML = "";
+    return;
+  }
+
+  if (!batch) {
+    priceImportReceiptSummary.innerHTML = `
+      <div class="card-topline">
+        <h3>Receipt Proof</h3>
+        <span class="badge confidence-low">No receipt selected</span>
+      </div>
+      <p class="field-help">Upload or select a receipt image, then enter the item and price manually.</p>
+    `;
+    return;
+  }
+
+  const proofUrl = adminUploadUrl(batch.photo_path);
+  const ocrConfidence = batch.receipt_ocr_confidence || "not run";
+  const ocrRan = Boolean(batch.receipt_ocr_confidence || batch.receipt_ocr_text);
+  const rawOcrText = batch.receipt_ocr_text || "";
+  const ocrStatus = !ocrRan
+    ? "OCR has not run for this receipt yet."
+    : rawOcrText
+      ? "OCR found helper text below."
+      : "No readable receipt text detected.";
+  const ocrFallback = ocrRan && !rawOcrText
+    ? `<div class="warning subtle-warning">Receipt saved as proof. Enter the item and price manually.</div>`
+    : "";
+
+  priceImportReceiptSummary.innerHTML = `
+    <div class="card-topline">
+      <h3>Receipt Proof</h3>
+      <span class="badge ${ocrConfidence === "high" ? "confidence-high" : ocrConfidence === "medium" ? "confidence-medium" : "confidence-low"}">OCR ${escapeHtml(titleCase(ocrConfidence))}</span>
+    </div>
+    <p class="field-help">Receipt uploads are proof first. Enter one reviewed item with the row form; OCR text is only a helper. ${escapeHtml(ocrStatus)}</p>
+    ${ocrFallback}
+    <dl class="receipt-meta-grid">
+      <div><dt>Detected store</dt><dd>${escapeHtml(batch.receipt_store_name || "Needs store review")}</dd></div>
+      <div><dt>Address</dt><dd>${escapeHtml(batch.receipt_store_address || "Not detected")}</dd></div>
+      <div><dt>Purchase date</dt><dd>${escapeHtml(formatDateOnly(batch.receipt_purchase_date) || "Not detected")}</dd></div>
+      <div><dt>Purchase time</dt><dd>${escapeHtml(batch.receipt_purchase_time || "Not detected")}</dd></div>
+      <div><dt>Receipt total</dt><dd>${escapeHtml(batch.receipt_total_label || "Not detected")}</dd></div>
+      <div><dt>Transaction</dt><dd>${escapeHtml(batch.receipt_transaction_id || "Not detected")}</dd></div>
+    </dl>
+    <div class="receipt-tips">
+      <strong>Receipt photo tips</strong>
+      <ul>
+        <li>Place the receipt flat on a dark background.</li>
+        <li>Fill the camera frame with the receipt.</li>
+        <li>Avoid shadows and wrinkles when possible.</li>
+        <li>Use flash if the print is faded.</li>
+        <li>Take separate photos for long receipts.</li>
+      </ul>
+    </div>
+    <details class="ocr-debug" ${rawOcrText ? "open" : ""}>
+      <summary>OCR helper text</summary>
+      ${rawOcrText ? `<pre>${escapeHtml(rawOcrText)}</pre>` : `<p class="field-help">No readable receipt text detected. Receipt proof is still saved.</p>`}
+    </details>
+    ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open receipt image</a>` : ""}
+  `;
+}
+
+function renderPriceImportProofList() {
+  const batches = priceImporterData?.batches || [];
+
+  if (!batches.length) {
+    priceImportSelectedBatchLabel.textContent = "No proof selected";
+    priceImportProofList.innerHTML = '<div class="empty-state">Upload a proof image to start an import batch.</div>';
+    return;
+  }
+
+  const selected = selectedImportBatch();
+  priceImportSelectedBatchLabel.textContent = selected
+    ? `Selected proof: ${importProofLabel(selected)}`
+    : "No proof selected";
+
+  priceImportProofList.innerHTML = batches.map((batch) => {
+    const proofUrl = adminUploadUrl(batch.photo_path);
+    const rows = batch.rows || [];
+    const approved = rows.filter((row) => row.status === "approved").length;
+    const rejected = rows.filter((row) => row.status === "rejected").length;
+    const pending = rows.length - approved - rejected;
+
+    return `
+      <article class="price-import-proof-card ${String(batch.id) === String(selectedPriceImportBatchId) ? "is-selected" : ""}">
+        <button class="price-import-proof-select" type="button" data-import-batch-id="${batch.id}">
+          ${proofUrl ? `<img src="${escapeHtml(proofUrl)}" alt="Proof upload ${batch.id}">` : '<div class="proof-placeholder">No image</div>'}
+          <span class="price-import-proof-meta">
+            <strong>${escapeHtml(importProofLabel(batch))}</strong>
+            <span>${escapeHtml(formatDate(batch.created_at))}</span>
+            <span>${escapeHtml(batch.source_domain || "No source link")}</span>
+            ${batch.source_type === "receipt" || batch.proof_type === "receipt_photo" ? `<span>${escapeHtml(batch.receipt_store_name || "Receipt store needs review")} · ${escapeHtml(batch.receipt_total_label || "No total detected")}</span>` : ""}
+            <span>${escapeHtml(rows.length)} row${rows.length === 1 ? "" : "s"} · ${pending} pending · ${approved} approved · ${rejected} rejected</span>
+          </span>
+        </button>
+        ${batch.source_url ? "" : '<p class="source-link-warning">No source link saved — add one before approval.</p>'}
+        <div class="proof-card-actions">
+          ${pending > 0 ? `<button class="secondary-button" type="button" data-import-review-rows="${batch.id}">Review pending rows</button>` : ""}
+          <button class="quiet-button" type="button" data-import-edit-source="${batch.id}">Edit source</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  for (const button of priceImportProofList.querySelectorAll("[data-import-batch-id]")) {
+    button.addEventListener("click", () => {
+      selectedPriceImportBatchId = button.dataset.importBatchId;
+      selectedPriceImportRows.clear();
+      resetPriceImportRowForm();
+      renderPriceImporter();
+    });
+  }
+
+  for (const button of priceImportProofList.querySelectorAll("[data-import-review-rows]")) {
+    button.addEventListener("click", () => reviewPendingImportRows(button.dataset.importReviewRows));
+  }
+
+  for (const button of priceImportProofList.querySelectorAll("[data-import-edit-source]")) {
+    button.addEventListener("click", () => editImportBatchSource(button.dataset.importEditSource));
+  }
+}
+
+function reviewPendingImportRows(batchId) {
+  selectedPriceImportBatchId = String(batchId);
+  selectedPriceImportRows.clear();
+  renderPriceImporter();
+
+  const firstPending = importRowsForCurrentBatch().find((row) => !["approved", "rejected"].includes(row.status));
+  scrollToImportRow(firstPending?.id || "");
+}
+
+async function editImportBatchSource(batchId) {
+  const batch = (priceImporterData?.batches || []).find((item) => String(item.id) === String(batchId));
+
+  if (!batch) {
+    setPriceImporterMessage("That proof batch is no longer visible.", "error");
+    return;
+  }
+
+  const sourceUrl = window.prompt(`Source link for ${importProofLabel(batch)}`, batch.source_url || "");
+
+  if (sourceUrl === null) {
+    return;
+  }
+
+  const sourceTitle = window.prompt(`Source title for ${importProofLabel(batch)}`, batch.source_title || "");
+
+  if (sourceTitle === null) {
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Saving proof source...");
+    const data = await fetchJson(`/api/admin/price-imports/${batch.id}/source`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        source_url: sourceUrl,
+        source_title: sourceTitle
+      })
+    });
+    selectedPriceImportBatchId = String(data.batch?.id || batch.id);
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+function renderPriceImportRows() {
+  const batch = selectedImportBatch();
+
+  if (!batch) {
+    priceImportApproveSelected.disabled = true;
+    priceImportApproveSelected.title = "";
+    priceImportRejectSelected.disabled = true;
+    priceImportRows.innerHTML = '<div class="empty-state">Select or upload a proof image before adding draft rows.</div>';
+    resetPriceImportRowForm();
+    return;
+  }
+
+  const rows = importRowsForCurrentBatch();
+  const visibleIds = new Set(rows.map((row) => String(row.id)));
+  selectedPriceImportRows = new Set([...selectedPriceImportRows].filter((rowId) => visibleIds.has(String(rowId))));
+  const canApprove = canApproveImportedPrices();
+  priceImportApproveSelected.disabled = selectedPriceImportRows.size === 0 || !canApprove;
+  priceImportApproveSelected.title = canApprove ? "" : "Log in as admin to approve imported prices.";
+  priceImportRejectSelected.disabled = selectedPriceImportRows.size === 0;
+
+  if (!rows.length) {
+    priceImportRows.innerHTML = '<div class="empty-state">No draft rows yet. Enter one reviewed price row using the form above.</div>';
+    return;
+  }
+
+  const approvalNotice = canApprove
+    ? ""
+    : '<p class="source-link-warning approval-login-warning">Log in as admin to approve imported prices.</p>';
+
+  priceImportRows.innerHTML = approvalNotice + rows.map((row) => {
+    const proofUrl = adminUploadUrl(batch.photo_path);
+    const selected = selectedPriceImportRows.has(String(row.id));
+    const approved = row.status === "approved";
+    const rejected = row.status === "rejected";
+    const approveDisabled = approved || !canApprove;
+
+    return `
+      <article class="admin-card compact-card price-import-row-card" data-import-row-card="${row.id}">
+        <div class="import-row-toolbar">
+          <label class="checkbox-row">
+            <input type="checkbox" data-import-select="${row.id}" ${selected ? "checked" : ""} ${approved ? "disabled" : ""}>
+            <span>Select</span>
+          </label>
+          <span class="badge ${importStatusClass(row.status)}">${escapeHtml(titleCase(row.status))}</span>
+        </div>
+        <div class="card-topline">
+          <div>
+            <h3>${escapeHtml(row.item_name || "Untitled import row")}</h3>
+            <div class="brand-line">${escapeHtml(row.brand || "No brand entered")}</div>
+          </div>
+          <strong class="import-price">${escapeHtml(row.price_label || "No price")}</strong>
+        </div>
+        <dl class="details-list">
+          <div><dt>Store</dt><dd>${escapeHtml(row.store_name || "No store")}</dd></div>
+          <div><dt>Category</dt><dd>${escapeHtml(titleCase(row.category))}</dd></div>
+          <div><dt>Size</dt><dd>${escapeHtml(row.size_text || `${row.quantity || ""} ${row.unit || ""}`.trim() || "No size")}</dd></div>
+          <div><dt>Proof</dt><dd>${escapeHtml(titleCase(row.proof_type))}</dd></div>
+          <div><dt>Sale</dt><dd>${row.sale_price ? "Yes" : "No"}</dd></div>
+          <div><dt>Coupon</dt><dd>${row.coupon_required ? "Required" : "No"}</dd></div>
+          <div><dt>Limit</dt><dd>${escapeHtml(row.deal_limit || "None")}</dd></div>
+          <div><dt>Valid dates</dt><dd>${escapeHtml(formatImportDateRange(row))}</dd></div>
+          <div><dt>Source</dt><dd>${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.source_domain || "View source")}</a>` : "No source link"}</dd></div>
+          <div><dt>Checked</dt><dd>${escapeHtml(formatDateOnly(row.source_checked_at) || "Not recorded")}</dd></div>
+          <div><dt>Import confidence</dt><dd>${escapeHtml(titleCase(row.extraction_confidence || "low"))}</dd></div>
+          <div><dt>Product</dt><dd>${escapeHtml(row.product_display_name || "Unlinked")}</dd></div>
+          <div><dt>Report</dt><dd>${row.price_report_id ? `#${row.price_report_id}` : "Not public"}</dd></div>
+          ${row.raw_receipt_line ? `<div><dt>Raw receipt line</dt><dd>${escapeHtml(row.raw_receipt_line)}</dd></div>` : ""}
+          ${row.extracted_price !== null && row.extracted_price !== undefined ? `<div><dt>Extracted price</dt><dd>${escapeHtml(`$${Number(row.extracted_price).toFixed(2)}`)}</dd></div>` : ""}
+          ${row.extracted_weight ? `<div><dt>Extracted weight</dt><dd>${escapeHtml(`${row.extracted_weight} ${row.extracted_unit || ""}`.trim())}</dd></div>` : ""}
+        </dl>
+        ${row.extraction_notes ? `<p class="inline-help">${escapeHtml(row.extraction_notes)}</p>` : ""}
+        ${row.notes ? `<p class="inline-help">${escapeHtml(row.notes)}</p>` : ""}
+        ${row.admin_rejection_note ? `<p class="warning">${escapeHtml(row.admin_rejection_note)}</p>` : ""}
+        <div class="card-actions">
+          <button class="secondary-button" type="button" data-import-edit="${row.id}" ${approved ? "disabled" : ""}>Edit</button>
+          <button class="primary-button" type="button" data-import-approve="${row.id}" ${approveDisabled ? "disabled" : ""} title="${canApprove ? "" : "Log in as admin to approve imported prices."}">Approve</button>
+          <button class="danger-button" type="button" data-import-reject="${row.id}" ${approved || rejected ? "disabled" : ""}>Reject</button>
+          ${!row.product_id && !approved ? `<button class="quiet-button" type="button" data-import-create-product="${row.id}">Create product</button>` : ""}
+          ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof</a>` : ""}
+          ${row.source_url ? `<a class="quiet-button" href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener noreferrer">View source</a>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  for (const checkbox of priceImportRows.querySelectorAll("[data-import-select]")) {
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        selectedPriceImportRows.add(String(checkbox.dataset.importSelect));
+      } else {
+        selectedPriceImportRows.delete(String(checkbox.dataset.importSelect));
+      }
+
+      renderPriceImportRows();
+    });
+  }
+
+  for (const button of priceImportRows.querySelectorAll("[data-import-edit]")) {
+    button.addEventListener("click", () => editPriceImportRow(button.dataset.importEdit));
+  }
+
+  for (const button of priceImportRows.querySelectorAll("[data-import-approve]")) {
+    button.addEventListener("click", () => approvePriceImportRowAction(button.dataset.importApprove));
+  }
+
+  for (const button of priceImportRows.querySelectorAll("[data-import-reject]")) {
+    button.addEventListener("click", () => rejectPriceImportRowAction(button.dataset.importReject));
+  }
+
+  for (const button of priceImportRows.querySelectorAll("[data-import-create-product]")) {
+    button.addEventListener("click", () => createProductForImportRow(button.dataset.importCreateProduct));
+  }
+}
+
+function priceImportRowPayloadFromForm() {
+  const formData = new FormData(priceImportRowForm);
+
+  return {
+    pin: getPin(),
+    product_id: formData.get("product_id"),
+    store_id: formData.get("store_id"),
+    item_name: formData.get("item_name"),
+    brand: formData.get("brand"),
+    category: formData.get("category"),
+    price: formData.get("price"),
+    regular_price: formData.get("regular_price"),
+    sale_price: formData.get("sale_price") === "on",
+    coupon_required: formData.get("coupon_required") === "on",
+    deal_limit: formData.get("deal_limit"),
+    size_text: formData.get("size_text"),
+    quantity: formData.get("quantity"),
+    unit: formData.get("unit"),
+    proof_type: formData.get("proof_type"),
+    valid_start_at: formData.get("valid_start_at"),
+    valid_end_at: formData.get("valid_end_at"),
+    source_url: formData.get("source_url"),
+    source_title: formData.get("source_title"),
+    source_checked_at: formData.get("source_checked_at"),
+    extraction_confidence: formData.get("extraction_confidence"),
+    extraction_notes: formData.get("extraction_notes"),
+    notes: formData.get("notes"),
+    status: formData.get("status")
+  };
+}
+
+async function submitPriceImportUpload(event) {
+  event.preventDefault();
+  setPriceImporterMessage("Uploading proof image...");
+
+  const formData = new FormData(priceImportUploadForm);
+  formData.append("pin", getPin());
+
+  try {
+    const data = await fetchJson(`/api/admin/price-imports/upload${adminQuery()}`, {
+      method: "POST",
+      body: formData
+    });
+    selectedPriceImportBatchId = String(data.batches?.[0]?.id || selectedPriceImportBatchId || "");
+    selectedPriceImportRows.clear();
+    priceImportUploadForm.reset();
+    setPriceImporterMessage(
+      data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
+      data.extraction_attempt?.status === "failed" ? "warning" : "success"
+    );
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function submitPriceImportSourceText(event) {
+  event.preventDefault();
+  const batchId = selectedPriceImportBatchId;
+
+  if (!batchId) {
+    setPriceImporterMessage("Select a proof batch before parsing source text.", "error");
+    return;
+  }
+
+  const formData = new FormData(priceImportSourceTextForm);
+  const currentRowId = priceImportRowForm.elements.row_id.value || "";
+  setPriceImporterMessage("Parsing source text into a draft row...");
+
+  try {
+    const data = await fetchJson(`/api/admin/price-imports/${batchId}/extract-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        row_id: currentRowId,
+        source_url: formData.get("source_url"),
+        source_title: formData.get("source_title"),
+        source_text: formData.get("source_text")
+      })
+    });
+    selectedPriceImportBatchId = String(data.row?.batch_id || batchId);
+    resetPriceImportRowForm(data.row || {});
+    setPriceImporterMessage(
+      data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
+      data.duplicate ? "warning" : "success"
+    );
+    await loadAdminData();
+    if (data.row?.id) {
+      scrollToImportRow(data.row.id);
+    }
+  } catch (error) {
+    setPriceImporterMessage(error.message || "Source text could not be parsed. Add rows manually.", "warning");
+  }
+}
+
+async function submitPriceImportReceiptText(event) {
+  event.preventDefault();
+  const batchId = selectedPriceImportBatchId;
+
+  if (!batchId) {
+    setPriceImporterMessage("Select a receipt proof batch before parsing receipt text.", "error");
+    return;
+  }
+
+  const formData = new FormData(priceImportReceiptTextForm);
+  setPriceImporterMessage("Using receipt helper text to create draft rows...");
+
+  try {
+    const data = await fetchJson(`/api/admin/price-imports/${batchId}/parse-receipt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        receipt_text: formData.get("receipt_text")
+      })
+    });
+    selectedPriceImportBatchId = String(data.batch?.id || batchId);
+    selectedPriceImportRows.clear();
+    setPriceImporterMessage(
+      data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
+      data.extraction_attempt?.status === "duplicate" ? "warning" : "success"
+    );
+    await loadAdminData();
+    const firstRow = (data.rows || []).find((row) => !["approved", "rejected"].includes(row.status));
+    if (firstRow?.id) {
+      scrollToImportRow(firstRow.id);
+    }
+  } catch (error) {
+    setPriceImporterMessage(error.message || "Receipt text could not be parsed. Enter the item and price manually.", "warning");
+  }
+}
+
+async function submitPriceImportRow(event) {
+  event.preventDefault();
+  const rowId = priceImportRowForm.elements.row_id.value;
+  const batchId = priceImportRowForm.elements.batch_id.value || selectedPriceImportBatchId;
+
+  if (!batchId) {
+    setPriceImporterMessage("Upload or select a proof image before saving a row.", "error");
+    return;
+  }
+
+  setPriceImporterMessage(rowId ? "Saving import row..." : "Creating draft import row...");
+
+  try {
+    const data = await fetchJson(rowId ? `/api/admin/price-import-rows/${rowId}` : `/api/admin/price-imports/${batchId}/rows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(priceImportRowPayloadFromForm())
+    });
+    resetPriceImportRowForm();
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    if (error.data?.row?.id) {
+      resetPriceImportRowForm(error.data.row);
+      await loadAdminData();
+      scrollToImportRow(error.data.row.id);
+      setPriceImporterMessage(error.message, "warning");
+      return;
+    }
+
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+function editPriceImportRow(rowId) {
+  const row = findImportRow(rowId);
+
+  if (!row) {
+    setPriceImporterMessage("That import row is no longer visible.", "error");
+    return;
+  }
+
+  selectedPriceImportBatchId = String(row.batch_id);
+  resetPriceImportRowForm(row);
+  priceImportRowForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function approvePriceImportRowAction(rowId) {
+  if (!canApproveImportedPrices()) {
+    setPriceImporterMessage("Log in as admin to approve imported prices.", "warning");
+    return;
+  }
+
+  if (!window.confirm("Approve this imported price into public Grocery Radar reports?")) {
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Approving import row...");
+    const data = await fetchJson(`/api/admin/price-import-rows/${rowId}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
+    });
+    selectedPriceImportRows.delete(String(rowId));
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function rejectPriceImportRowAction(rowId) {
+  const reason = window.prompt("Why is this import row rejected?", "Rejected by admin.");
+
+  if (reason === null) {
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Rejecting import row...");
+    const data = await fetchJson(`/api/admin/price-import-rows/${rowId}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        admin_rejection_note: reason
+      })
+    });
+    selectedPriceImportRows.delete(String(rowId));
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function createProductForImportRow(rowId) {
+  if (!window.confirm("Create a product from this reviewed import row and link it?")) {
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Creating product...");
+    const data = await fetchJson(`/api/admin/price-import-rows/${rowId}/create-product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
+    });
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function bulkPriceImport(action) {
+  const rowIds = [...selectedPriceImportRows];
+
+  if (!rowIds.length) {
+    setPriceImporterMessage("Choose at least one import row.", "error");
+    return;
+  }
+
+  let adminRejectionNote = "";
+
+  if (action === "approve" && !canApproveImportedPrices()) {
+    setPriceImporterMessage("Log in as admin to approve imported prices.", "warning");
+    return;
+  }
+
+  if (action === "approve" && !window.confirm(`Approve ${rowIds.length} selected imported row${rowIds.length === 1 ? "" : "s"}?`)) {
+    return;
+  }
+
+  if (action === "reject") {
+    const reason = window.prompt(`Why reject ${rowIds.length} selected import row${rowIds.length === 1 ? "" : "s"}?`, "Bulk rejected by admin.");
+
+    if (reason === null) {
+      return;
+    }
+
+    adminRejectionNote = reason;
+  }
+
+  try {
+    setPriceImporterMessage(action === "approve" ? "Approving selected import rows..." : "Rejecting selected import rows...");
+    const data = await fetchJson("/api/admin/price-import-rows/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        action,
+        row_ids: rowIds,
+        admin_rejection_note: adminRejectionNote
+      })
+    });
+    selectedPriceImportRows.clear();
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+function setupAdminTabs() {
+  for (const button of document.querySelectorAll("[data-admin-tab]")) {
+    button.addEventListener("click", () => goToAdminTab(button.dataset.adminTab));
+  }
+}
+
+async function boot() {
+  setupAdminTabs();
+  populateCategorySelect(manualCategory);
+  populateCategorySelect(priceImportRowForm.elements.category);
+  setPriceImportMode("weekly_ad", { skipRender: true });
+  updateManualPhotoRequirement();
+  await loadStores();
+
+  if (pinInput.value) {
+    await loadAdminData();
+  }
+
+  applyAdminInitialRoute();
+}
+
+function applyAdminInitialRoute() {
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get("tab");
+
+  if (!tab) {
+    return;
+  }
+
+  goToAdminTab(tab, {
+    reportId: params.get("report") || "",
+    userId: params.get("user") || "",
+    storeRequestId: params.get("storeRequest") || "",
+    suggestionId: params.get("suggestion") || "",
+    filter: params.get("filter") || ""
+  });
+}
+
+pinForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadAdminData().catch((error) => setAdminMessage(error.message, "error"));
+});
+emailTestForm.addEventListener("submit", sendEmailTest);
+runEmailDiagnosticButton.addEventListener("click", runEmailDiagnostic);
+adminStoreForm.addEventListener("submit", addStore);
+if (usernameBlockForm) {
+  usernameBlockForm.addEventListener("submit", addUsernamePhrase);
+}
+sponsorForm.addEventListener("submit", saveSponsor);
+manualProofType.addEventListener("change", updateManualPhotoRequirement);
+manualProofPhotoInput.addEventListener("change", updateManualPhotoStatus);
+manualEntryForm.addEventListener("submit", submitManualEntry);
+priceImportUploadForm.addEventListener("submit", submitPriceImportUpload);
+priceImportSourceTextForm.addEventListener("submit", submitPriceImportSourceText);
+priceImportReceiptTextForm.addEventListener("submit", submitPriceImportReceiptText);
+priceImportRowForm.addEventListener("submit", submitPriceImportRow);
+priceImportResetRow.addEventListener("click", () => resetPriceImportRowForm());
+priceImportApproveSelected.addEventListener("click", () => bulkPriceImport("approve"));
+priceImportRejectSelected.addEventListener("click", () => bulkPriceImport("reject"));
+
+for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]")) {
+  button.addEventListener("click", () => setPriceImportMode(button.dataset.importMode));
+}
+
+const urlPin = new URLSearchParams(window.location.search).get("pin");
+pinInput.value = urlPin || localStorage.getItem("groceryRadarAdminPin") || "";
+
+boot().catch((error) => setAdminMessage(error.message, "error"));

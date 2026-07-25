@@ -1,0 +1,26 @@
+{
+  "name": "grocery-radar-janesville",
+  "version": "1.0.0",
+  "description": "Crowdsourced grocery price reports for Janesville, Wisconsin.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build:client": "node scripts/build-client.js",
+    "build:all": "npm run build:client",
+    "setup:email": "node scripts/setup-email.js",
+    "debug:email": "node scripts/debug-email.js"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "sharp": "^0.35.3",
+    "sqlite3": "^6.0.1",
+    "tesseract.js": "^7.0.0"
+  }
+}

@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grocery Radar Admin</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body class="admin-body">
+    <header class="admin-header">
+      <div>
+        <span class="admin-only-badge">Admin only</span>
+        <h1>Grocery Radar Admin</h1>
+      </div>
+      <a class="admin-link" href="/">Back to app</a>
+    </header>
+
+    <main class="admin-shell">
+      <aside class="admin-sidebar" aria-label="Admin sections">
+        <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Dashboard</button>
+        <button class="admin-tab" type="button" data-admin-tab="betaReadinessTab">Beta Readiness</button>
+        <button class="admin-tab" type="button" data-admin-tab="analyticsTab">Analytics</button>
+        <button class="admin-tab" type="button" data-admin-tab="sponsorsTab">Sponsors</button>
+        <button class="admin-tab" type="button" data-admin-tab="reviewTab">Review Queue</button>
+        <button class="admin-tab" type="button" data-admin-tab="pricesTab">Prices</button>
+        <button class="admin-tab" type="button" data-admin-tab="priceImporterTab">Price Importer</button>
+        <button class="admin-tab" type="button" data-admin-tab="usersTab">Users</button>
+        <button class="admin-tab" type="button" data-admin-tab="storesTab">Stores</button>
+        <button class="admin-tab" type="button" data-admin-tab="suggestionsTab">Suggestions</button>
+        <button class="admin-tab" type="button" data-admin-tab="productToolsTab">Cart / Product Tools</button>
+        <button class="admin-tab" type="button" data-admin-tab="emailTab">Email / Diagnostics</button>
+        <button class="admin-tab" type="button" data-admin-tab="manualTab">Manual Entry</button>
+        <button class="admin-tab" type="button" data-admin-tab="settingsTab">Settings</button>
+      </aside>
+
+      <section class="admin-workspace">
+        <form id="adminPinForm" class="admin-toolbar">
+          <label>
+            <span>Admin PIN fallback</span>
+            <input id="adminPin" type="password" inputmode="numeric" autocomplete="current-password">
+          </label>
+          <button class="primary-button" type="submit">Load admin data</button>
+        </form>
+
+        <div id="adminMessage" class="message" aria-live="polite"></div>
+        <div class="message info">
+          This page is private admin-only. Public app is at <a href="http://localhost:5173" target="_blank" rel="noopener noreferrer">http://localhost:5173</a>.
+        </div>
+
+        <section id="dashboardTab" class="admin-panel is-active">
+          <div class="admin-panel-heading">
+            <h2>Dashboard</h2>
+          </div>
+          <div id="adminNotifications" class="notification-grid"></div>
+        </section>
+
+        <section id="betaReadinessTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Beta Readiness</h2>
+              <p class="field-help">Admin-only launch checklist for showing the app to beta testers.</p>
+            </div>
+            <span id="betaReadinessGenerated" class="admin-count"></span>
+          </div>
+          <div id="betaReadinessSummary" class="notification-grid beta-summary-grid"></div>
+          <div id="phoneTestingCard" class="admin-list"></div>
+          <div id="betaChecklist" class="beta-checklist"></div>
+        </section>
+
+        <section id="analyticsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Analytics</h2>
+              <p class="field-help">Aggregate activity only. No user emails or personal sponsor data here.</p>
+            </div>
+          </div>
+          <div id="analyticsSummary" class="notification-grid"></div>
+          <div id="analyticsContent" class="admin-list"></div>
+        </section>
+
+        <section id="sponsorsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Sponsors</h2>
+              <p class="field-help">Sponsor stats are anonymous aggregate counts. Do not provide personal user data to sponsors.</p>
+            </div>
+          </div>
+          <form id="sponsorForm" class="form-grid">
+            <input name="sponsor_id" type="hidden">
+            <label>
+              <span>Sponsor name</span>
+              <input name="sponsor_name" type="text" maxlength="120" required>
+            </label>
+            <label>
+              <span>Type</span>
+              <select name="sponsor_type">
+                <option value="business">Business</option>
+                <option value="event">Event</option>
+                <option value="community">Community</option>
+                <option value="deal">Deal</option>
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select name="status">
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="expired">Expired</option>
+              </select>
+            </label>
+            <label>
+              <span>Title</span>
+              <input name="title" type="text" maxlength="140" required>
+            </label>
+            <label>
+              <span>Link URL</span>
+              <input name="link_url" type="url" maxlength="300" placeholder="Optional">
+            </label>
+            <label>
+              <span>Image URL</span>
+              <input name="image_url" type="url" maxlength="300" placeholder="Optional">
+            </label>
+            <label>
+              <span>Starts</span>
+              <input name="starts_at" type="date">
+            </label>
+            <label>
+              <span>Ends</span>
+              <input name="ends_at" type="date">
+            </label>
+            <label>
+              <span>Weekly price note</span>
+              <input name="weekly_price_note" type="text" maxlength="300" placeholder="Optional">
+            </label>
+            <label class="span-full">
+              <span>Message</span>
+              <textarea name="message" maxlength="500" rows="3" required></textarea>
+            </label>
+            <label class="span-full">
+              <span>Admin note</span>
+              <input name="admin_note" type="text" maxlength="500" placeholder="Private admin note">
+            </label>
+            <button class="primary-button span-full" type="submit">Save sponsor card</button>
+          </form>
+          <div id="sponsorMessage" class="message" aria-live="polite"></div>
+          <div id="sponsorsContent" class="admin-list"></div>
+        </section>
+
+        <section id="reviewTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Review Queue</h2>
+            <span id="reviewCount" class="admin-count"></span>
+          </div>
+          <div id="reviewReports" class="admin-list"></div>
+        </section>
+
+        <section id="pricesTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Prices</h2>
+            <span id="approvedCount" class="admin-count"></span>
+          </div>
+          <h3 class="compact-heading">Approved / live</h3>
+          <div id="approvedReports" class="admin-list"></div>
+          <div class="admin-panel-heading recent-users-section">
+            <h2>Rejected / Disputed / Removed</h2>
+            <span id="historyCount" class="admin-count"></span>
+          </div>
+          <div id="historyReports" class="admin-list"></div>
+        </section>
+
+        <section id="priceImporterTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Price Importer</h2>
+              <p class="field-help">Upload proof, enter the item and price, then approve only the rows you reviewed.</p>
+            </div>
+            <span id="priceImporterCount" class="admin-count"></span>
+          </div>
+          <div class="warning">Imported prices are not public until approved.</div>
+          <div id="priceImportModeTabs" class="segmented-tabs" role="tablist" aria-label="Price importer mode">
+            <button class="is-active" type="button" data-import-mode="weekly_ad">Weekly Ad Import</button>
+            <button type="button" data-import-mode="receipt">Receipt Proof</button>
+            <button type="button" data-import-mode="shelf_tag">Shelf Tag Proof</button>
+          </div>
+          <form id="priceImportUploadForm" class="admin-toolbar" enctype="multipart/form-data">
+            <label>
+              <span>Source type</span>
+              <select name="source_type">
+                <option value="weekly_ad">Weekly ad</option>
+                <option value="receipt">Receipt</option>
+                <option value="shelf_tag">Shelf tag</option>
+                <option value="store_deal">Store deal screenshot</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>
+              <span>Proof type</span>
+              <select name="proof_type">
+                <option value="weekly_ad">Weekly ad</option>
+                <option value="receipt_photo">Receipt photo</option>
+                <option value="shelf_tag_photo">Shelf tag photo</option>
+              </select>
+            </label>
+            <label>
+              <span>Proof image(s)</span>
+              <input id="priceImportProofInput" name="proof_photos" type="file" accept="image/jpeg,image/png,image/webp" multiple required>
+            </label>
+            <label>
+              <span>Source link</span>
+              <input name="source_url" type="url" maxlength="1000" placeholder="https://www.kwiktrip.com/savings/daily-deals">
+            </label>
+            <label>
+              <span>Source title</span>
+              <input name="source_title" type="text" maxlength="160" placeholder="Kwik Trip Daily Deals">
+            </label>
+            <label class="span-full">
+              <span>Upload notes</span>
+              <input name="notes" type="text" maxlength="500" placeholder="Receipt date, weekly ad page, or source checked by admin">
+            </label>
+            <button class="primary-button" type="submit">Upload proof</button>
+          </form>
+          <div id="priceImporterMessage" class="message" aria-live="polite"></div>
+          <div id="priceImportCleanupReport" class="admin-card compact-card"></div>
+          <section id="proofInboxSection" class="admin-card compact-card">
+            <div class="card-topline">
+              <div>
+                <h3>Proof Inbox</h3>
+                <p class="field-help">User proof submissions are private until an admin creates and approves price rows.</p>
+              </div>
+              <span id="proofInboxCount" class="badge confidence-medium">0 pending</span>
+            </div>
+            <div id="proofInboxList" class="admin-list"></div>
+          </section>
+
+          <div class="price-importer-layout">
+            <aside class="admin-card compact-card proof-panel">
+              <div class="card-topline">
+                <h3>Uploaded Proof</h3>
+                <span id="priceImportSelectedBatchLabel" class="badge confidence-low">No proof selected</span>
+              </div>
+              <div id="priceImportProofList" class="admin-list"></div>
+            </aside>
+
+            <section class="price-importer-workspace">
+              <div id="priceImportReceiptSummary" class="admin-card compact-card" hidden></div>
+
+              <form id="priceImportSourceTextForm" class="admin-card compact-card">
+                <div class="card-topline">
+                  <h3>Source Text Autofill</h3>
+                  <span class="badge confidence-medium">Draft only</span>
+                </div>
+                <p class="field-help">Paste visible text from a screenshot, weekly ad, receipt, or store page. Parsed rows still require admin review.</p>
+                <label>
+                  <span>Source link</span>
+                  <input name="source_url" type="url" maxlength="1000" placeholder="https://www.kwiktrip.com/savings/daily-deals">
+                </label>
+                <label>
+                  <span>Source title</span>
+                  <input name="source_title" type="text" maxlength="160" placeholder="Kwik Trip Daily Deals">
+                </label>
+                <label>
+                  <span>Source text</span>
+                  <textarea name="source_text" rows="4" maxlength="2000" placeholder="$4.49 80/20 Ground Beef. Tue Jun 30th - Mon Jul 13th. 80/20 Ground Beef (1 lb) is on sale for only $4.49! Limit 2."></textarea>
+                </label>
+                <div class="card-actions">
+                  <button class="secondary-button" type="submit">Parse into draft row</button>
+                </div>
+              </form>
+
+              <form id="priceImportReceiptTextForm" class="admin-card compact-card" hidden>
+                <div class="card-topline">
+                  <h3>Optional Receipt Text Helper</h3>
+                  <span class="badge confidence-medium">Optional</span>
+                </div>
+                <p class="field-help">Receipt proof does not need OCR. Enter one reviewed item with the row form below, or paste visible text here only when it helps.</p>
+                <label>
+                  <span>Receipt text</span>
+                  <textarea name="receipt_text" rows="8" maxlength="8000" placeholder="WALMART JANESVILLE&#10;07/04/2026 12:34 PM&#10;BANANAS 1.23 LB @ 0.59 0.73&#10;MILK 1 GAL 3.49&#10;SUBTOTAL 4.22&#10;TAX 0.00&#10;TOTAL 4.22"></textarea>
+                </label>
+                <div class="card-actions">
+                  <button class="secondary-button" type="submit">Use helper text</button>
+                </div>
+              </form>
+
+              <form id="priceImportRowForm" class="form-grid">
+                <input name="row_id" type="hidden">
+                <input name="batch_id" type="hidden">
+                <div class="span-full inline-help">
+                  Enter one reviewed item from the selected proof image. Saved rows stay draft-only until approval.
+                </div>
+                <label>
+                  <span>Item name</span>
+                  <input name="item_name" type="text" maxlength="120" placeholder="80/20 Ground Beef" required>
+                </label>
+                <label>
+                  <span>Brand</span>
+                  <input name="brand" type="text" maxlength="80" placeholder="Store brand">
+                </label>
+                <label>
+                  <span>Linked product</span>
+                  <select name="product_id"></select>
+                </label>
+                <label>
+                  <span>Store</span>
+                  <select name="store_id" required></select>
+                </label>
+                <label>
+                  <span>Category</span>
+                  <select name="category" required></select>
+                </label>
+                <label>
+                  <span>Price</span>
+                  <input name="price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" required>
+                </label>
+                <label>
+                  <span>Package size text</span>
+                  <input name="size_text" type="text" maxlength="80" placeholder="1 lb">
+                </label>
+                <label>
+                  <span>Quantity</span>
+                  <input name="quantity" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" required>
+                </label>
+                <label>
+                  <span>Unit</span>
+                  <select name="unit" required>
+                    <option value="each">each</option>
+                    <option value="count">count</option>
+                    <option value="ct">ct</option>
+                    <option value="oz">oz</option>
+                    <option value="lb">lb</option>
+                    <option value="fl oz">fl oz</option>
+                    <option value="gallon">gallon</option>
+                    <option value="pack">pack</option>
+                    <option value="roll">roll</option>
+                    <option value="bottle">bottle</option>
+                    <option value="can">can</option>
+                    <option value="bag">bag</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Proof type</span>
+                  <select name="proof_type" required>
+                    <option value="weekly_ad">Weekly ad</option>
+                    <option value="receipt_photo">Receipt photo</option>
+                    <option value="shelf_tag_photo">Shelf tag photo</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Regular price</span>
+                  <input name="regular_price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" placeholder="Optional">
+                </label>
+                <label class="checkbox-row">
+                  <input name="sale_price" type="checkbox">
+                  <span>Sale/deal</span>
+                </label>
+                <label class="checkbox-row">
+                  <input name="coupon_required" type="checkbox">
+                  <span>Coupon required</span>
+                </label>
+                <label>
+                  <span>Limit</span>
+                  <input name="deal_limit" type="text" maxlength="80" placeholder="2">
+                </label>
+                <label>
+                  <span>Valid start</span>
+                  <input name="valid_start_at" type="date">
+                </label>
+                <label>
+                  <span>Valid end</span>
+                  <input name="valid_end_at" type="date">
+                </label>
+                <label>
+                  <span>Source link</span>
+                  <input name="source_url" type="url" maxlength="1000" placeholder="Optional source link">
+                </label>
+                <label>
+                  <span>Source title</span>
+                  <input name="source_title" type="text" maxlength="160" placeholder="Optional source title">
+                </label>
+                <label>
+                  <span>Source checked</span>
+                  <input name="source_checked_at" type="date">
+                </label>
+                <label>
+                  <span>Import confidence</span>
+                  <select name="extraction_confidence">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select name="status">
+                    <option value="import_draft">Import draft</option>
+                    <option value="ready_for_review">Ready for review</option>
+                    <option value="needs_edit">Needs edit</option>
+                  </select>
+                </label>
+                <label class="span-full">
+                  <span>Extraction notes</span>
+                  <textarea name="extraction_notes" maxlength="500" rows="2"></textarea>
+                </label>
+                <label class="span-full">
+                  <span>Notes</span>
+                  <textarea name="notes" maxlength="500" rows="3"></textarea>
+                </label>
+                <div class="card-actions span-full">
+                  <button id="priceImportSaveRow" class="primary-button" type="submit">Save draft row</button>
+                  <button id="priceImportResetRow" class="quiet-button" type="button">Clear row form</button>
+                </div>
+              </form>
+
+              <div class="admin-panel-heading recent-users-section">
+                <h2>Draft rows</h2>
+                <div class="card-actions">
+                  <button id="priceImportApproveSelected" class="secondary-button" type="button">Approve selected</button>
+                  <button id="priceImportRejectSelected" class="danger-button" type="button">Reject selected</button>
+                </div>
+              </div>
+              <div id="priceImportRows" class="admin-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="usersTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Users</h2>
+          </div>
+          <section class="admin-card compact-card">
+            <div class="card-topline">
+              <h3>Username Moderation</h3>
+              <span class="badge confidence-medium">Leaderboards</span>
+            </div>
+            <p class="field-help">Blocked phrases are checked for new usernames and keep unsafe public names off leaderboards.</p>
+            <form id="usernameBlockForm" class="form-grid">
+              <label>
+                <span>Blocked word or phrase</span>
+                <input name="phrase" type="text" maxlength="80" placeholder="storeofficial" required>
+              </label>
+              <label>
+                <span>Reason</span>
+                <input name="reason" type="text" maxlength="300" placeholder="Official-looking or unsafe username">
+              </label>
+              <div class="card-actions span-full">
+                <button class="secondary-button" type="submit">Add blocked phrase</button>
+              </div>
+            </form>
+            <div id="usernameBlockedPhrases" class="admin-list compact-list"></div>
+          </section>
+          <section class="admin-card compact-card">
+            <div class="admin-panel-heading">
+              <div>
+                <h3>Admin Access Cleanup</h3>
+                <p class="field-help">Only keep accounts you trust. Demoting removes admin access but does not delete data.</p>
+              </div>
+            </div>
+            <div id="adminAccessCleanup" class="admin-list compact-list"></div>
+          </section>
+          <div id="adminUsers" class="admin-list"></div>
+        </section>
+
+        <section id="storesTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Stores</h2>
+            <span id="storeRequestCount" class="admin-count"></span>
+          </div>
+          <form id="adminStoreForm" class="admin-toolbar">
+            <label>
+              <span>Store name</span>
+              <input name="name" type="text" maxlength="120" required>
+            </label>
+            <label>
+              <span>Address</span>
+              <input name="address" type="text" maxlength="160">
+            </label>
+            <label>
+              <span>City</span>
+              <input name="city" type="text" maxlength="80" value="Janesville">
+            </label>
+            <label>
+              <span>Type</span>
+              <input name="store_type" type="text" maxlength="80" value="grocery">
+            </label>
+            <button class="primary-button" type="submit">Add store</button>
+          </form>
+          <div id="adminStoreMessage" class="message" aria-live="polite"></div>
+          <h3 class="compact-heading">Pending store requests</h3>
+          <div id="storeRequestsList" class="admin-list"></div>
+          <h3 class="compact-heading recent-users-section">Store list</h3>
+          <div id="adminStoresList" class="admin-list"></div>
+        </section>
+
+        <section id="suggestionsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Suggestions</h2>
+            <span id="suggestionsCount" class="admin-count"></span>
+          </div>
+          <div id="adminSuggestionsList" class="admin-list"></div>
+        </section>
+
+        <section id="productToolsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Cart / Product Tools</h2>
+          </div>
+          <div id="productToolsContent" class="admin-list"></div>
+        </section>
+
+        <section id="emailTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Email / Diagnostics</h2>
+          </div>
+          <div id="emailSetupStatus" class="admin-list"></div>
+          <form id="emailTestForm" class="admin-toolbar">
+            <label>
+              <span>Test email address</span>
+              <input id="emailTestTo" type="email" maxlength="254" value="juricbu@gmail.com" autocomplete="email">
+            </label>
+            <button class="secondary-button" type="submit">Send test email</button>
+            <button id="runEmailDiagnosticButton" class="quiet-button" type="button">Run diagnostic</button>
+          </form>
+          <div id="emailTestMessage" class="message" aria-live="polite"></div>
+          <div id="emailDiagnosticResult" class="admin-list"></div>
+        </section>
+
+        <section id="manualTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Manual Entry</h2>
+          </div>
+          <p class="inline-help">Use this when entering prices from a receipt or direct in-store check.</p>
+          <form id="manualEntryForm" class="form-grid">
+            <label>
+              <span>Item name</span>
+              <input name="item_name" type="text" maxlength="120" placeholder="Roma tomatoes" required>
+            </label>
+            <label>
+              <span>Brand</span>
+              <input name="brand" type="text" maxlength="80" placeholder="Unknown / store brand">
+            </label>
+            <label>
+              <span>Store</span>
+              <select id="manualStore" name="store_id" required>
+                <option value="">Choose store</option>
+              </select>
+            </label>
+            <label>
+              <span>Category</span>
+              <select id="manualCategory" name="category" required></select>
+            </label>
+            <label>
+              <span>Price</span>
+              <input name="price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" required>
+            </label>
+            <label>
+              <span>Package size text</span>
+              <input name="size_text" type="text" maxlength="80" placeholder="12 ct">
+            </label>
+            <label>
+              <span>Quantity</span>
+              <input name="quantity" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" required>
+            </label>
+            <label>
+              <span>Unit</span>
+              <select name="unit" required>
+                <option value="each">each</option>
+                <option value="count">count</option>
+                <option value="ct">ct</option>
+                <option value="oz">oz</option>
+                <option value="lb">lb</option>
+                <option value="fl oz">fl oz</option>
+                <option value="gallon">gallon</option>
+                <option value="pack">pack</option>
+                <option value="roll">roll</option>
+                <option value="bottle">bottle</option>
+                <option value="can">can</option>
+                <option value="bag">bag</option>
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input name="sale_price" type="checkbox">
+              <span>Sale price</span>
+            </label>
+            <label>
+              <span>Regular price</span>
+              <input name="regular_price" type="number" min="0.01" max="999" step="0.01" inputmode="decimal" placeholder="Optional">
+            </label>
+            <label>
+              <span>Sale expiration date</span>
+              <input name="expires_at" type="date">
+            </label>
+            <label>
+              <span>Proof type</span>
+              <select id="manualProofType" name="proof_type" required>
+                <option value="shelf_tag_photo">Shelf tag photo</option>
+                <option value="receipt_photo">Receipt photo</option>
+                <option value="weekly_ad">Weekly ad</option>
+                <option value="no_photo">No photo</option>
+              </select>
+            </label>
+            <label id="manualProofPhotoField">
+              <span>Proof photo</span>
+              <input id="manualProofPhotoInput" name="proof_photo" type="file" accept="image/jpeg,image/png,image/webp">
+              <p id="manualProofPhotoStatus" class="field-help">No file selected.</p>
+            </label>
+            <div id="manualProofPhotoRequirement" class="span-full inline-help">Photo required.</div>
+            <label class="checkbox-row span-full">
+              <input name="approve_immediately" type="checkbox">
+              <span>Approve immediately</span>
+            </label>
+            <label class="span-full">
+              <span>Notes</span>
+              <textarea name="notes" maxlength="500" rows="4"></textarea>
+            </label>
+            <button class="primary-button span-full" type="submit">Create manual report</button>
+          </form>
+          <div id="manualEntryMessage" class="message" aria-live="polite"></div>
+        </section>
+
+        <section id="settingsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <h2>Settings</h2>
+          </div>
+          <div class="admin-card compact-card">
+            <h3>Safety settings</h3>
+            <p class="field-help">Admin approval remains required before user reports appear publicly. Pending stores, suggestions, and reports stay hidden until reviewed.</p>
+            <div class="flag-row">
+              <span>No fake data</span>
+              <span>No scraping</span>
+              <span>No public allergy safety guarantees</span>
+              <span>Technical details collapsed</span>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>
