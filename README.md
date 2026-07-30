@@ -1,6 +1,8 @@
 # Grocery Radar Janesville
 
-Grocery Radar Janesville is a local crowdsourced grocery price app for Janesville, Wisconsin. It starts empty and only shows grocery price reports submitted by registered users.
+Grocery Radar Janesville is a local crowdsourced grocery price app for Janesville, Wisconsin. It starts empty and only shows grocery price reports after admin approval.
+
+The production public app is the React/Vite/Tailwind build served by Express from `public-tailwind-dist`. The existing Express app remains the backend API, SQLite database, auth/session layer, uploads system, email system, rewards system, and private admin portal.
 
 The app uses the phrase "cheapest reported price" because a report is not a guarantee that a store still has that item at that price.
 
@@ -15,15 +17,16 @@ Users create all item, brand, price, proof, verification, and points data by sub
 - Node.js
 - Express
 - SQLite
-- HTML
-- CSS
-- Plain JavaScript
+- React
+- Vite
+- Tailwind CSS
+- HTML/CSS/plain JavaScript for the private admin portal and static legal pages
 - bcrypt password hashing
 - express-session login sessions
 - nodemailer SMTP email
 - multer local image uploads
 
-No React, Next.js, Google login, Stripe, live scraper, or store price API is used.
+No Next.js, Google login, Stripe, live scraper, or store price API is used.
 
 ## Install
 
@@ -37,7 +40,7 @@ npm install
 npm run dev
 ```
 
-Then open:
+Then open the public Tailwind app:
 
 ```text
 http://localhost:3000
@@ -57,24 +60,19 @@ Create a `.env` file from `.env.example`:
 cp .env.example .env
 ```
 
-Default local values:
+Example local values:
 
 ```text
 PORT=3000
 HOST=0.0.0.0
-ADMIN_PIN=1234
+ADMIN_PIN=
 SESSION_SECRET=change_this_to_a_long_random_secret
 APP_BASE_URL=http://localhost:3000
-
-EMAIL_HOST=smtp-relay.brevo.com
-EMAIL_PORT=587
-EMAIL_SECURE=false
-EMAIL_USER=aea3cc001@smtp-brevo.com
-EMAIL_FROM="Grocery Radar Janesville <juricbu@gmail.com>"
-ADMIN_NOTIFY_EMAIL=juricbu@gmail.com
 ```
 
 Change `SESSION_SECRET` before any real deployment.
+
+Do not use a default `ADMIN_PIN` in production. The PIN fallback is read-only for dangerous admin actions; logged-in admin accounts are required for approvals, role changes, and other mutations.
 
 `HOST=0.0.0.0` makes local phone testing easier on the same Wi-Fi. The server still logs the normal localhost URL.
 
@@ -88,15 +86,15 @@ npm run setup:email
 
 The script prompts for your Brevo SMTP password/key in Terminal. When the terminal supports it, the password input is hidden. The script updates only your local `.env` file and preserves existing values like `PORT`, `ADMIN_PIN`, and `SESSION_SECRET`.
 
-The script sets:
+The script can set local SMTP values such as:
 
 ```text
-EMAIL_HOST=smtp-relay.brevo.com
+EMAIL_HOST=<smtp host>
 EMAIL_PORT=587
 EMAIL_SECURE=false
-EMAIL_USER=aea3cc001@smtp-brevo.com
-EMAIL_FROM="Grocery Radar Janesville <juricbu@gmail.com>"
-ADMIN_NOTIFY_EMAIL=juricbu@gmail.com
+EMAIL_USER=<smtp username>
+EMAIL_FROM="Grocery Radar Janesville <no-reply@example.com>"
+ADMIN_NOTIFY_EMAIL=<admin email>
 APP_BASE_URL=http://localhost:3000
 ```
 
@@ -179,15 +177,28 @@ If `ADMIN_NOTIFY_EMAIL` is missing, registration still works and the server logs
 Admin notification email not configured.
 ```
 
-## How To Submit A Price
+## Public Submission Flow
+
+The Tailwind public app uses a proof-first flow:
 
 1. Register or log in.
-2. Open the Submit Price section.
-3. Enter the real item name, store, category, price, package size, quantity, unit, proof type, and optional notes.
+2. Open Submit Proof.
+3. Choose receipt, shelf tag, weekly ad, screenshot, or source link.
+4. Upload proof or paste a source link.
+5. Optionally add store, item, price, and notes as hints.
+6. Submit for review.
+
+Proof-only submissions stay private until admin review. Admins can turn proof into draft price rows, approve reviewed prices, and only then do prices appear publicly.
+
+## Legacy Direct Price Reports
+
+1. Register or log in.
+2. Submit to the compatibility `/api/reports` endpoint.
+3. Provide the real item name, store, category, price, package size, quantity, unit, proof type, and optional notes.
 4. Add proof photo upload when using shelf tag, receipt, or weekly ad proof.
 5. Save the report.
 
-The server uses the logged-in user id, calculates unit price, sets an initial confidence level, saves the report to SQLite with `pending` status, and awards points. New reports do not appear publicly until admin approval.
+The backend still supports the direct `/api/reports` price-report endpoint for compatibility. The server uses the logged-in user id, calculates unit price, sets an initial confidence level, saves the report to SQLite with `pending` status, and awards points. New reports do not appear publicly until admin approval.
 
 After submission, users see:
 

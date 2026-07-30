@@ -15,13 +15,14 @@ Grocery Radar launches as one Express web service:
 - Backend APIs stay under `/api/*`.
 - Health check is at `/health`.
 - SQLite data lives on persistent storage.
+- Login sessions are stored in SQLite on persistent storage.
 - Uploaded proof and receipt files live on persistent storage.
 - Raw receipts remain private and are not served publicly.
 
-The Tailwind source currently lives outside this backend folder:
+The Tailwind source lives inside this backend folder:
 
 ```text
-/Users/rick/Documents/Codex/2026-06-27/create-a-separate-tailwind-prototype-for/grocery-radar-tailwind-prototype
+client/
 ```
 
 For production, the built Tailwind files are copied into:
@@ -30,7 +31,7 @@ For production, the built Tailwind files are copied into:
 public-tailwind-dist
 ```
 
-Express serves that folder as the public shopper app when `public-tailwind-dist/index.html` exists.
+Express serves that folder as the public shopper app when `public-tailwind-dist/index.html` exists. In production, the server returns a deployment error instead of falling back to the old public HTML app if the Tailwind build is missing.
 
 ## Production Routes
 
@@ -66,6 +67,8 @@ SMTP_FROM="Grocery Radar Janesville <no-reply@thegroceryradar.com>"
 Existing `EMAIL_*` variables are still supported for local compatibility. Production can use the `SMTP_*` names above.
 
 `ADMIN_PIN` is now read-only for admin mutation routes. It should be treated as a temporary development fallback, not as the real production admin workflow. Sensitive admin POST/DELETE actions require a logged-in admin account.
+
+In production the Express app trusts the Render proxy so secure session cookies work correctly behind HTTPS. Keep SESSION_SECRET stable in Render or all users will be logged out after deploys.
 
 ## Local Development
 
@@ -106,12 +109,6 @@ npm run build:client
 npm run build:all
 ```
 
-If the Tailwind source is not inside the backend folder, set `CLIENT_DIR`:
-
-```bash
-CLIENT_DIR=/Users/rick/Documents/Codex/2026-06-27/create-a-separate-tailwind-prototype-for/grocery-radar-tailwind-prototype npm run build:client
-```
-
 The build script looks for the frontend in this order:
 
 1. `CLIENT_DIR`
@@ -121,7 +118,7 @@ The build script looks for the frontend in this order:
 5. `../grocery-radar-tailwind-prototype`
 6. existing `public-tailwind-dist`
 
-For a clean long-term repo, place the Tailwind app at `client/` inside the backend repo, or keep `public-tailwind-dist` checked in until the repo layout is cleaned up.
+Render uses `./client`, builds it, and copies the compiled files into `public-tailwind-dist`.
 
 ## Render Setup
 

@@ -91,14 +91,18 @@ const {
 } = require("./src/validation");
 
 const app = express();
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
-const ADMIN_PIN = process.env.ADMIN_PIN || "1234";
+const ADMIN_PIN = process.env.ADMIN_PIN || (process.env.NODE_ENV === "production" ? "" : "1234");
 const APP_DOMAIN = "thegroceryradar.com";
 const PUBLIC_APP_URL = String(
   process.env.PUBLIC_APP_URL ||
   process.env.APP_BASE_URL ||
-  "http://localhost:5173"
+  "http://localhost:3000"
 ).replace(/\/+$/, "");
 const OWNER_EMAIL = String(
   process.env.OWNER_EMAIL ||
@@ -107,6 +111,7 @@ const OWNER_EMAIL = String(
   ""
 ).trim().toLowerCase();
 const SESSION_SECRET = process.env.SESSION_SECRET || "change_this_secret";
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CLIENT_DIST_DIR = process.env.CLIENT_DIST_DIR
   ? path.resolve(process.env.CLIENT_DIST_DIR)
@@ -192,20 +197,6 @@ const priceImportUpload = multer({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(
-  session({
-    name: "grocery_radar_sid",
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 1000 * 60 * 60 * 24 * 14
-    }
-  })
-);
 
 function asyncRoute(handler) {
   return (request, response, next) => {
@@ -222,12 +213,142 @@ function hasTailwindBuild() {
 }
 
 function sendPublicApp(response) {
-  const indexPath = hasTailwindBuild()
-    ? tailwindIndexPath()
-    : path.join(PUBLIC_DIR, "index.html");
+  if (hasTailwindBuild()) {
+    response.sendFile(tailwindIndexPath());
+    return;
+  }
 
-  response.sendFile(indexPath);
+  if (process.env.NODE_ENV === "production") {
+    response.status(503).send("Public app build is missing. Run npm run build:client before deployment.");
+    return;
+  }
+
+  response.sendFile(path.join(PUBLIC_DIR, "index.html"));
 }
+
+function sessionExpiresAt(sessionData) {
+  const cookieExpires = sessionData?.cookie?.expires
+    ? new Date(sessionData.cookie.expires).getTime()
+    : 0;
+
+  if (Number.isFinite(cookieExpires) && cookieExpires > Date.now()) {
+    return cookieExpires;
+  }
+
+  const originalMaxAge = Number(sessionData?.cookie?.originalMaxAge);
+  return Date.now() + (Number.isFinite(originalMaxAge) && originalMaxAge > 0 ? originalMaxAge : SESSION_MAX_AGE_MS);
+}
+
+class SQLiteSessionStore extends session.Store {
+  constructor() {
+    super();
+    this.ready = this.prepare();
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupExpired().catch((error) => {
+        console.warn("Session cleanup failed:", error.message);
+      });
+    }, 1000 * 60 * 60);
+    if (typeof this.cleanupTimer.unref === "function") {
+      this.cleanupTimer.unref();
+    }
+  }
+
+  async prepare() {
+    await run(
+      `CREATE TABLE IF NOT EXISTS app_sessions (
+        sid TEXT PRIMARY KEY,
+        sess TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      )`
+    );
+    await run("CREATE INDEX IF NOT EXISTS idx_app_sessions_expires ON app_sessions(expires_at)");
+    await this.cleanupExpired();
+  }
+
+  async cleanupExpired() {
+    await run("DELETE FROM app_sessions WHERE expires_at <= ?", [Date.now()]);
+  }
+
+  get(sid, callback) {
+    this.ready
+      .then(async () => {
+        const row = await get("SELECT sess, expires_at FROM app_sessions WHERE sid = ?", [sid]);
+        if (!row) {
+          callback(null, null);
+          return;
+        }
+
+        if (Number(row.expires_at) <= Date.now()) {
+          await run("DELETE FROM app_sessions WHERE sid = ?", [sid]);
+          callback(null, null);
+          return;
+        }
+
+        try {
+          callback(null, JSON.parse(row.sess));
+        } catch (error) {
+          await run("DELETE FROM app_sessions WHERE sid = ?", [sid]);
+          callback(null, null);
+        }
+      })
+      .catch((error) => callback(error));
+  }
+
+  set(sid, sessionData, callback = () => {}) {
+    this.ready
+      .then(async () => {
+        await run(
+          `INSERT INTO app_sessions (sid, sess, expires_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(sid) DO UPDATE SET
+             sess = excluded.sess,
+             expires_at = excluded.expires_at,
+             updated_at = excluded.updated_at`,
+          [sid, JSON.stringify(sessionData), sessionExpiresAt(sessionData), new Date().toISOString()]
+        );
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+
+  touch(sid, sessionData, callback = () => {}) {
+    this.ready
+      .then(async () => {
+        await run(
+          "UPDATE app_sessions SET expires_at = ?, updated_at = ? WHERE sid = ?",
+          [sessionExpiresAt(sessionData), new Date().toISOString(), sid]
+        );
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+
+  destroy(sid, callback = () => {}) {
+    this.ready
+      .then(async () => {
+        await run("DELETE FROM app_sessions WHERE sid = ?", [sid]);
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+}
+
+app.use(
+  session({
+    name: "grocery_radar_sid",
+    store: new SQLiteSessionStore(),
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: SESSION_MAX_AGE_MS
+    }
+  })
+);
 
 function baseConfidence(proofType) {
   if (proofType === "receipt_photo") {

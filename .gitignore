@@ -1,6 +1,8 @@
 .env
 .env.local
 node_modules/
+client/node_modules/
+client/dist/
 storage/
 uploads/
 data/*.backup*
