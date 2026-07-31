@@ -31,12 +31,31 @@ function run(command, args, cwd) {
   const result = spawnSync(command, args, {
     cwd,
     stdio: "inherit",
-    shell: process.platform === "win32"
+    shell: false
   });
+
+  if (result.error) {
+    console.error(`Failed to run ${command} ${args.join(" ")}: ${result.error.message}`);
+    process.exit(1);
+  }
 
   if (result.status !== 0) {
     process.exit(result.status || 1);
   }
+}
+
+function npmCommand() {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function installClientDependencies(clientDir) {
+  const hasLockfile = fs.existsSync(path.join(clientDir, "package-lock.json"));
+  const args = hasLockfile
+    ? ["ci", "--include=dev"]
+    : ["install", "--include=dev"];
+
+  console.log(`Installing client dependencies with npm ${args.join(" ")}`);
+  run(npmCommand(), args, clientDir);
 }
 
 function copyDirectory(source, target) {
@@ -61,8 +80,8 @@ if (!clientDir || !isClientDir(clientDir)) {
 }
 
 console.log(`Building Tailwind client from ${clientDir}`);
-run("npm", ["install"], clientDir);
-run("npm", ["run", "build"], clientDir);
+installClientDependencies(clientDir);
+run(npmCommand(), ["run", "build"], clientDir);
 
 const sourceDist = path.join(clientDir, "dist");
 
