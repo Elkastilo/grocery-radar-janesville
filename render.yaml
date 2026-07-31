@@ -24,7 +24,7 @@ services:
         sync: false
       - key: ADMIN_NOTIFY_EMAIL
         sync: false
-      - key: OWNER_EMAIL
+      - key: SUPER_ADMIN_EMAIL
         sync: false
       - key: SMTP_HOST
         sync: false

@@ -56,7 +56,7 @@ DATA_DIR=/opt/render/project/src/storage
 UPLOADS_DIR=/opt/render/project/src/storage/uploads
 ADMIN_PIN=<limited read-only fallback or leave disabled later>
 ADMIN_NOTIFY_EMAIL=<admin email>
-OWNER_EMAIL=<owner/admin email>
+SUPER_ADMIN_EMAIL=<authorized Super Admin email>
 SMTP_HOST=<smtp host>
 SMTP_PORT=587
 SMTP_USER=<smtp username>
@@ -65,6 +65,8 @@ SMTP_FROM="Grocery Radar Janesville <no-reply@thegroceryradar.com>"
 ```
 
 Existing `EMAIL_*` variables are still supported for local compatibility. Production can use the `SMTP_*` names above.
+
+`SUPER_ADMIN_EMAIL` is the only bootstrap Super Admin identity. Legacy `OWNER_EMAIL` is still accepted by the server only when it matches the authorized Super Admin email exactly; `ADMIN_NOTIFY_EMAIL` never grants admin access.
 
 `ADMIN_PIN` is now read-only for admin mutation routes. It should be treated as a temporary development fallback, not as the real production admin workflow. Sensitive admin POST/DELETE actions require a logged-in admin account.
 
