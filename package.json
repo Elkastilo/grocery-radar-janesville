@@ -9,6 +9,9 @@
     "dev": "node server.js",
     "build:client": "node scripts/build-client.js",
     "build:all": "npm run build:client",
+    "test:intake": "node scripts/test-price-intake.js",
+    "test:auth": "node scripts/test-super-admin-auth.js",
+    "test": "npm run test:intake && npm run test:auth",
     "setup:email": "node scripts/setup-email.js",
     "debug:email": "node scripts/debug-email.js"
   },

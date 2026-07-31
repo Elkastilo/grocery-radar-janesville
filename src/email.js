@@ -1,6 +1,7 @@
 const nodemailer = require("nodemailer");
 const emailPasswordKey = ["EMAIL", "PASS"].join("_");
 let lastDiagnosticResult = null;
+const PRODUCTION_APP_BASE_URL = "https://thegroceryradar.com";
 
 function isProduction() {
   return process.env.NODE_ENV === "production";
@@ -22,7 +23,15 @@ function emailConfig() {
 }
 
 function appBaseUrl() {
-  return String(process.env.PUBLIC_APP_URL || process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return String(
+    process.env.PUBLIC_APP_URL ||
+      process.env.APP_BASE_URL ||
+      (isProduction() ? PRODUCTION_APP_BASE_URL : "http://localhost:3000")
+  ).replace(/\/+$/, "");
+}
+
+function emailTestMode() {
+  return process.env.NODE_ENV === "test" && process.env.EMAIL_TEST_MODE === "1";
 }
 
 function adminNotifyEmail() {
@@ -69,13 +78,13 @@ function emailStatus() {
     missing.push("Admin alerts email");
   }
 
-  if (!String(process.env.PUBLIC_APP_URL || process.env.APP_BASE_URL || "").trim()) {
+  if (!String(process.env.PUBLIC_APP_URL || process.env.APP_BASE_URL || (isProduction() ? PRODUCTION_APP_BASE_URL : "")).trim()) {
     missing.push("Public app URL");
   }
 
   return {
-    configured: missing.length === 0,
-    provider: "Brevo",
+    configured: missing.length === 0 || emailTestMode(),
+    provider: emailTestMode() ? "Test" : "Brevo",
     adminNotifyEmail: adminNotifyEmail(),
     appBaseUrl: appBaseUrl(),
     technical: {
@@ -111,6 +120,10 @@ function createTransporter() {
       pass: config.pass
     }
   });
+}
+
+function verificationUrlForToken(token) {
+  return `${appBaseUrl()}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 }
 
 function safeEmailError() {
@@ -149,8 +162,13 @@ function safeSmtpErrorDetails(error) {
 }
 
 async function sendVerificationEmail(user, token) {
+  const verificationLink = verificationUrlForToken(token);
+
+  if (emailTestMode()) {
+    return { sent: true, warning: null, test_mode: true };
+  }
+
   const transporter = createTransporter();
-  const verificationLink = `${appBaseUrl()}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 
   if (!transporter) {
     console.log("Email not configured. Verification email not sent.");
@@ -180,7 +198,7 @@ async function sendVerificationEmail(user, token) {
 
     return { sent: true, warning: null };
   } catch (error) {
-    console.error(`Verification email failed: ${error.message}`);
+    console.error(`Verification email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       warning: isProduction()
@@ -238,7 +256,7 @@ async function sendAdminRegistrationEmail(user) {
 
     return { sent: true, warning: null };
   } catch (error) {
-    console.error(`Admin notification email failed: ${error.message}`);
+    console.error(`Admin notification email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       warning: isProduction()
@@ -285,7 +303,7 @@ async function sendReportRejectionEmail(user, report, rejection) {
 
     return { sent: true, warning: null };
   } catch (error) {
-    console.error(`Rejection email failed: ${error.message}`);
+    console.error(`Rejection email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       warning: isProduction()
@@ -345,7 +363,7 @@ async function sendAdminReportReviewEmail(report) {
 
     return { sent: true, warning: null };
   } catch (error) {
-    console.error(`Admin review notification email failed: ${error.message}`);
+    console.error(`Admin review notification email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       warning: isProduction()
@@ -391,7 +409,7 @@ async function sendTestEmail(to) {
 
     return { sent: true, error: null };
   } catch (error) {
-    console.error(`Test email failed: ${error.message}`);
+    console.error(`Test email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       error: safeEmailError(),
@@ -532,7 +550,7 @@ async function sendAccountBanEmail(user, ban) {
 
     return { sent: true, warning: null };
   } catch (error) {
-    console.error(`Ban email failed: ${error.message}`);
+    console.error(`Ban email failed: ${redactSecretText(error.message)}`);
     return {
       sent: false,
       warning: isProduction()
@@ -547,6 +565,7 @@ module.exports = {
   getLastEmailDiagnostic,
   runEmailDiagnostic,
   safeSmtpErrorDetails,
+  verificationUrlForToken,
   sendTestEmail,
   sendVerificationEmail,
   sendAdminRegistrationEmail,

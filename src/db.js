@@ -179,7 +179,10 @@ async function initDb() {
       is_email_verified INTEGER NOT NULL DEFAULT 0,
       email_verification_token TEXT,
       email_verification_expires TEXT,
+      verification_email_last_sent_at TEXT,
+      verification_email_send_count INTEGER NOT NULL DEFAULT 0,
       is_admin INTEGER NOT NULL DEFAULT 0,
+      is_super_admin INTEGER NOT NULL DEFAULT 0,
       account_status TEXT NOT NULL DEFAULT 'active',
       ban_reason TEXT,
       ban_note TEXT,
@@ -455,6 +458,12 @@ async function initDb() {
       source_title TEXT,
       source_domain TEXT,
       source_checked_at TEXT,
+      default_store_id INTEGER,
+      batch_title TEXT,
+      observed_at TEXT,
+      valid_start_at TEXT,
+      valid_end_at TEXT,
+      source_text TEXT,
       receipt_store_name TEXT,
       receipt_store_address TEXT,
       receipt_purchase_date TEXT,
@@ -482,16 +491,21 @@ async function initDb() {
       store_id INTEGER,
       item_name TEXT NOT NULL DEFAULT '',
       brand TEXT,
+      variant TEXT,
       category TEXT NOT NULL DEFAULT 'other',
       price REAL,
       regular_price REAL,
       sale_price INTEGER NOT NULL DEFAULT 0,
+      member_card_price REAL,
       coupon_required INTEGER NOT NULL DEFAULT 0,
       deal_limit TEXT,
+      multibuy_details TEXT,
+      promotion_text TEXT,
       size_text TEXT,
       quantity REAL,
       unit TEXT,
       proof_type TEXT NOT NULL DEFAULT 'weekly_ad',
+      observed_at TEXT,
       valid_start_at TEXT,
       valid_end_at TEXT,
       source_url TEXT,
@@ -506,6 +520,7 @@ async function initDb() {
       extracted_unit TEXT,
       extraction_confidence TEXT NOT NULL DEFAULT 'low',
       extraction_notes TEXT,
+      duplicate_warning TEXT,
       notes TEXT,
       status TEXT NOT NULL DEFAULT 'import_draft',
       admin_rejection_note TEXT,
@@ -618,9 +633,14 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_sponsors_status ON sponsors(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_missing_price_priorities_item ON missing_price_priorities(item_name, category)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_status ON price_import_batches(status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_source ON price_import_batches(source_type, status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_store ON price_import_batches(default_store_id, status, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_batch ON price_import_rows(batch_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_status ON price_import_rows(status, updated_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_store_status ON price_import_rows(store_id, status, updated_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_product_store ON price_import_rows(product_id, store_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_report ON price_import_rows(price_report_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_duplicate_warning ON price_import_rows(duplicate_warning)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_admin_read ON notifications(admin_only, is_read, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related ON notifications(related_type, related_id)");
@@ -677,7 +697,10 @@ async function migrateUsersTable() {
   await addColumnIfMissing("users", "is_email_verified", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "email_verification_token", "TEXT");
   await addColumnIfMissing("users", "email_verification_expires", "TEXT");
+  await addColumnIfMissing("users", "verification_email_last_sent_at", "TEXT");
+  await addColumnIfMissing("users", "verification_email_send_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("users", "is_super_admin", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "account_status", "TEXT NOT NULL DEFAULT 'active'");
   await addColumnIfMissing("users", "ban_reason", "TEXT");
   await addColumnIfMissing("users", "ban_note", "TEXT");
@@ -792,6 +815,12 @@ async function migratePriceImportBatchesTable() {
   await addColumnIfMissing("price_import_batches", "source_title", "TEXT");
   await addColumnIfMissing("price_import_batches", "source_domain", "TEXT");
   await addColumnIfMissing("price_import_batches", "source_checked_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "default_store_id", "INTEGER");
+  await addColumnIfMissing("price_import_batches", "batch_title", "TEXT");
+  await addColumnIfMissing("price_import_batches", "observed_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "valid_start_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "valid_end_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "source_text", "TEXT");
   await addColumnIfMissing("price_import_batches", "receipt_store_name", "TEXT");
   await addColumnIfMissing("price_import_batches", "receipt_store_address", "TEXT");
   await addColumnIfMissing("price_import_batches", "receipt_purchase_date", "TEXT");
@@ -814,10 +843,16 @@ async function migratePriceImportBatchesTable() {
 async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "price_report_id", "INTEGER");
   await addColumnIfMissing("price_import_rows", "product_id", "INTEGER");
+  await addColumnIfMissing("price_import_rows", "store_id", "INTEGER");
+  await addColumnIfMissing("price_import_rows", "variant", "TEXT");
   await addColumnIfMissing("price_import_rows", "regular_price", "REAL");
   await addColumnIfMissing("price_import_rows", "sale_price", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("price_import_rows", "member_card_price", "REAL");
   await addColumnIfMissing("price_import_rows", "coupon_required", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_rows", "deal_limit", "TEXT");
+  await addColumnIfMissing("price_import_rows", "multibuy_details", "TEXT");
+  await addColumnIfMissing("price_import_rows", "promotion_text", "TEXT");
+  await addColumnIfMissing("price_import_rows", "observed_at", "TEXT");
   await addColumnIfMissing("price_import_rows", "valid_start_at", "TEXT");
   await addColumnIfMissing("price_import_rows", "valid_end_at", "TEXT");
   await addColumnIfMissing("price_import_rows", "source_url", "TEXT");
@@ -832,6 +867,7 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "extracted_unit", "TEXT");
   await addColumnIfMissing("price_import_rows", "extraction_confidence", "TEXT NOT NULL DEFAULT 'low'");
   await addColumnIfMissing("price_import_rows", "extraction_notes", "TEXT");
+  await addColumnIfMissing("price_import_rows", "duplicate_warning", "TEXT");
   await addColumnIfMissing("price_import_rows", "admin_rejection_note", "TEXT");
   await addColumnIfMissing("price_import_rows", "created_by", "INTEGER");
   await addColumnIfMissing("price_import_rows", "updated_by", "INTEGER");

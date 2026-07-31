@@ -89,6 +89,10 @@ const {
   validateAccountStatus,
   validateBanDetails
 } = require("./src/validation");
+const {
+  compactSearchText: compactIntakeSearchText,
+  parsePriceText
+} = require("./src/priceIntake");
 
 const app = express();
 
@@ -102,14 +106,23 @@ const APP_DOMAIN = "thegroceryradar.com";
 const PUBLIC_APP_URL = String(
   process.env.PUBLIC_APP_URL ||
   process.env.APP_BASE_URL ||
-  "http://localhost:3000"
+  (process.env.NODE_ENV === "production" ? `https://${APP_DOMAIN}` : "http://localhost:3000")
 ).replace(/\/+$/, "");
-const OWNER_EMAIL = String(
+const BOOTSTRAP_SUPER_ADMIN_EMAIL = "juricbu@gmail.com";
+const BOOTSTRAP_SUPER_ADMIN_USERNAME = "elcastilo";
+const CONFIGURED_SUPER_ADMIN_EMAIL = String(
+  process.env.SUPER_ADMIN_EMAIL ||
   process.env.OWNER_EMAIL ||
-  process.env.ADMIN_OWNER_EMAIL ||
-  process.env.ADMIN_NOTIFY_EMAIL ||
-  ""
+  BOOTSTRAP_SUPER_ADMIN_EMAIL
 ).trim().toLowerCase();
+const OWNER_EMAIL = CONFIGURED_SUPER_ADMIN_EMAIL === BOOTSTRAP_SUPER_ADMIN_EMAIL
+  ? CONFIGURED_SUPER_ADMIN_EMAIL
+  : BOOTSTRAP_SUPER_ADMIN_EMAIL;
+const VERIFICATION_TOKEN_TTL_MS = 1000 * 60 * 60 * 24;
+const VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
+  60,
+  Number.parseInt(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || "300", 10) || 300
+);
 const SESSION_SECRET = process.env.SESSION_SECRET || "change_this_secret";
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -550,7 +563,8 @@ const PRICE_IMPORT_ROW_STATUSES = [
   "ready_for_review",
   "approved",
   "rejected",
-  "needs_edit"
+  "needs_edit",
+  "removed"
 ];
 
 const PRICE_IMPORT_SOURCE_TYPES = [
@@ -558,6 +572,8 @@ const PRICE_IMPORT_SOURCE_TYPES = [
   "weekly_ad",
   "shelf_tag",
   "store_deal",
+  "website",
+  "paste_text",
   "other"
 ];
 
@@ -813,6 +829,36 @@ function cleanSourceMetadata(body = {}, fallback = {}) {
   };
 }
 
+function cleanImportBatchDefaults(body = {}, fallback = {}) {
+  const storeId = Number.parseInt(
+    body.default_store_id || body.store_id || fallback.default_store_id,
+    10
+  );
+
+  return {
+    default_store_id: Number.isInteger(storeId) && storeId > 0 ? storeId : null,
+    batch_title: cleanText(body.batch_title || fallback.batch_title, 160),
+    observed_at: normalizeOptionalTimestamp(body.observed_at || body.observed_date || fallback.observed_at),
+    valid_start_at: normalizeImportDate(body.valid_start_at || body.valid_start_date || fallback.valid_start_at, false),
+    valid_end_at: normalizeImportDate(body.valid_end_at || body.valid_end_date || body.expires_at || fallback.valid_end_at, true),
+    source_text: cleanReceiptSourceText(body.source_text || fallback.source_text || "", 12000),
+    notes: cleanText(body.notes || fallback.notes, 500)
+  };
+}
+
+function importBatchDefaultsForRow(batch = {}, overrides = {}) {
+  return {
+    store_id: overrides.store_id || batch.default_store_id || "",
+    proof_type: overrides.proof_type || batch.proof_type || "weekly_ad",
+    source_url: overrides.source_url || batch.source_url || "",
+    source_title: overrides.source_title || batch.source_title || "",
+    source_checked_at: overrides.source_checked_at || batch.source_checked_at || batch.observed_at || "",
+    observed_at: overrides.observed_at || batch.observed_at || "",
+    valid_start_at: overrides.valid_start_at || batch.valid_start_at || "",
+    valid_end_at: overrides.valid_end_at || batch.valid_end_at || ""
+  };
+}
+
 function validateImportProofType(value) {
   const proofType = cleanText(value || "weekly_ad", 40);
 
@@ -834,7 +880,14 @@ function validateImportSourceType(value) {
 }
 
 function validateImportRowStatus(value, fallback = "import_draft") {
-  const status = cleanText(value || fallback, 40).toLowerCase();
+  const aliases = {
+    draft: "import_draft",
+    needs_review: "ready_for_review",
+    ready: "ready_for_review",
+    remove: "removed"
+  };
+  const rawStatus = cleanText(value || fallback, 40).toLowerCase();
+  const status = aliases[rawStatus] || rawStatus;
 
   if (!PRICE_IMPORT_ROW_STATUSES.includes(status)) {
     throw new Error("Import row status is not valid.");
@@ -848,6 +901,7 @@ function cleanImportRowDraft(body = {}) {
   const productId = Number.parseInt(body.product_id, 10);
   const price = parseImportNumber(body.price);
   const regularPrice = parseImportNumber(body.regular_price);
+  const memberCardPrice = parseImportNumber(body.member_card_price);
   const quantity = parseImportNumber(body.quantity);
   const category = cleanText(body.category || "other", 30).toLowerCase();
   const source = cleanSourceMetadata(body);
@@ -858,16 +912,21 @@ function cleanImportRowDraft(body = {}) {
     store_id: Number.isInteger(storeId) && storeId > 0 ? storeId : null,
     item_name: cleanText(body.item_name, 120),
     brand: cleanText(body.brand, 80),
+    variant: cleanText(body.variant, 80),
     category: CATEGORIES.includes(category) ? category : "other",
     price,
     regular_price: regularPrice,
     sale_price: parseImportBoolean(body.sale_price) ? 1 : 0,
+    member_card_price: memberCardPrice,
     coupon_required: parseImportBoolean(body.coupon_required) ? 1 : 0,
     deal_limit: cleanText(body.deal_limit || body.limit, 80),
+    multibuy_details: cleanText(body.multibuy_details, 120),
+    promotion_text: cleanText(body.promotion_text, 240),
     size_text: cleanText(body.size_text, 80),
     quantity,
     unit: cleanText(body.unit || "each", 30).toLowerCase(),
     proof_type: validateImportProofType(body.proof_type),
+    observed_at: normalizeOptionalTimestamp(body.observed_at || body.observed_date),
     valid_start_at: normalizeImportDate(body.valid_start_at || body.valid_start_date, false),
     valid_end_at: normalizeImportDate(body.valid_end_at || body.valid_end_date || body.expires_at, true),
     ...source,
@@ -879,6 +938,7 @@ function cleanImportRowDraft(body = {}) {
     extracted_unit: cleanText(body.extracted_unit, 30).toLowerCase(),
     extraction_confidence: ["high", "medium", "low"].includes(extractionConfidence) ? extractionConfidence : "low",
     extraction_notes: cleanText(body.extraction_notes, 500),
+    duplicate_warning: cleanText(body.duplicate_warning, 500),
     notes: cleanText(body.notes, 500),
     status: validateImportRowStatus(body.status)
   };
@@ -888,8 +948,13 @@ function composeImportReportNotes(row) {
   const parts = [
     row.notes || "",
     "Imported through Admin Price Importer after proof review.",
+    row.variant ? `Variant: ${row.variant}.` : "",
     row.coupon_required ? "Coupon required." : "Coupon required: no.",
+    row.member_card_price ? `Member-card price: $${Number(row.member_card_price).toFixed(2)}.` : "",
+    row.multibuy_details ? `Multi-buy details: ${row.multibuy_details}.` : "",
+    row.promotion_text ? `Promotion text: ${row.promotion_text}.` : "",
     row.deal_limit ? `Limit: ${row.deal_limit}.` : "",
+    row.observed_at ? `Observed: ${dateInputValue(row.observed_at)}.` : "",
     row.valid_start_at || row.valid_end_at
       ? `Valid dates: ${dateInputValue(row.valid_start_at) || "unknown"} to ${dateInputValue(row.valid_end_at) || "unknown"}.`
       : "",
@@ -930,17 +995,24 @@ function formatPriceImportRow(row) {
     store_name: row.store_name || "",
     item_name: row.item_name || "",
     brand: row.brand || "",
+    variant: row.variant || "",
     category: row.category || "other",
     price: row.price === null || row.price === undefined ? null : Number(row.price),
     price_label: row.price === null || row.price === undefined ? "" : `$${Number(row.price).toFixed(2)}`,
     regular_price: row.regular_price === null || row.regular_price === undefined ? null : Number(row.regular_price),
     sale_price: Boolean(row.sale_price),
+    member_card_price: row.member_card_price === null || row.member_card_price === undefined ? null : Number(row.member_card_price),
+    member_card_price_label: row.member_card_price === null || row.member_card_price === undefined ? "" : `$${Number(row.member_card_price).toFixed(2)}`,
     coupon_required: Boolean(row.coupon_required),
     deal_limit: row.deal_limit || "",
+    multibuy_details: row.multibuy_details || "",
+    promotion_text: row.promotion_text || "",
     size_text: row.size_text || "",
     quantity: row.quantity === null || row.quantity === undefined ? null : Number(row.quantity),
     unit: row.unit || "",
     proof_type: row.proof_type || "weekly_ad",
+    observed_at: row.observed_at || "",
+    observed_date: dateInputValue(row.observed_at),
     valid_start_at: row.valid_start_at || "",
     valid_start_date: dateInputValue(row.valid_start_at),
     valid_end_at: row.valid_end_at || "",
@@ -958,6 +1030,8 @@ function formatPriceImportRow(row) {
     extracted_unit: row.extracted_unit || "",
     extraction_confidence: row.extraction_confidence || "low",
     extraction_notes: row.extraction_notes || "",
+    duplicate_warning: row.duplicate_warning || "",
+    product_matches: row.product_matches || [],
     notes: row.notes || "",
     status: row.status,
     admin_rejection_note: row.admin_rejection_note || "",
@@ -993,6 +1067,15 @@ function formatPriceImportBatch(batch, rows = []) {
     source_domain: batch.source_domain || "",
     source_checked_at: batch.source_checked_at || "",
     source_checked_date: dateInputValue(batch.source_checked_at),
+    default_store_id: batch.default_store_id || null,
+    batch_title: batch.batch_title || "",
+    observed_at: batch.observed_at || "",
+    observed_date: dateInputValue(batch.observed_at),
+    valid_start_at: batch.valid_start_at || "",
+    valid_start_date: dateInputValue(batch.valid_start_at),
+    valid_end_at: batch.valid_end_at || "",
+    valid_end_date: dateInputValue(batch.valid_end_at),
+    source_text: batch.source_text || "",
     receipt_store_name: batch.receipt_store_name || "",
     receipt_store_address: batch.receipt_store_address || "",
     receipt_purchase_date: batch.receipt_purchase_date || "",
@@ -2102,8 +2185,108 @@ async function sendAdminUploadFile(request, response) {
   sendUploadFileByFilename(filename, response);
 }
 
+function normalizedEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isBootstrapSuperAdminEmail(email) {
+  return normalizedEmail(email) === OWNER_EMAIL;
+}
+
 function isOwnerAccount(user) {
-  return Boolean(OWNER_EMAIL && String(user?.email || "").trim().toLowerCase() === OWNER_EMAIL);
+  return isBootstrapSuperAdminEmail(user?.email);
+}
+
+function isSuperAdminAccount(user = {}) {
+  return Boolean(user?.is_super_admin) && isOwnerAccount(user);
+}
+
+async function applyBootstrapSuperAdminFlags(user) {
+  if (!user || !user.id) {
+    return user;
+  }
+
+  if (!isBootstrapSuperAdminEmail(user.email)) {
+    if (user.is_super_admin) {
+      await run("UPDATE users SET is_super_admin = 0 WHERE id = ?", [user.id]);
+      return get("SELECT * FROM users WHERE id = ?", [user.id]);
+    }
+
+    return user;
+  }
+
+  const usernameConflict = await get(
+    "SELECT id FROM users WHERE lower(username) = lower(?) AND id != ?",
+    [BOOTSTRAP_SUPER_ADMIN_USERNAME, user.id]
+  );
+  const usernameSql = usernameConflict
+    ? ""
+    : ", username = ?";
+  const params = usernameConflict
+    ? [user.id]
+    : [BOOTSTRAP_SUPER_ADMIN_USERNAME, user.id];
+
+  await run(
+    `
+      UPDATE users
+      SET is_admin = 1,
+          is_super_admin = 1${usernameSql}
+      WHERE id = ?
+    `,
+    params
+  );
+
+  return get("SELECT * FROM users WHERE id = ?", [user.id]);
+}
+
+async function ensureBootstrapSuperAdmin() {
+  await run(
+    "UPDATE users SET is_super_admin = 0 WHERE lower(COALESCE(email, '')) != lower(?) AND is_super_admin = 1",
+    [OWNER_EMAIL]
+  );
+
+  const ownerAccounts = await all(
+    "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY id ASC",
+    [OWNER_EMAIL]
+  );
+
+  if (!ownerAccounts.length) {
+    console.warn("Bootstrap Super Admin account was not found. Register or restore the authorized owner account.");
+    return null;
+  }
+
+  if (ownerAccounts.length > 1) {
+    console.warn("Multiple accounts share the bootstrap Super Admin email. No duplicate was created; review users manually.");
+  }
+
+  return applyBootstrapSuperAdminFlags(ownerAccounts[0]);
+}
+
+async function markVerificationEmailSent(userId) {
+  await run(
+    `
+      UPDATE users
+      SET verification_email_last_sent_at = ?,
+          verification_email_send_count = COALESCE(verification_email_send_count, 0) + 1
+      WHERE id = ?
+    `,
+    [new Date().toISOString(), userId]
+  );
+}
+
+function secondsUntilVerificationResendAllowed(user) {
+  if (!user?.verification_email_last_sent_at) {
+    return 0;
+  }
+
+  const lastSentMs = new Date(user.verification_email_last_sent_at).getTime();
+
+  if (!Number.isFinite(lastSentMs)) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - lastSentMs) / 1000);
+  return Math.max(0, VERIFICATION_RESEND_COOLDOWN_SECONDS - elapsedSeconds);
 }
 
 function testAccountReason(user = {}) {
@@ -2125,7 +2308,7 @@ function testAccountReason(user = {}) {
 }
 
 function adminRoleForUser(user = {}) {
-  if (isOwnerAccount(user)) return "owner";
+  if (isSuperAdminAccount(user) || isOwnerAccount(user)) return "super admin";
   if (user.is_admin) return "admin";
   const text = `${user.username || ""} ${user.email || ""} ${user.admin_note || ""}`.toLowerCase();
   if (["admin", "staff", "owner", "moderator", "reviewer"].some((term) => text.includes(term))) return "staff-like user";
@@ -2135,6 +2318,7 @@ function adminRoleForUser(user = {}) {
 function adminCapableWhereClause() {
   return `
     users.is_admin = 1
+    OR users.is_super_admin = 1
     OR lower(users.username) LIKE '%admin%'
     OR lower(users.username) LIKE '%staff%'
     OR lower(users.username) LIKE '%owner%'
@@ -2155,6 +2339,7 @@ async function adminAccountAuditRows() {
         users.username,
         users.email,
         users.is_admin,
+        users.is_super_admin,
         users.account_status,
         users.is_email_verified,
         users.created_at,
@@ -2213,8 +2398,9 @@ async function adminAccountAuditRows() {
       email: row.email || "",
       role: adminRoleForUser(row),
       is_owner: isOwnerAccount(row),
+      is_super_admin: isSuperAdminAccount(row),
       is_admin: Boolean(row.is_admin),
-      admin_capable: Boolean(row.is_admin),
+      admin_capable: Boolean(row.is_admin || isSuperAdminAccount(row)),
       account_status: row.account_status || "active",
       email_verified: Boolean(row.is_email_verified),
       created_at: row.created_at,
@@ -2249,12 +2435,14 @@ async function adminAccountAuditSummary() {
   const activeAdminCapableAccounts = adminCapableAccounts.filter((account) =>
     !["banned", "deleted", "deactivated", "suspended"].includes(account.account_status || "active")
   );
-  const ownerAccount = accounts.find((account) => account.is_owner) || null;
+  const ownerAccount = accounts.find((account) => account.is_super_admin || account.is_owner) || null;
 
   return {
     owner_email_configured: Boolean(OWNER_EMAIL),
     owner_email: OWNER_EMAIL,
+    bootstrap_super_admin_email: OWNER_EMAIL,
     admin_capable_count: adminCapableAccounts.length,
+    super_admin_count: accounts.filter((account) => account.is_super_admin).length,
     active_admin_capable_count: activeAdminCapableAccounts.length,
     staff_like_count: accounts.filter((account) => account.role === "staff-like user").length,
     test_or_dev_count: accounts.filter((account) => account.is_test_or_dev).length,
@@ -2263,7 +2451,7 @@ async function adminAccountAuditSummary() {
     cleanup_needed: adminCapableAccounts.length > 1 || !ownerAccount,
     recommendation: ownerAccount
       ? `Keep ${ownerAccount.username} (${ownerAccount.email}) as owner/admin unless you choose otherwise.`
-      : "Owner account could not be identified from OWNER_EMAIL / ADMIN_NOTIFY_EMAIL. Choose the trusted owner before demoting admins.",
+      : "Bootstrap Super Admin account was not found. Register or restore the authorized owner account before demoting admins.",
     accounts
   };
 }
@@ -3544,6 +3732,9 @@ function publicUser(user) {
     is_email_verified: Boolean(user.is_email_verified),
     reward_eligible: Boolean(user.is_email_verified),
     is_admin: Boolean(user.is_admin),
+    is_super_admin: isSuperAdminAccount(user),
+    is_owner: isOwnerAccount(user),
+    admin_role: isSuperAdminAccount(user) ? "super_admin" : user.is_admin ? "admin" : "user",
     account_status: user.account_status || "active",
     hide_from_leaderboard: Boolean(user.hide_from_leaderboard),
     force_username_change: Boolean(user.force_username_change),
@@ -3627,13 +3818,14 @@ async function getSessionUser(request) {
     return null;
   }
 
-  return get("SELECT * FROM users WHERE id = ?", [request.session.userId]);
+  const user = await get("SELECT * FROM users WHERE id = ?", [request.session.userId]);
+  return applyBootstrapSuperAdminFlags(user);
 }
 
 async function getAdminAccess(request) {
   const user = await getSessionUser(request);
 
-  if (user && user.is_admin && !isBlockedAccount(user)) {
+  if (user && (user.is_admin || isSuperAdminAccount(user)) && !isBlockedAccount(user)) {
     await markUserSeen(user.id);
     return { allowed: true, user, viaPin: false };
   }
@@ -5098,8 +5290,9 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
 
   const passwordHash = await bcrypt.hash(registration.password, 12);
   const verificationToken = crypto.randomBytes(32).toString("hex");
-  const verificationExpires = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString();
+  const verificationExpires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
   const createdAt = new Date().toISOString();
+  const isBootstrapAdmin = isBootstrapSuperAdminEmail(registration.email);
   const result = await run(
     `
       INSERT INTO users (
@@ -5112,9 +5305,10 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
         email_verification_token,
         email_verification_expires,
         is_admin,
+        is_super_admin,
         created_at
       )
-      VALUES (?, ?, ?, 0, 0, 0, ?, ?, 0, ?)
+      VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)
     `,
     [
       registration.username,
@@ -5122,11 +5316,17 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
       passwordHash,
       verificationToken,
       verificationExpires,
+      isBootstrapAdmin ? 1 : 0,
+      isBootstrapAdmin ? 1 : 0,
       createdAt
     ]
   );
-  const user = await get("SELECT * FROM users WHERE id = ?", [result.lastID]);
+  let user = await get("SELECT * FROM users WHERE id = ?", [result.lastID]);
+  user = await applyBootstrapSuperAdminFlags(user);
   const verificationEmail = await sendVerificationEmail(user, verificationToken);
+  if (verificationEmail.sent) {
+    await markVerificationEmailSent(user.id);
+  }
   const adminEmail = await sendAdminRegistrationEmail(user);
   const warnings = [verificationEmail.warning, adminEmail.warning].filter(Boolean);
 
@@ -5134,8 +5334,11 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
   await markUserSeen(user.id);
 
   response.status(201).json({
-    message: "Registration complete. Check your email to verify your account.",
+    message: verificationEmail.sent
+      ? "Registration complete. Check your email to verify your account."
+      : "Registration complete, but the verification email was not sent. Use resend verification after SMTP is configured.",
     user: publicUser(user),
+    verification_email_sent: Boolean(verificationEmail.sent),
     warnings
   });
 }));
@@ -5198,6 +5401,16 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
     return;
   }
 
+  const retryAfterSeconds = secondsUntilVerificationResendAllowed(user);
+
+  if (retryAfterSeconds > 0) {
+    response.status(429).json({
+      error: `Please wait ${retryAfterSeconds} seconds before resending verification email.`,
+      retry_after_seconds: retryAfterSeconds
+    });
+    return;
+  }
+
   if (!emailStatus().configured) {
     response.status(400).json({
       error: "Email is not configured yet. Admin must set SMTP settings."
@@ -5206,7 +5419,7 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
   }
 
   const verificationToken = crypto.randomBytes(32).toString("hex");
-  const verificationExpires = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString();
+  const verificationExpires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
 
   await run(
     `
@@ -5228,12 +5441,14 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
     return;
   }
 
+  await markVerificationEmailSent(user.id);
+
   response.json({ message: "Verification email sent." });
 }));
 
 app.post("/api/auth/login", asyncRoute(async (request, response) => {
   const login = validateLogin(request.body);
-  const user = await get(
+  let user = await get(
     "SELECT * FROM users WHERE lower(email) = lower(?)",
     [login.email]
   );
@@ -5254,6 +5469,8 @@ app.post("/api/auth/login", asyncRoute(async (request, response) => {
     response.status(403).json({ error: blockedAccountMessage(user) });
     return;
   }
+
+  user = await applyBootstrapSuperAdminFlags(user);
 
   await logInSessionUser(request, user);
   await markUserSeen(user.id);
@@ -7521,7 +7738,7 @@ async function firstEditableImportRowForBatch(batchId) {
       SELECT *
       FROM price_import_rows
       WHERE batch_id = ?
-        AND status != 'approved'
+        AND status NOT IN ('approved', 'removed')
       ORDER BY id ASC
       LIMIT 1
     `,
@@ -7557,7 +7774,7 @@ async function duplicateImportRowForDraft(batchId, draft, excludeRowId = null) {
         AND LOWER(TRIM(item_name)) = ?
         AND price = ?
         AND proof_type = ?
-        AND status != 'rejected'
+        AND status NOT IN ('rejected', 'removed')
         ${storeClause}
         ${excludeClause}
       ORDER BY id ASC
@@ -7565,6 +7782,159 @@ async function duplicateImportRowForDraft(batchId, draft, excludeRowId = null) {
     `,
     params
   );
+}
+
+async function approvedEquivalentReportForDraft(draft, options = {}) {
+  if (!draft?.store_id || draft.price === null || draft.price === undefined) {
+    return null;
+  }
+
+  const filters = [
+    "pr.status = 'approved'",
+    "pr.store_id = ?",
+    "ABS(pr.price - ?) < 0.005"
+  ];
+  const params = [draft.store_id, draft.price];
+  const productId = Number.parseInt(draft.product_id || options.productId, 10);
+  const itemName = cleanText(draft.item_name, 120).toLowerCase();
+  const sizeText = cleanText(draft.size_text, 80).toLowerCase();
+
+  if (Number.isInteger(productId) && productId > 0) {
+    filters.push("(pr.product_id = ? OR LOWER(TRIM(pr.item_name)) = ?)");
+    params.push(productId, itemName);
+  } else if (itemName) {
+    filters.push("LOWER(TRIM(pr.item_name)) = ?");
+    params.push(itemName);
+  }
+
+  if (sizeText) {
+    filters.push("LOWER(TRIM(COALESCE(pr.size_text, ''))) = ?");
+    params.push(sizeText);
+  }
+
+  if (options.excludeReportId) {
+    filters.push("pr.id != ?");
+    params.push(options.excludeReportId);
+  }
+
+  return get(
+    `
+      ${reportSelectWithProduct()}
+      WHERE ${filters.join(" AND ")}
+      ORDER BY pr.reviewed_at DESC, pr.id DESC
+      LIMIT 1
+    `,
+    params
+  );
+}
+
+async function duplicateWarningForDraft(draft, options = {}) {
+  const approved = await approvedEquivalentReportForDraft(draft, options);
+
+  if (approved) {
+    return `Likely duplicate of approved report #${approved.id} (${approved.store_name}, $${Number(approved.price).toFixed(2)}).`;
+  }
+
+  if (draft.valid_end_at) {
+    const validEnd = new Date(draft.valid_end_at);
+
+    if (!Number.isNaN(validEnd.getTime()) && validEnd < new Date()) {
+      return "Sale date appears expired. Confirm before approval.";
+    }
+  }
+
+  return "";
+}
+
+async function productsForImportMatching() {
+  return all(
+    `
+      SELECT id, display_name, canonical_name, category, default_size_text, default_unit, preferred_brand, common_aliases, status
+      FROM products
+      WHERE status IN ('active', 'needs_review')
+      ORDER BY status ASC, display_name ASC
+      LIMIT 500
+    `
+  );
+}
+
+function productMatchScoreForRow(row, product) {
+  const itemName = compactIntakeSearchText(row.item_name || row.extracted_item_name);
+  const displayName = compactIntakeSearchText(product.display_name);
+  const canonicalName = compactIntakeSearchText(product.canonical_name);
+  const aliases = String(product.common_aliases || "")
+    .split(/[,;\n]/)
+    .map(compactIntakeSearchText)
+    .filter(Boolean);
+  let score = 0;
+
+  if (!itemName) {
+    return 0;
+  }
+
+  if (itemName === displayName || itemName === canonicalName || aliases.includes(itemName)) {
+    score += 100;
+  } else if (displayName && (itemName.includes(displayName) || displayName.includes(itemName))) {
+    score += 65;
+  } else if (canonicalName && (itemName.includes(canonicalName) || canonicalName.includes(itemName))) {
+    score += 60;
+  } else {
+    const itemWords = new Set(itemName.split(" ").filter((word) => word.length > 2));
+    const productWords = new Set([displayName, canonicalName, ...aliases].join(" ").split(" ").filter((word) => word.length > 2));
+    const overlap = [...itemWords].filter((word) => productWords.has(word)).length;
+
+    score += overlap * 16;
+  }
+
+  if (row.category && product.category && row.category === product.category) {
+    score += 10;
+  }
+
+  if (row.size_text && product.default_size_text && compactIntakeSearchText(row.size_text) === compactIntakeSearchText(product.default_size_text)) {
+    score += 10;
+  }
+
+  if (row.unit && product.default_unit && row.unit === product.default_unit) {
+    score += 5;
+  }
+
+  if (row.brand && product.preferred_brand && compactIntakeSearchText(row.brand) === compactIntakeSearchText(product.preferred_brand)) {
+    score += 8;
+  }
+
+  if (product.status === "active") {
+    score += 3;
+  }
+
+  return score;
+}
+
+async function addReviewHintsToImportRows(rows) {
+  if (!rows.length) {
+    return rows;
+  }
+
+  const products = await productsForImportMatching();
+
+  return rows.map((row) => {
+    const matches = products
+      .map((product) => ({
+        id: product.id,
+        display_name: product.display_name,
+        category: product.category,
+        default_size_text: product.default_size_text || "",
+        status: product.status,
+        score: productMatchScoreForRow(row, product)
+      }))
+      .filter((match) => match.score >= 45)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 4);
+
+    return {
+      ...row,
+      product_matches: matches
+    };
+  });
 }
 
 async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
@@ -7576,16 +7946,21 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         store_id,
         item_name,
         brand,
+        variant,
         category,
         price,
         regular_price,
         sale_price,
+        member_card_price,
         coupon_required,
         deal_limit,
+        multibuy_details,
+        promotion_text,
         size_text,
         quantity,
         unit,
         proof_type,
+        observed_at,
         valid_start_at,
         valid_end_at,
         source_url,
@@ -7600,6 +7975,7 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         extracted_unit,
         extraction_confidence,
         extraction_notes,
+        duplicate_warning,
         notes,
         status,
         created_by,
@@ -7607,7 +7983,7 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         updated_by,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       batchId,
@@ -7615,16 +7991,21 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
       draft.store_id,
       draft.item_name,
       draft.brand,
+      draft.variant,
       draft.category,
       draft.price,
       draft.regular_price,
       draft.sale_price,
+      draft.member_card_price,
       draft.coupon_required,
       draft.deal_limit,
+      draft.multibuy_details,
+      draft.promotion_text,
       draft.size_text,
       draft.quantity,
       draft.unit,
       draft.proof_type,
+      draft.observed_at,
       draft.valid_start_at,
       draft.valid_end_at,
       draft.source_url,
@@ -7639,6 +8020,7 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
       draft.extracted_unit,
       draft.extraction_confidence,
       draft.extraction_notes,
+      draft.duplicate_warning,
       draft.notes,
       draft.status,
       adminUserId,
@@ -7731,6 +8113,91 @@ async function createReceiptDraftRows(batch, receiptText, adminUser, options = {
     skipped_duplicate_row_ids: skippedDuplicates,
     ignored_line_count: parsed.ignored_line_count,
     skipped_lines: parsed.skipped_lines || []
+  };
+}
+
+async function createPriceTextDraftRows(batch, sourceText, adminUser, options = {}) {
+  const defaults = {
+    ...importBatchDefaultsForRow(batch, options),
+    source_type: batch.source_type || options.source_type || "paste_text",
+    year: Number.parseInt(process.env.SOURCE_TEXT_PARSE_YEAR, 10) || new Date().getFullYear()
+  };
+  const parsed = parsePriceText(sourceText, defaults);
+
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  const now = new Date().toISOString();
+  const createdRows = [];
+  const skippedDuplicates = [];
+  const skippedLines = [...(parsed.skipped_lines || [])];
+
+  await run(
+    `
+      UPDATE price_import_batches
+      SET source_text = ?,
+          source_url = COALESCE(NULLIF(?, ''), source_url),
+          source_title = COALESCE(NULLIF(?, ''), source_title),
+          source_domain = COALESCE(NULLIF(?, ''), source_domain),
+          source_checked_at = COALESCE(NULLIF(?, ''), source_checked_at),
+          default_store_id = COALESCE(?, default_store_id),
+          observed_at = COALESCE(NULLIF(?, ''), observed_at),
+          valid_start_at = COALESCE(NULLIF(?, ''), valid_start_at),
+          valid_end_at = COALESCE(NULLIF(?, ''), valid_end_at),
+          status = CASE WHEN status IN ('needs_admin_review', 'accepted_for_review') THEN status ELSE 'ready_for_review' END,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    [
+      cleanReceiptSourceText(sourceText, 12000),
+      defaults.source_url,
+      defaults.source_title,
+      sourceDomainFromUrl(defaults.source_url),
+      defaults.source_checked_at,
+      defaults.store_id ? Number.parseInt(defaults.store_id, 10) : null,
+      defaults.observed_at,
+      defaults.valid_start_at,
+      defaults.valid_end_at,
+      now,
+      batch.id
+    ]
+  );
+
+  for (const parsedRow of parsed.rows) {
+    const draft = cleanImportRowDraft({
+      ...parsedRow,
+      source_url: parsedRow.source_url || defaults.source_url || "",
+      source_title: parsedRow.source_title || defaults.source_title || "",
+      source_checked_at: parsedRow.source_checked_at || defaults.source_checked_at || "",
+      observed_at: parsedRow.observed_at || defaults.observed_at || "",
+      valid_start_at: parsedRow.valid_start_at || defaults.valid_start_at || "",
+      valid_end_at: parsedRow.valid_end_at || defaults.valid_end_at || "",
+      proof_type: parsedRow.proof_type || defaults.proof_type || batch.proof_type || "weekly_ad"
+    });
+    const duplicate = await duplicateImportRowForDraft(batch.id, draft);
+
+    if (duplicate) {
+      skippedDuplicates.push(duplicate.id);
+      skippedLines.push({
+        line: parsedRow.promotion_text || parsedRow.item_name,
+        reason: `matching draft row already exists (#${duplicate.id})`
+      });
+      continue;
+    }
+
+    draft.duplicate_warning = await duplicateWarningForDraft(draft);
+    const rowId = await insertPriceImportRowDraft(batch.id, draft, adminUser ? adminUser.id : null, now);
+    createdRows.push(await priceImportRowById(rowId));
+  }
+
+  return {
+    ok: true,
+    created_rows: createdRows,
+    created_count: createdRows.length,
+    skipped_duplicate_row_ids: skippedDuplicates,
+    ignored_line_count: skippedLines.length,
+    skipped_lines: skippedLines
   };
 }
 
@@ -7866,6 +8333,74 @@ async function approvePriceImportRow(rowId, adminUser) {
   const unitPrice = calculateUnitPrice(cleanReport.price, cleanReport.quantity, cleanReport.unit);
   const submittedAt = new Date().toISOString();
   const productId = await resolveReportProductId(cleanReport, adminUser.id);
+  const equivalentReport = await approvedEquivalentReportForDraft(
+    {
+      ...row,
+      product_id: productId,
+      store_id: cleanReport.store_id,
+      item_name: cleanReport.item_name,
+      price: cleanReport.price,
+      size_text: cleanReport.size_text
+    },
+    { productId }
+  );
+
+  if (equivalentReport) {
+    await run(
+      `
+        UPDATE price_import_rows
+        SET status = 'approved',
+            price_report_id = ?,
+            product_id = ?,
+            duplicate_warning = ?,
+            approved_by = ?,
+            approved_at = ?,
+            updated_by = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [
+        equivalentReport.id,
+        productId,
+        `Linked to existing approved report #${equivalentReport.id}; no duplicate public report was created.`,
+        adminUser.id,
+        submittedAt,
+        adminUser.id,
+        submittedAt,
+        rowId
+      ]
+    );
+
+    await run(
+      `
+        UPDATE price_import_batches
+        SET status = CASE
+              WHEN ? THEN 'used_for_prices'
+              WHEN NOT EXISTS (
+                SELECT 1
+                FROM price_import_rows
+                WHERE batch_id = ?
+                  AND status NOT IN ('approved', 'rejected', 'removed')
+              )
+              THEN 'ready_for_review'
+              ELSE status
+            END,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, submittedAt, row.batch_id]
+    );
+
+    return {
+      row: await priceImportRowById(rowId),
+      report_id: equivalentReport.id,
+      product_id: productId,
+      unit_price_label: formatUnitPrice(equivalentReport.unit_price, equivalentReport.unit),
+      duplicate: true,
+      message: `Import row linked to existing approved report #${equivalentReport.id}. No duplicate public price was created.`
+    };
+  }
+
   const confidence = baseConfidence(cleanReport.proof_type);
   const result = await run(
     `
@@ -7982,7 +8517,7 @@ async function approvePriceImportRow(rowId, adminUser) {
               SELECT 1
               FROM price_import_rows
               WHERE batch_id = ?
-                AND status NOT IN ('approved', 'rejected')
+                AND status NOT IN ('approved', 'rejected', 'removed')
             )
             THEN 'ready_for_review'
             ELSE status
@@ -8060,7 +8595,7 @@ app.get("/api/admin/price-imports", requireAdminAccess, asyncRoute(async (reques
       LIMIT 50
     `
   );
-  const rows = await priceImportRowsForBatchIds(batches.map((batch) => batch.id));
+  const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds(batches.map((batch) => batch.id)));
   const rowsByBatch = new Map();
 
   for (const row of rows) {
@@ -8080,6 +8615,27 @@ app.get("/api/admin/price-imports", requireAdminAccess, asyncRoute(async (reques
     proof_types: PROOF_TYPES,
     cleanup_report: cleanupReport,
     proof_inbox: formattedBatches.filter((batch) => batch.is_proof_submission),
+    history: formattedBatches.map((batch) => {
+      const rows = batch.rows || [];
+
+      return {
+        id: batch.id,
+        title: batch.batch_title || `${String(batch.source_type || "proof").replace(/_/g, " ")} #${batch.id}`,
+        source_type: batch.source_type,
+        proof_type: batch.proof_type,
+        store_id: batch.default_store_id,
+        source_domain: batch.source_domain,
+        source_url: batch.source_url,
+        created_by_username: batch.created_by_username,
+        created_at: batch.created_at,
+        status: batch.status,
+        parsed_count: rows.length,
+        approved_count: rows.filter((row) => row.status === "approved").length,
+        rejected_count: rows.filter((row) => row.status === "rejected").length,
+        needs_review_count: rows.filter((row) => !["approved", "rejected", "removed"].includes(row.status)).length,
+        duplicate_count: rows.filter((row) => row.duplicate_warning).length
+      };
+    }),
     batches: formattedBatches
   });
 }));
@@ -8217,10 +8773,31 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
   const source = cleanSourceMetadata(request.body, {
     source_checked_at: request.body.source_url ? now : ""
   });
+  const defaults = cleanImportBatchDefaults(request.body);
   const created = [];
 
   try {
     for (const file of files) {
+      const proofFileHash = hashUploadedFile(file);
+      const duplicate = await findDuplicateProofBatch({
+        userId: request.adminUser ? request.adminUser.id : null,
+        proofFileHash,
+        sourceUrl: ""
+      });
+      const draftBatchForRules = {
+        source_type: sourceType,
+        proof_type: proofType,
+        photo_path: uploadedFileUrl(file.filename),
+        source_url: source.source_url,
+        source_checked_at: source.source_checked_at || defaults.observed_at,
+        created_at: now,
+        duplicate_scope: duplicate?.duplicate_scope || ""
+      };
+      const trustProfile = request.adminUser
+        ? await contributorTrustProfile(request.adminUser.id)
+        : TRUST_LEVELS[0];
+      const proofQualityFlags = proofQualityFlagsForBatch(draftBatchForRules);
+      const reviewPriority = reviewPriorityForProof(draftBatchForRules, trustProfile);
       const result = await run(
         `
           INSERT INTO price_import_batches (
@@ -8235,12 +8812,23 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
             source_title,
             source_domain,
             source_checked_at,
+            default_store_id,
+            batch_title,
+            observed_at,
+            valid_start_at,
+            valid_end_at,
+            source_text,
             notes,
+            proof_file_hash,
+            duplicate_of_batch_id,
+            duplicate_scope,
+            review_priority,
+            proof_quality_flags,
             created_by,
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, 'import_draft', ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, 'import_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           sourceType,
@@ -8253,7 +8841,18 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
           source.source_title,
           source.source_domain,
           source.source_checked_at,
-          cleanText(request.body.notes, 500),
+          defaults.default_store_id,
+          defaults.batch_title,
+          defaults.observed_at,
+          defaults.valid_start_at,
+          defaults.valid_end_at,
+          defaults.source_text,
+          defaults.notes,
+          proofFileHash,
+          duplicate?.duplicate_of_batch_id || null,
+          duplicate?.duplicate_scope || "",
+          reviewPriority,
+          proofQualityFlags.join(","),
           request.adminUser ? request.adminUser.id : null,
           now,
           now
@@ -8333,6 +8932,146 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
       attempts: extractionAttempts
     },
     batches: responseBatches.map((batch) => batch.rows ? batch : formatPriceImportBatch(batch, []))
+  });
+}));
+
+app.post("/api/admin/price-intake/batches", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  const sourceType = validateImportSourceType(request.body.source_type || "paste_text");
+  const proofType = validateImportProofType(request.body.proof_type || "weekly_ad");
+  const now = new Date().toISOString();
+  const source = cleanSourceMetadata(request.body, {
+    source_checked_at: request.body.source_url ? now : ""
+  });
+  const defaults = cleanImportBatchDefaults(request.body);
+
+  if (!source.source_url && !defaults.source_text) {
+    response.status(400).json({ error: "Add a source link, pasted source text, or upload a proof image." });
+    return;
+  }
+
+  if (sourceType === "website" && !source.source_url) {
+    response.status(400).json({ error: "Website intake requires a source URL." });
+    return;
+  }
+
+  const duplicate = await findDuplicateProofBatch({
+    userId: request.adminUser ? request.adminUser.id : null,
+    proofFileHash: "",
+    sourceUrl: source.source_url
+  });
+  const draftBatchForRules = {
+    source_type: sourceType,
+    proof_type: proofType,
+    photo_path: "",
+    source_url: source.source_url,
+    source_checked_at: source.source_checked_at || defaults.observed_at,
+    created_at: now,
+    duplicate_scope: duplicate?.duplicate_scope || ""
+  };
+  const trustProfile = request.adminUser
+    ? await contributorTrustProfile(request.adminUser.id)
+    : TRUST_LEVELS[0];
+  const proofQualityFlags = proofQualityFlagsForBatch(draftBatchForRules);
+  const reviewPriority = reviewPriorityForProof(draftBatchForRules, trustProfile);
+  const result = await run(
+    `
+      INSERT INTO price_import_batches (
+        source_type,
+        proof_type,
+        photo_path,
+        status,
+        source_url,
+        source_title,
+        source_domain,
+        source_checked_at,
+        default_store_id,
+        batch_title,
+        observed_at,
+        valid_start_at,
+        valid_end_at,
+        source_text,
+        notes,
+        duplicate_of_batch_id,
+        duplicate_scope,
+        review_priority,
+        proof_quality_flags,
+        created_by,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, '', 'import_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      sourceType,
+      proofType,
+      source.source_url,
+      source.source_title,
+      source.source_domain,
+      source.source_checked_at,
+      defaults.default_store_id,
+      defaults.batch_title,
+      defaults.observed_at,
+      defaults.valid_start_at,
+      defaults.valid_end_at,
+      defaults.source_text,
+      defaults.notes,
+      duplicate?.duplicate_of_batch_id || null,
+      duplicate?.duplicate_scope || "",
+      reviewPriority,
+      proofQualityFlags.join(","),
+      request.adminUser ? request.adminUser.id : null,
+      now,
+      now
+    ]
+  );
+
+  let batch = await priceImportBatchById(result.lastID);
+  let parsed = {
+    ok: true,
+    created_count: 0,
+    skipped_duplicate_row_ids: [],
+    ignored_line_count: 0,
+    skipped_lines: []
+  };
+
+  if (defaults.source_text) {
+    parsed = await createPriceTextDraftRows(batch, defaults.source_text, request.adminUser, {
+      store_id: defaults.default_store_id || "",
+      observed_at: defaults.observed_at,
+      valid_start_at: defaults.valid_start_at,
+      valid_end_at: defaults.valid_end_at,
+      source_url: source.source_url,
+      source_title: source.source_title,
+      source_checked_at: source.source_checked_at || defaults.observed_at
+    });
+
+    if (!parsed.ok) {
+      parsed = {
+        ok: false,
+        created_count: 0,
+        skipped_duplicate_row_ids: [],
+        ignored_line_count: parsed.ignored_line_count || 0,
+        skipped_lines: parsed.skipped_lines || [],
+        error: parsed.error
+      };
+    }
+  }
+
+  batch = await priceImportBatchById(result.lastID);
+  const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batch.id]));
+
+  response.status(201).json({
+    message: parsed.created_count
+      ? `Source batch created with ${parsed.created_count} draft row${parsed.created_count === 1 ? "" : "s"}.`
+      : "Source batch created. Add or paste price text to create draft rows.",
+    extraction_attempt: {
+      status: parsed.created_count ? "parsed" : parsed.ok === false ? "failed" : "draft_only",
+      message: parsed.error || (parsed.created_count ? "Pasted source text parsed into draft rows for admin review." : "No draft rows were created automatically."),
+      ignored_line_count: parsed.ignored_line_count || 0,
+      skipped_duplicate_row_ids: parsed.skipped_duplicate_row_ids || [],
+      skipped_lines: parsed.skipped_lines || []
+    },
+    batch: formatPriceImportBatch(batch, rows)
   });
 }));
 
@@ -8418,9 +9157,7 @@ app.post("/api/admin/price-imports/:batchId/rows", requireAdminAccess, requireLo
   }
 
   const draft = cleanImportRowDraft({
-    source_url: batch.source_url || "",
-    source_title: batch.source_title || "",
-    source_checked_at: batch.source_checked_at || "",
+    ...importBatchDefaultsForRow(batch),
     extraction_confidence: "low",
     extraction_notes: "",
     ...request.body
@@ -8437,72 +9174,12 @@ app.post("/api/admin/price-imports/:batchId/rows", requireAdminAccess, requireLo
     return;
   }
 
-  const result = await run(
-    `
-      INSERT INTO price_import_rows (
-        batch_id,
-        product_id,
-        store_id,
-        item_name,
-        brand,
-        category,
-        price,
-        regular_price,
-        sale_price,
-        coupon_required,
-        deal_limit,
-        size_text,
-        quantity,
-        unit,
-        proof_type,
-        valid_start_at,
-        valid_end_at,
-        source_url,
-        source_title,
-        source_domain,
-        source_checked_at,
-        extraction_confidence,
-        extraction_notes,
-        notes,
-        status,
-        created_by,
-        created_at,
-        updated_by,
-        updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      batchId,
-      draft.product_id,
-      draft.store_id,
-      draft.item_name,
-      draft.brand,
-      draft.category,
-      draft.price,
-      draft.regular_price,
-      draft.sale_price,
-      draft.coupon_required,
-      draft.deal_limit,
-      draft.size_text,
-      draft.quantity,
-      draft.unit,
-      draft.proof_type,
-      draft.valid_start_at,
-      draft.valid_end_at,
-      draft.source_url,
-      draft.source_title,
-      draft.source_domain,
-      draft.source_checked_at,
-      draft.extraction_confidence,
-      draft.extraction_notes,
-      draft.notes,
-      draft.status,
-      request.adminUser ? request.adminUser.id : null,
-      now,
-      request.adminUser ? request.adminUser.id : null,
-      now
-    ]
+  draft.duplicate_warning = await duplicateWarningForDraft(draft);
+  const rowId = await insertPriceImportRowDraft(
+    batchId,
+    draft,
+    request.adminUser ? request.adminUser.id : null,
+    now
   );
 
   await run(
@@ -8513,7 +9190,80 @@ app.post("/api/admin/price-imports/:batchId/rows", requireAdminAccess, requireLo
 
   response.status(201).json({
     message: "Draft import row created.",
-    row: formatPriceImportRow(await priceImportRowById(result.lastID))
+    row: formatPriceImportRow(await priceImportRowById(rowId))
+  });
+}));
+
+app.post("/api/admin/price-imports/:batchId/parse-price-text", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+
+  if (!batch) {
+    response.status(404).json({ error: "Import batch was not found." });
+    return;
+  }
+
+  const sourceText = cleanReceiptSourceText(request.body.source_text || request.body.price_text || "", 12000);
+
+  if (!sourceText) {
+    response.status(400).json({ error: "Paste price text before parsing." });
+    return;
+  }
+
+  const source = cleanSourceMetadata(request.body, {
+    source_url: batch.source_url || "",
+    source_title: batch.source_title || "",
+    source_checked_at: batch.source_checked_at || batch.observed_at || (request.body.source_url ? new Date().toISOString() : "")
+  });
+  const defaults = cleanImportBatchDefaults(request.body, {
+    default_store_id: batch.default_store_id,
+    observed_at: batch.observed_at,
+    valid_start_at: batch.valid_start_at,
+    valid_end_at: batch.valid_end_at,
+    source_text: batch.source_text || ""
+  });
+  const parsed = await createPriceTextDraftRows(batch, sourceText, request.adminUser, {
+    store_id: defaults.default_store_id || batch.default_store_id || "",
+    observed_at: defaults.observed_at || batch.observed_at || "",
+    valid_start_at: defaults.valid_start_at || batch.valid_start_at || "",
+    valid_end_at: defaults.valid_end_at || batch.valid_end_at || "",
+    source_url: source.source_url,
+    source_title: source.source_title,
+    source_checked_at: source.source_checked_at
+  });
+
+  if (!parsed.ok) {
+    response.status(422).json({
+      error: parsed.error,
+      extraction_attempt: {
+        status: "failed",
+        message: parsed.error,
+        ignored_line_count: parsed.ignored_line_count || 0,
+        skipped_lines: parsed.skipped_lines || []
+      }
+    });
+    return;
+  }
+
+  const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batchId]));
+
+  if (parsed.created_count && isProofSubmissionBatch(batch)) {
+    await awardProofAcceptedIfNeeded(batch, request.adminUser, "Price text created draft rows from proof.");
+  }
+
+  response.status(parsed.created_count ? 201 : 200).json({
+    message: parsed.created_count
+      ? `${parsed.created_count} draft row${parsed.created_count === 1 ? "" : "s"} created from price text. Review before approval.`
+      : "No new rows were created because matching draft rows already exist.",
+    extraction_attempt: {
+      status: parsed.created_count ? "parsed" : "duplicate",
+      message: parsed.created_count ? "Parsed rows are draft-only until approved." : "Duplicate price text was not added again.",
+      ignored_line_count: parsed.ignored_line_count || 0,
+      skipped_duplicate_row_ids: parsed.skipped_duplicate_row_ids || [],
+      skipped_lines: parsed.skipped_lines || []
+    },
+    batch: formatPriceImportBatch(await priceImportBatchById(batchId), rows),
+    rows: rows.map(formatPriceImportRow)
   });
 }));
 
@@ -8935,7 +9685,253 @@ app.post("/api/admin/price-import-rows/bulk", requireAdminAccess, requireLoggedI
     return;
   }
 
+  if (action === "remove") {
+    const now = new Date().toISOString();
+    await run(
+      `
+        UPDATE price_import_rows
+        SET status = 'removed',
+            admin_rejection_note = ?,
+            updated_by = ?,
+            updated_at = ?
+        WHERE id IN (${rowIds.map(() => "?").join(", ")})
+          AND status != 'approved'
+      `,
+      [
+        cleanText(request.body.admin_rejection_note || "Removed from draft review by admin.", 500),
+        request.adminUser ? request.adminUser.id : null,
+        now,
+        ...rowIds
+      ]
+    );
+
+    response.json({ message: `${rowIds.length} import row${rowIds.length === 1 ? "" : "s"} removed from draft review.` });
+    return;
+  }
+
+  if (action === "update") {
+    const updates = [];
+    const params = [];
+    const now = new Date().toISOString();
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "store_id") && request.body.store_id !== "") {
+      const storeId = Number.parseInt(request.body.store_id, 10);
+
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        response.status(400).json({ error: "Bulk store is not valid." });
+        return;
+      }
+
+      updates.push("store_id = ?");
+      params.push(storeId);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "category") && request.body.category !== "") {
+      const category = cleanText(request.body.category, 30).toLowerCase();
+
+      if (!CATEGORIES.includes(category)) {
+        response.status(400).json({ error: "Bulk category is not valid." });
+        return;
+      }
+
+      updates.push("category = ?");
+      params.push(category);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "proof_type") && request.body.proof_type !== "") {
+      updates.push("proof_type = ?");
+      params.push(validateImportProofType(request.body.proof_type));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "observed_at") && request.body.observed_at !== "") {
+      updates.push("observed_at = ?");
+      params.push(normalizeOptionalTimestamp(request.body.observed_at));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "valid_start_at") && request.body.valid_start_at !== "") {
+      updates.push("valid_start_at = ?");
+      params.push(normalizeImportDate(request.body.valid_start_at, false));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "valid_end_at") && request.body.valid_end_at !== "") {
+      updates.push("valid_end_at = ?");
+      params.push(normalizeImportDate(request.body.valid_end_at, true));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "source_url") || Object.prototype.hasOwnProperty.call(request.body, "source_title") || Object.prototype.hasOwnProperty.call(request.body, "source_checked_at")) {
+      const source = cleanSourceMetadata(request.body);
+      updates.push("source_url = ?", "source_title = ?", "source_domain = ?", "source_checked_at = ?");
+      params.push(source.source_url, source.source_title, source.source_domain, source.source_checked_at);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(request.body, "status") && request.body.status !== "") {
+      const nextStatus = validateImportRowStatus(request.body.status);
+
+      if (nextStatus === "approved") {
+        response.status(400).json({ error: "Use the approve action for public approval." });
+        return;
+      }
+
+      updates.push("status = ?");
+      params.push(nextStatus);
+    }
+
+    if (!updates.length) {
+      response.status(400).json({ error: "Choose at least one bulk field to update." });
+      return;
+    }
+
+    await run(
+      `
+        UPDATE price_import_rows
+        SET ${updates.join(", ")},
+            updated_by = ?,
+            updated_at = ?
+        WHERE id IN (${rowIds.map(() => "?").join(", ")})
+          AND status NOT IN ('approved', 'removed')
+      `,
+      [
+        ...params,
+        request.adminUser ? request.adminUser.id : null,
+        now,
+        ...rowIds
+      ]
+    );
+
+    for (const rowId of rowIds) {
+      const row = await priceImportRowById(rowId);
+
+      if (!row || row.status === "approved" || row.status === "removed") {
+        continue;
+      }
+
+      await run(
+        "UPDATE price_import_rows SET duplicate_warning = ?, updated_at = ? WHERE id = ?",
+        [await duplicateWarningForDraft(row), now, rowId]
+      );
+    }
+
+    response.json({ message: `${rowIds.length} import row${rowIds.length === 1 ? "" : "s"} updated.` });
+    return;
+  }
+
   response.status(400).json({ error: "Bulk import action is not valid." });
+}));
+
+app.post("/api/admin/price-imports/:batchId/undo-approval", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+
+  if (!batch) {
+    response.status(404).json({ error: "Import batch was not found." });
+    return;
+  }
+
+  const approvedRows = await all(
+    `
+      SELECT
+        rows.id AS row_id,
+        rows.price_report_id,
+        rows.approved_at,
+        rows.approved_by,
+        rows.duplicate_warning,
+        pr.status AS report_status,
+        pr.user_id AS report_user_id,
+        pr.verification_count,
+        pr.dispute_count,
+        pr.submitted_at
+      FROM price_import_rows rows
+      JOIN price_reports pr ON pr.id = rows.price_report_id
+      WHERE rows.batch_id = ?
+        AND rows.status = 'approved'
+        AND rows.price_report_id IS NOT NULL
+    `,
+    [batchId]
+  );
+
+  const createdRows = approvedRows.filter((row) => {
+    const linkedDuplicate = /^linked to existing approved report/i.test(row.duplicate_warning || "");
+    const sameAdmin = Number(row.report_user_id) === Number(row.approved_by);
+    const approvedAt = row.approved_at ? new Date(row.approved_at).getTime() : 0;
+    const submittedAt = row.submitted_at ? new Date(row.submitted_at).getTime() : 0;
+    const closeSubmitTime = approvedAt && submittedAt && Math.abs(approvedAt - submittedAt) <= 60 * 1000;
+
+    return !linkedDuplicate && sameAdmin && closeSubmitTime;
+  });
+
+  if (!createdRows.length) {
+    response.status(400).json({ error: "No safely undoable approved reports were found for this batch." });
+    return;
+  }
+
+  const unsafe = createdRows.filter((row) =>
+    row.report_status !== "approved" ||
+    Number(row.verification_count || 0) > 0 ||
+    Number(row.dispute_count || 0) > 0
+  );
+
+  if (unsafe.length) {
+    response.status(409).json({
+      error: "This batch cannot be undone automatically because one or more approved reports has user verification, dispute, or status history.",
+      unsafe_report_ids: unsafe.map((row) => row.price_report_id)
+    });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const reportIds = createdRows.map((row) => row.price_report_id);
+  const rowIds = createdRows.map((row) => row.row_id);
+
+  await run(
+    `
+      UPDATE price_reports
+      SET status = 'removed',
+          confidence = 'disputed',
+          admin_rejection_reason = ?,
+          admin_rejection_note = ?,
+          reviewed_at = ?,
+          reviewed_by = ?
+      WHERE id IN (${reportIds.map(() => "?").join(", ")})
+    `,
+    [
+      "import_undo",
+      `Admin undid price import batch #${batchId}.`,
+      now,
+      request.adminUser ? request.adminUser.id : null,
+      ...reportIds
+    ]
+  );
+
+  await run(
+    `
+      UPDATE price_import_rows
+      SET status = 'ready_for_review',
+          price_report_id = NULL,
+          approved_by = NULL,
+          approved_at = NULL,
+          duplicate_warning = ?,
+          updated_by = ?,
+          updated_at = ?
+      WHERE id IN (${rowIds.map(() => "?").join(", ")})
+    `,
+    [
+      `Approval undone by admin at ${now}; public report removed.`,
+      request.adminUser ? request.adminUser.id : null,
+      now,
+      ...rowIds
+    ]
+  );
+
+  await run(
+    "UPDATE price_import_batches SET status = 'ready_for_review', updated_at = ? WHERE id = ?",
+    [now, batchId]
+  );
+
+  response.json({
+    message: `${reportIds.length} public report${reportIds.length === 1 ? "" : "s"} removed and returned to draft review.`,
+    removed_report_ids: reportIds,
+    row_ids: rowIds
+  });
 }));
 
 app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
@@ -8958,6 +9954,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
     status: request.body.status || existing.status
   });
   const now = new Date().toISOString();
+  draft.duplicate_warning = await duplicateWarningForDraft(draft);
 
   await run(
     `
@@ -8966,16 +9963,21 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           store_id = ?,
           item_name = ?,
           brand = ?,
+          variant = ?,
           category = ?,
           price = ?,
           regular_price = ?,
           sale_price = ?,
+          member_card_price = ?,
           coupon_required = ?,
           deal_limit = ?,
+          multibuy_details = ?,
+          promotion_text = ?,
           size_text = ?,
           quantity = ?,
           unit = ?,
           proof_type = ?,
+          observed_at = ?,
           valid_start_at = ?,
           valid_end_at = ?,
           source_url = ?,
@@ -8984,6 +9986,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           source_checked_at = ?,
           extraction_confidence = ?,
           extraction_notes = ?,
+          duplicate_warning = ?,
           notes = ?,
           status = ?,
           admin_rejection_note = NULL,
@@ -8996,16 +9999,21 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.store_id,
       draft.item_name,
       draft.brand,
+      draft.variant,
       draft.category,
       draft.price,
       draft.regular_price,
       draft.sale_price,
+      draft.member_card_price,
       draft.coupon_required,
       draft.deal_limit,
+      draft.multibuy_details,
+      draft.promotion_text,
       draft.size_text,
       draft.quantity,
       draft.unit,
       draft.proof_type,
+      draft.observed_at,
       draft.valid_start_at,
       draft.valid_end_at,
       draft.source_url,
@@ -9014,6 +10022,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.source_checked_at,
       draft.extraction_confidence,
       draft.extraction_notes,
+      draft.duplicate_warning,
       draft.notes,
       draft.status,
       request.adminUser ? request.adminUser.id : null,
@@ -9517,6 +10526,7 @@ app.get("/api/admin/users", requireAdminAccess, asyncRoute(async (request, respo
         users.accuracy_score,
         users.is_email_verified,
         users.is_admin,
+        users.is_super_admin,
         users.account_status,
         users.ban_reason,
         users.ban_note,
@@ -9572,6 +10582,7 @@ app.get("/api/admin/users", requireAdminAccess, asyncRoute(async (request, respo
         accuracy_score,
         is_email_verified,
         is_admin,
+        is_super_admin,
         account_status,
         created_at
       FROM users
@@ -9622,6 +10633,7 @@ app.get("/api/admin/users", requireAdminAccess, asyncRoute(async (request, respo
         ...user,
         email_verified: Boolean(user.is_email_verified),
         is_admin: Boolean(user.is_admin),
+        is_super_admin: isSuperAdminAccount(user),
         hide_from_leaderboard: Boolean(user.hide_from_leaderboard),
         force_username_change: Boolean(user.force_username_change),
         trust_level: trustProfile.label,
@@ -9634,6 +10646,7 @@ app.get("/api/admin/users", requireAdminAccess, asyncRoute(async (request, respo
       ...user,
       email_verified: Boolean(user.is_email_verified),
       is_admin: Boolean(user.is_admin),
+      is_super_admin: isSuperAdminAccount(user),
       account_status: user.account_status || "active"
     }))
   });
@@ -9677,12 +10690,17 @@ app.post("/api/admin/admin-accounts/:id/role", requireAdminAccess, requireLogged
       return;
     }
 
+    if (isOwnerAccount(target)) {
+      response.status(400).json({ error: "The bootstrap Super Admin account cannot be demoted." });
+      return;
+    }
+
     if ((await activeAdminCountExcluding(userId)) < 1) {
       response.status(400).json({ error: "Cannot demote the last active admin account." });
       return;
     }
 
-    await run("UPDATE users SET is_admin = 0 WHERE id = ?", [userId]);
+    await run("UPDATE users SET is_admin = 0, is_super_admin = 0 WHERE id = ?", [userId]);
     message = "Admin access removed. User data was not deleted.";
     auditNote = `Admin access removed by ${request.adminUser.username}. ${adminNote}`.trim();
   } else if (action === "promote_admin") {
@@ -9702,6 +10720,11 @@ app.post("/api/admin/admin-accounts/:id/role", requireAdminAccess, requireLogged
   } else if (action === "suspend_test") {
     if (confirmation !== "SUSPEND TEST") {
       response.status(400).json({ error: "Type SUSPEND TEST to confirm suspending this test/dev account." });
+      return;
+    }
+
+    if (isOwnerAccount(target)) {
+      response.status(400).json({ error: "The bootstrap Super Admin account cannot be suspended." });
       return;
     }
 
@@ -11452,6 +12475,7 @@ app.use((error, request, response, next) => {
 });
 
 initDb()
+  .then(ensureBootstrapSuperAdmin)
   .then(auditExistingUsernames)
   .then(() => {
     app.listen(PORT, HOST, () => {

@@ -65,6 +65,10 @@ const manualProofPhotoRequirement = document.querySelector("#manualProofPhotoReq
 const manualEntryMessage = document.querySelector("#manualEntryMessage");
 const priceImportModeTabs = document.querySelector("#priceImportModeTabs");
 const priceImportUploadForm = document.querySelector("#priceImportUploadForm");
+const priceIntakeSourceOnlyForm = document.querySelector("#priceIntakeSourceOnlyForm");
+const priceImportDropZone = document.querySelector("#priceImportDropZone");
+const priceImportProofInput = document.querySelector("#priceImportProofInput");
+const priceImportUploadPreview = document.querySelector("#priceImportUploadPreview");
 const priceImportSourceTextForm = document.querySelector("#priceImportSourceTextForm");
 const priceImportReceiptTextForm = document.querySelector("#priceImportReceiptTextForm");
 const priceImportReceiptSummary = document.querySelector("#priceImportReceiptSummary");
@@ -79,8 +83,15 @@ const priceImportRows = document.querySelector("#priceImportRows");
 const priceImporterCount = document.querySelector("#priceImporterCount");
 const priceImportApproveSelected = document.querySelector("#priceImportApproveSelected");
 const priceImportRejectSelected = document.querySelector("#priceImportRejectSelected");
+const priceImportReviewFilters = document.querySelector("#priceImportReviewFilters");
+const priceImportBulkEditForm = document.querySelector("#priceImportBulkEditForm");
+const priceImportSelectedCount = document.querySelector("#priceImportSelectedCount");
+const priceImportRemoveSelected = document.querySelector("#priceImportRemoveSelected");
+const priceImportUndoBatch = document.querySelector("#priceImportUndoBatch");
+const priceImportHistory = document.querySelector("#priceImportHistory");
 const priceImportResetRow = document.querySelector("#priceImportResetRow");
 const adminMessage = document.querySelector("#adminMessage");
+const adminSessionStatus = document.querySelector("#adminSessionStatus");
 
 let allReports = [];
 let allUsers = [];
@@ -98,6 +109,14 @@ let adminSession = { loggedIn: false, is_admin: false };
 let activePriceImportMode = "weekly_ad";
 let selectedPriceImportBatchId = "";
 let selectedPriceImportRows = new Set();
+let priceImportFilters = {
+  status: "active",
+  store: "",
+  source: "",
+  confidence: "",
+  duplicate: "",
+  sort: "risk"
+};
 let adminHistoryFilter = "";
 let pendingAdminRoute = {};
 let proofInboxFilter = "needs_review";
@@ -228,6 +247,29 @@ function adminUploadUrl(photoPath) {
   return filename ? `/api/admin/uploads/${encodeURIComponent(filename)}${adminQuery()}` : "";
 }
 
+function renderAdminSessionStatus() {
+  if (!adminSessionStatus) {
+    return;
+  }
+
+  if (!adminSession?.loggedIn) {
+    adminSessionStatus.innerHTML = '<span class="badge confidence-low">Not logged in as admin</span>';
+    return;
+  }
+
+  const roleLabel = adminSession.is_super_admin
+    ? "Super Admin"
+    : adminSession.is_admin ? "Admin" : "User";
+  const badgeClass = adminSession.is_super_admin
+    ? "confidence-high"
+    : adminSession.is_admin ? "status-ready" : "confidence-low";
+
+  adminSessionStatus.innerHTML = `
+    <span class="badge ${badgeClass}">${escapeHtml(roleLabel)}</span>
+    <span class="admin-session-user">${escapeHtml(adminSession.user?.username || adminSession.username || "")}</span>
+  `;
+}
+
 function switchAdminTab(tabId) {
   for (const button of document.querySelectorAll("[data-admin-tab]")) {
     button.classList.toggle("is-active", button.dataset.adminTab === tabId);
@@ -344,6 +386,30 @@ function storeOptions(selected = "") {
     .join("");
 }
 
+function storeOptionsWithEmpty(emptyLabel = "Choose store", selected = "") {
+  return `<option value="">${escapeHtml(emptyLabel)}</option>` + allStores
+    .filter((store) => store.active !== 0 && store.active !== false)
+    .map((store) => `
+      <option value="${store.id}" ${String(store.id) === String(selected || "") ? "selected" : ""}>
+        ${escapeHtml(store.name)}
+      </option>
+    `)
+    .join("");
+}
+
+function populatePriceIntakeControls() {
+  for (const select of document.querySelectorAll("[data-intake-store-select]")) {
+    const selected = select.value;
+    const emptyLabel = select.closest("#priceImportBulkEditForm") ? "No change" : "Choose store";
+    select.innerHTML = storeOptionsWithEmpty(emptyLabel, selected);
+  }
+
+  if (priceImportBulkEditForm?.elements.category) {
+    const selected = priceImportBulkEditForm.elements.category.value;
+    priceImportBulkEditForm.elements.category.innerHTML = '<option value="">No change</option>' + optionRows(categories, selected);
+  }
+}
+
 function productFormFields(product = {}) {
   return `
     <label><span>Name</span><input data-product-field="display_name" type="text" maxlength="160" value="${escapeHtml(product.display_name || "")}"></label>
@@ -421,7 +487,9 @@ async function loadAdminData() {
   sponsorData = sponsorResponse || {};
   priceImporterData = priceImportData || { batches: [] };
   adminSession = authData || { loggedIn: false, is_admin: false };
+  renderAdminSessionStatus();
 
+  populatePriceIntakeControls();
   renderDashboard(notificationData.notifications);
   renderBetaReadiness(betaReadiness);
   renderAnalytics(analyticsData);
@@ -1293,11 +1361,12 @@ function renderAdminAccessCleanup(data = {}) {
       <article class="admin-card compact-card" data-admin-account-card="${account.id}">
         <div class="card-topline">
           <h4>${escapeHtml(account.username)}</h4>
-          <span class="badge ${account.admin_capable ? "status-warning" : "status-ready"}">${escapeHtml(titleCase(account.role))}</span>
+          <span class="badge ${account.is_super_admin ? "confidence-high" : account.admin_capable ? "status-warning" : "status-ready"}">${escapeHtml(account.is_super_admin ? "Super Admin" : titleCase(account.role))}</span>
         </div>
         <dl class="details-list">
           <div><dt>User ID</dt><dd>${account.id}</dd></div>
           <div><dt>Email</dt><dd>${escapeHtml(account.email || "No email")}</dd></div>
+          <div><dt>Super Admin</dt><dd>${account.is_super_admin ? "Yes" : "No"}</dd></div>
           <div><dt>Status</dt><dd>${escapeHtml(titleCase(account.account_status || "active"))}</dd></div>
           <div><dt>Created</dt><dd>${escapeHtml(formatDate(account.created_at) || "Unknown")}</dd></div>
           <div><dt>Last active</dt><dd>${escapeHtml(formatDate(account.last_active_at) || "Unknown")}</dd></div>
@@ -2430,7 +2499,7 @@ function canApproveImportedPrices() {
 }
 
 function setPriceImportMode(mode, options = {}) {
-  activePriceImportMode = ["weekly_ad", "receipt", "shelf_tag"].includes(mode) ? mode : "weekly_ad";
+  activePriceImportMode = ["weekly_ad", "receipt", "shelf_tag", "website", "paste_text"].includes(mode) ? mode : "weekly_ad";
 
   if (priceImportModeTabs) {
     for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]")) {
@@ -2448,14 +2517,31 @@ function setPriceImportMode(mode, options = {}) {
     } else if (activePriceImportMode === "shelf_tag") {
       sourceType.value = "shelf_tag";
       proofType.value = "shelf_tag_photo";
+    } else if (activePriceImportMode === "website") {
+      sourceType.value = "website";
+      proofType.value = "weekly_ad";
+    } else if (activePriceImportMode === "paste_text") {
+      sourceType.value = "paste_text";
+      proofType.value = "weekly_ad";
     } else {
       sourceType.value = "weekly_ad";
       proofType.value = "weekly_ad";
     }
+
+    priceImportUploadForm.hidden = ["website", "paste_text"].includes(activePriceImportMode);
+  }
+
+  if (priceIntakeSourceOnlyForm) {
+    priceIntakeSourceOnlyForm.hidden = !["website", "paste_text"].includes(activePriceImportMode);
+
+    if (!priceIntakeSourceOnlyForm.hidden) {
+      priceIntakeSourceOnlyForm.elements.source_type.value = activePriceImportMode;
+      priceIntakeSourceOnlyForm.elements.proof_type.value = activePriceImportMode === "paste_text" ? "weekly_ad" : "weekly_ad";
+    }
   }
 
   if (priceImportSourceTextForm) {
-    priceImportSourceTextForm.hidden = activePriceImportMode === "receipt";
+    priceImportSourceTextForm.hidden = activePriceImportMode === "receipt" || ["website", "paste_text"].includes(activePriceImportMode);
   }
 
   if (priceImportReceiptTextForm) {
@@ -2580,6 +2666,7 @@ function resetPriceImportRowForm(row = {}) {
   priceImportRowForm.elements.category.innerHTML = optionRows(categories, row.category || "other");
   priceImportRowForm.elements.item_name.value = row.item_name || "";
   priceImportRowForm.elements.brand.value = row.brand || "";
+  priceImportRowForm.elements.variant.value = row.variant || "";
   priceImportRowForm.elements.price.value = row.price ?? "";
   priceImportRowForm.elements.size_text.value = row.size_text || "";
   priceImportRowForm.elements.quantity.value = row.quantity ?? "";
@@ -2594,9 +2681,13 @@ function resetPriceImportRowForm(row = {}) {
   priceImportRowForm.elements.unit.value = row.unit || "each";
   priceImportRowForm.elements.proof_type.value = row.proof_type || selectedImportBatch()?.proof_type || "weekly_ad";
   priceImportRowForm.elements.regular_price.value = row.regular_price ?? "";
+  priceImportRowForm.elements.member_card_price.value = row.member_card_price ?? "";
+  priceImportRowForm.elements.multibuy_details.value = row.multibuy_details || "";
+  priceImportRowForm.elements.promotion_text.value = row.promotion_text || "";
   priceImportRowForm.elements.sale_price.checked = Boolean(row.sale_price);
   priceImportRowForm.elements.coupon_required.checked = Boolean(row.coupon_required);
   priceImportRowForm.elements.deal_limit.value = row.deal_limit || "";
+  priceImportRowForm.elements.observed_at.value = row.observed_date || "";
   priceImportRowForm.elements.valid_start_at.value = row.valid_start_date || "";
   priceImportRowForm.elements.valid_end_at.value = row.valid_end_date || "";
   priceImportRowForm.elements.source_url.value = row.source_url || batch?.source_url || "";
@@ -2604,6 +2695,7 @@ function resetPriceImportRowForm(row = {}) {
   priceImportRowForm.elements.source_checked_at.value = row.source_checked_date || batch?.source_checked_date || "";
   priceImportRowForm.elements.extraction_confidence.value = row.extraction_confidence || "low";
   priceImportRowForm.elements.extraction_notes.value = row.extraction_notes || "";
+  priceImportRowForm.elements.duplicate_warning.value = row.duplicate_warning || "";
   priceImportRowForm.elements.status.value = ["import_draft", "ready_for_review", "needs_edit"].includes(row.status)
     ? row.status
     : "ready_for_review";
@@ -2928,13 +3020,17 @@ function renderPriceImporter() {
   }
 
   const rows = batches.flatMap((batch) => batch.rows || []);
-  const pendingCount = rows.filter((row) => !["approved", "rejected"].includes(row.status)).length;
+  const pendingCount = rows.filter((row) => !["approved", "rejected", "removed"].includes(row.status)).length;
   const selected = selectedImportBatch();
 
   if (selected?.source_type === "receipt" || selected?.proof_type === "receipt_photo") {
     setPriceImportMode("receipt", { skipRender: true });
   } else if (selected?.source_type === "shelf_tag" || selected?.proof_type === "shelf_tag_photo") {
     setPriceImportMode("shelf_tag", { skipRender: true });
+  } else if (selected?.source_type === "website") {
+    setPriceImportMode("website", { skipRender: true });
+  } else if (selected?.source_type === "paste_text") {
+    setPriceImportMode("paste_text", { skipRender: true });
   } else if (selected) {
     setPriceImportMode("weekly_ad", { skipRender: true });
   }
@@ -3075,7 +3171,8 @@ function renderPriceImportProofList() {
     const rows = batch.rows || [];
     const approved = rows.filter((row) => row.status === "approved").length;
     const rejected = rows.filter((row) => row.status === "rejected").length;
-    const pending = rows.length - approved - rejected;
+    const removed = rows.filter((row) => row.status === "removed").length;
+    const pending = rows.length - approved - rejected - removed;
 
     return `
       <article class="price-import-proof-card ${String(batch.id) === String(selectedPriceImportBatchId) ? "is-selected" : ""}">
@@ -3092,6 +3189,7 @@ function renderPriceImportProofList() {
         ${batch.source_url ? "" : '<p class="source-link-warning">No source link saved — add one before approval.</p>'}
         <div class="proof-card-actions">
           ${pending > 0 ? `<button class="secondary-button" type="button" data-import-review-rows="${batch.id}">Review pending rows</button>` : ""}
+          ${batch.source_text ? `<button class="quiet-button" type="button" data-import-retry-parse="${batch.id}">Retry parsing</button>` : ""}
           <button class="quiet-button" type="button" data-import-edit-source="${batch.id}">Edit source</button>
         </div>
       </article>
@@ -3114,6 +3212,10 @@ function renderPriceImportProofList() {
   for (const button of priceImportProofList.querySelectorAll("[data-import-edit-source]")) {
     button.addEventListener("click", () => editImportBatchSource(button.dataset.importEditSource));
   }
+
+  for (const button of priceImportProofList.querySelectorAll("[data-import-retry-parse]")) {
+    button.addEventListener("click", () => retryPriceImportParsing(button.dataset.importRetryParse));
+  }
 }
 
 function reviewPendingImportRows(batchId) {
@@ -3121,7 +3223,7 @@ function reviewPendingImportRows(batchId) {
   selectedPriceImportRows.clear();
   renderPriceImporter();
 
-  const firstPending = importRowsForCurrentBatch().find((row) => !["approved", "rejected"].includes(row.status));
+  const firstPending = importRowsForCurrentBatch().find((row) => !["approved", "rejected", "removed"].includes(row.status));
   scrollToImportRow(firstPending?.id || "");
 }
 
@@ -3164,6 +3266,279 @@ async function editImportBatchSource(batchId) {
   }
 }
 
+async function retryPriceImportParsing(batchId) {
+  const batch = (priceImporterData?.batches || []).find((item) => String(item.id) === String(batchId));
+
+  if (!batch?.source_text) {
+    setPriceImporterMessage("No source text is saved for this batch.", "warning");
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Retrying source text parser...");
+    const data = await fetchJson(`/api/admin/price-imports/${batch.id}/parse-price-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        source_url: batch.source_url || "",
+        source_title: batch.source_title || "",
+        source_text: batch.source_text || ""
+      })
+    });
+    selectedPriceImportBatchId = String(batch.id);
+    selectedPriceImportRows.clear();
+    setPriceImporterMessage(data.message, data.extraction_attempt?.status === "duplicate" ? "warning" : "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+function importRowIssues(row) {
+  const issues = [];
+  const validEnd = row.valid_end_at ? new Date(row.valid_end_at) : null;
+  const price = Number(row.price);
+  const regularPrice = Number(row.regular_price);
+
+  if ((row.extraction_confidence || "low") === "low") issues.push("low confidence");
+  if (!row.size_text) issues.push("missing size");
+  if (!Number.isFinite(price) || price <= 0) issues.push("unclear price");
+  if (!row.product_id) issues.push("unmatched product");
+  if (row.duplicate_warning) issues.push("duplicate warning");
+  if (validEnd && !Number.isNaN(validEnd.getTime()) && validEnd < new Date()) issues.push("expired dates");
+  if (Number.isFinite(price) && Number.isFinite(regularPrice) && regularPrice < price) issues.push("regular lower than sale");
+  if (!row.source_url && !selectedImportBatch()?.photo_path) issues.push("missing proof/source");
+
+  return issues;
+}
+
+function filteredImportRows(rows) {
+  const filtered = rows.filter((row) => {
+    if (priceImportFilters.status === "active" && ["approved", "rejected", "removed"].includes(row.status)) return false;
+    if (priceImportFilters.status && priceImportFilters.status !== "active" && row.status !== priceImportFilters.status) return false;
+    if (priceImportFilters.store && String(row.store_id || "") !== String(priceImportFilters.store)) return false;
+    if (priceImportFilters.source && row.proof_type !== priceImportFilters.source && selectedImportBatch()?.source_type !== priceImportFilters.source) return false;
+    if (priceImportFilters.confidence && row.extraction_confidence !== priceImportFilters.confidence) return false;
+    if (priceImportFilters.duplicate === "warnings" && !row.duplicate_warning) return false;
+    if (priceImportFilters.duplicate === "clean" && row.duplicate_warning) return false;
+    return true;
+  });
+
+  return filtered.sort((left, right) => {
+    if (priceImportFilters.sort === "price") return Number(left.price || 0) - Number(right.price || 0);
+    if (priceImportFilters.sort === "name") return String(left.item_name || "").localeCompare(String(right.item_name || ""));
+    if (priceImportFilters.sort === "status") return String(left.status || "").localeCompare(String(right.status || ""));
+    if (priceImportFilters.sort === "updated") return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+
+    return importRowIssues(right).length - importRowIssues(left).length;
+  });
+}
+
+function renderPriceImportReviewFilters(rows = []) {
+  if (!priceImportReviewFilters) {
+    return;
+  }
+
+  priceImportReviewFilters.innerHTML = `
+    <label class="table-filter">
+      <span>Status</span>
+      <select data-import-filter="status">
+        <option value="active" ${priceImportFilters.status === "active" ? "selected" : ""}>Needs work</option>
+        <option value="" ${priceImportFilters.status === "" ? "selected" : ""}>All rows</option>
+        <option value="import_draft" ${priceImportFilters.status === "import_draft" ? "selected" : ""}>Draft</option>
+        <option value="ready_for_review" ${priceImportFilters.status === "ready_for_review" ? "selected" : ""}>Needs review</option>
+        <option value="needs_edit" ${priceImportFilters.status === "needs_edit" ? "selected" : ""}>Needs edit</option>
+        <option value="approved" ${priceImportFilters.status === "approved" ? "selected" : ""}>Approved</option>
+        <option value="rejected" ${priceImportFilters.status === "rejected" ? "selected" : ""}>Rejected</option>
+        <option value="removed" ${priceImportFilters.status === "removed" ? "selected" : ""}>Removed</option>
+      </select>
+    </label>
+    <label class="table-filter">
+      <span>Store</span>
+      <select data-import-filter="store">${storeOptionsWithEmpty("All stores", priceImportFilters.store)}</select>
+    </label>
+    <label class="table-filter">
+      <span>Confidence</span>
+      <select data-import-filter="confidence">
+        <option value="">All</option>
+        ${["high", "medium", "low"].map((value) => `<option value="${value}" ${priceImportFilters.confidence === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}
+      </select>
+    </label>
+    <label class="table-filter">
+      <span>Warnings</span>
+      <select data-import-filter="duplicate">
+        <option value="">All</option>
+        <option value="warnings" ${priceImportFilters.duplicate === "warnings" ? "selected" : ""}>Warnings only</option>
+        <option value="clean" ${priceImportFilters.duplicate === "clean" ? "selected" : ""}>No warnings</option>
+      </select>
+    </label>
+    <label class="table-filter">
+      <span>Sort</span>
+      <select data-import-filter="sort">
+        <option value="risk" ${priceImportFilters.sort === "risk" ? "selected" : ""}>Risk first</option>
+        <option value="price" ${priceImportFilters.sort === "price" ? "selected" : ""}>Lowest price</option>
+        <option value="name" ${priceImportFilters.sort === "name" ? "selected" : ""}>Name</option>
+        <option value="status" ${priceImportFilters.sort === "status" ? "selected" : ""}>Status</option>
+        <option value="updated" ${priceImportFilters.sort === "updated" ? "selected" : ""}>Recently updated</option>
+      </select>
+    </label>
+    <span class="badge confidence-medium">${filteredImportRows(rows).length} visible</span>
+  `;
+
+  for (const control of priceImportReviewFilters.querySelectorAll("[data-import-filter]")) {
+    control.addEventListener("change", () => {
+      priceImportFilters[control.dataset.importFilter] = control.value;
+      renderPriceImportRows();
+    });
+  }
+}
+
+function productMatchOptions(row) {
+  const matches = row.product_matches || [];
+  const linked = row.product_id
+    ? `<option value="${row.product_id}">${escapeHtml(row.product_display_name || `Product #${row.product_id}`)}</option>`
+    : "";
+
+  return `<option value="">Unlinked</option>${linked}${matches
+    .filter((match) => String(match.id) !== String(row.product_id || ""))
+    .map((match) => `<option value="${match.id}">${escapeHtml(match.display_name)} (${match.score})</option>`)
+    .join("")}`;
+}
+
+function renderPriceImportHistory() {
+  if (!priceImportHistory) {
+    return;
+  }
+
+  const history = priceImporterData?.history || [];
+
+  if (!history.length) {
+    priceImportHistory.innerHTML = '<div class="empty-state">No import history yet.</div>';
+    return;
+  }
+
+  priceImportHistory.innerHTML = history.slice(0, 12).map((batch) => `
+    <article class="history-row">
+      <button class="quiet-button" type="button" data-history-batch="${batch.id}">Open #${batch.id}</button>
+      <span>${escapeHtml(batch.title || `Batch #${batch.id}`)}</span>
+      <span>${escapeHtml(titleCase(batch.source_type || "source"))}</span>
+      <span>${escapeHtml(batch.parsed_count)} parsed</span>
+      <span>${escapeHtml(batch.approved_count)} approved</span>
+      <span>${escapeHtml(batch.needs_review_count)} needs review</span>
+      <span>${escapeHtml(formatDate(batch.created_at))}</span>
+    </article>
+  `).join("");
+
+  for (const button of priceImportHistory.querySelectorAll("[data-history-batch]")) {
+    button.addEventListener("click", () => {
+      selectedPriceImportBatchId = button.dataset.historyBatch;
+      selectedPriceImportRows.clear();
+      renderPriceImporter();
+      priceImportRows?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+}
+
+function updateImportBulkButtons(rows = importRowsForCurrentBatch()) {
+  const visibleIds = new Set(rows.map((row) => String(row.id)));
+  selectedPriceImportRows = new Set([...selectedPriceImportRows].filter((rowId) => visibleIds.has(String(rowId))));
+  const canApprove = canApproveImportedPrices();
+  const selectedCount = selectedPriceImportRows.size;
+
+  priceImportApproveSelected.disabled = selectedCount === 0 || !canApprove;
+  priceImportApproveSelected.title = canApprove ? "" : "Log in as admin to approve imported prices.";
+  priceImportRejectSelected.disabled = selectedCount === 0;
+
+  if (priceImportSelectedCount) {
+    priceImportSelectedCount.textContent = `${selectedCount} selected`;
+  }
+
+  if (priceImportRemoveSelected) {
+    priceImportRemoveSelected.disabled = selectedCount === 0;
+  }
+}
+
+function importRowInlinePayload(rowId) {
+  const row = findImportRow(rowId) || {};
+  const container = priceImportRows.querySelector(`[data-import-row-card="${CSS.escape(String(rowId))}"]`);
+  const valueFor = (field) => {
+    const input = container?.querySelector(`[data-row-field="${field}"]`);
+    if (!input) return undefined;
+    return input.type === "checkbox" ? input.checked : input.value;
+  };
+
+  return {
+    pin: getPin(),
+    product_id: valueFor("product_id") ?? row.product_id ?? "",
+    store_id: valueFor("store_id") ?? row.store_id ?? "",
+    item_name: valueFor("item_name") ?? row.item_name ?? "",
+    brand: valueFor("brand") ?? row.brand ?? "",
+    variant: valueFor("variant") ?? row.variant ?? "",
+    category: valueFor("category") ?? row.category ?? "other",
+    price: valueFor("price") ?? row.price ?? "",
+    regular_price: row.regular_price ?? "",
+    member_card_price: row.member_card_price ?? "",
+    sale_price: valueFor("sale_price") ?? Boolean(row.sale_price),
+    coupon_required: valueFor("coupon_required") ?? Boolean(row.coupon_required),
+    deal_limit: valueFor("deal_limit") ?? row.deal_limit ?? "",
+    multibuy_details: valueFor("multibuy_details") ?? row.multibuy_details ?? "",
+    promotion_text: valueFor("promotion_text") ?? row.promotion_text ?? "",
+    size_text: valueFor("size_text") ?? row.size_text ?? "",
+    quantity: valueFor("quantity") ?? row.quantity ?? 1,
+    unit: valueFor("unit") ?? row.unit ?? "each",
+    proof_type: row.proof_type || selectedImportBatch()?.proof_type || "weekly_ad",
+    observed_at: row.observed_date || "",
+    valid_start_at: row.valid_start_date || "",
+    valid_end_at: valueFor("valid_end_at") ?? row.valid_end_date ?? "",
+    source_url: row.source_url || "",
+    source_title: row.source_title || "",
+    source_checked_at: row.source_checked_date || "",
+    extraction_confidence: row.extraction_confidence || "low",
+    extraction_notes: row.extraction_notes || "",
+    notes: row.notes || "",
+    status: valueFor("status") ?? row.status ?? "ready_for_review"
+  };
+}
+
+async function saveInlineImportRow(rowId) {
+  try {
+    setPriceImporterMessage(`Saving row #${rowId}...`);
+    const data = await fetchJson(`/api/admin/price-import-rows/${rowId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(importRowInlinePayload(rowId))
+    });
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+    scrollToImportRow(rowId);
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function useImportProductMatch(rowId, productId) {
+  const row = findImportRow(rowId);
+
+  if (!row || !productId) {
+    return;
+  }
+
+  try {
+    const payload = { ...importRowInlinePayload(rowId), product_id: productId };
+    const data = await fetchJson(`/api/admin/price-import-rows/${rowId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+    scrollToImportRow(rowId);
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
 function renderPriceImportRows() {
   const batch = selectedImportBatch();
 
@@ -3173,81 +3548,142 @@ function renderPriceImportRows() {
     priceImportRejectSelected.disabled = true;
     priceImportRows.innerHTML = '<div class="empty-state">Select or upload a proof image before adding draft rows.</div>';
     resetPriceImportRowForm();
+    renderPriceImportReviewFilters([]);
+    renderPriceImportHistory();
+    updateImportBulkButtons([]);
     return;
   }
 
   const rows = importRowsForCurrentBatch();
-  const visibleIds = new Set(rows.map((row) => String(row.id)));
-  selectedPriceImportRows = new Set([...selectedPriceImportRows].filter((rowId) => visibleIds.has(String(rowId))));
-  const canApprove = canApproveImportedPrices();
-  priceImportApproveSelected.disabled = selectedPriceImportRows.size === 0 || !canApprove;
-  priceImportApproveSelected.title = canApprove ? "" : "Log in as admin to approve imported prices.";
-  priceImportRejectSelected.disabled = selectedPriceImportRows.size === 0;
+  updateImportBulkButtons(rows);
+  renderPriceImportReviewFilters(rows);
+  renderPriceImportHistory();
 
   if (!rows.length) {
     priceImportRows.innerHTML = '<div class="empty-state">No draft rows yet. Enter one reviewed price row using the form above.</div>';
     return;
   }
 
+  const canApprove = canApproveImportedPrices();
+  const visibleRows = filteredImportRows(rows);
+  const proofUrl = adminUploadUrl(batch.photo_path);
+  const allSelectableVisible = visibleRows.filter((row) => !["approved", "removed"].includes(row.status));
+  const allSelected = allSelectableVisible.length && allSelectableVisible.every((row) => selectedPriceImportRows.has(String(row.id)));
   const approvalNotice = canApprove
     ? ""
     : '<p class="source-link-warning approval-login-warning">Log in as admin to approve imported prices.</p>';
 
-  priceImportRows.innerHTML = approvalNotice + rows.map((row) => {
-    const proofUrl = adminUploadUrl(batch.photo_path);
-    const selected = selectedPriceImportRows.has(String(row.id));
-    const approved = row.status === "approved";
-    const rejected = row.status === "rejected";
-    const approveDisabled = approved || !canApprove;
+  if (!visibleRows.length) {
+    priceImportRows.innerHTML = approvalNotice + '<div class="empty-state">No rows match the current filters.</div>';
+    return;
+  }
 
-    return `
-      <article class="admin-card compact-card price-import-row-card" data-import-row-card="${row.id}">
-        <div class="import-row-toolbar">
-          <label class="checkbox-row">
-            <input type="checkbox" data-import-select="${row.id}" ${selected ? "checked" : ""} ${approved ? "disabled" : ""}>
-            <span>Select</span>
-          </label>
-          <span class="badge ${importStatusClass(row.status)}">${escapeHtml(titleCase(row.status))}</span>
-        </div>
-        <div class="card-topline">
-          <div>
-            <h3>${escapeHtml(row.item_name || "Untitled import row")}</h3>
-            <div class="brand-line">${escapeHtml(row.brand || "No brand entered")}</div>
-          </div>
-          <strong class="import-price">${escapeHtml(row.price_label || "No price")}</strong>
-        </div>
-        <dl class="details-list">
-          <div><dt>Store</dt><dd>${escapeHtml(row.store_name || "No store")}</dd></div>
-          <div><dt>Category</dt><dd>${escapeHtml(titleCase(row.category))}</dd></div>
-          <div><dt>Size</dt><dd>${escapeHtml(row.size_text || `${row.quantity || ""} ${row.unit || ""}`.trim() || "No size")}</dd></div>
-          <div><dt>Proof</dt><dd>${escapeHtml(titleCase(row.proof_type))}</dd></div>
-          <div><dt>Sale</dt><dd>${row.sale_price ? "Yes" : "No"}</dd></div>
-          <div><dt>Coupon</dt><dd>${row.coupon_required ? "Required" : "No"}</dd></div>
-          <div><dt>Limit</dt><dd>${escapeHtml(row.deal_limit || "None")}</dd></div>
-          <div><dt>Valid dates</dt><dd>${escapeHtml(formatImportDateRange(row))}</dd></div>
-          <div><dt>Source</dt><dd>${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.source_domain || "View source")}</a>` : "No source link"}</dd></div>
-          <div><dt>Checked</dt><dd>${escapeHtml(formatDateOnly(row.source_checked_at) || "Not recorded")}</dd></div>
-          <div><dt>Import confidence</dt><dd>${escapeHtml(titleCase(row.extraction_confidence || "low"))}</dd></div>
-          <div><dt>Product</dt><dd>${escapeHtml(row.product_display_name || "Unlinked")}</dd></div>
-          <div><dt>Report</dt><dd>${row.price_report_id ? `#${row.price_report_id}` : "Not public"}</dd></div>
-          ${row.raw_receipt_line ? `<div><dt>Raw receipt line</dt><dd>${escapeHtml(row.raw_receipt_line)}</dd></div>` : ""}
-          ${row.extracted_price !== null && row.extracted_price !== undefined ? `<div><dt>Extracted price</dt><dd>${escapeHtml(`$${Number(row.extracted_price).toFixed(2)}`)}</dd></div>` : ""}
-          ${row.extracted_weight ? `<div><dt>Extracted weight</dt><dd>${escapeHtml(`${row.extracted_weight} ${row.extracted_unit || ""}`.trim())}</dd></div>` : ""}
-        </dl>
-        ${row.extraction_notes ? `<p class="inline-help">${escapeHtml(row.extraction_notes)}</p>` : ""}
-        ${row.notes ? `<p class="inline-help">${escapeHtml(row.notes)}</p>` : ""}
-        ${row.admin_rejection_note ? `<p class="warning">${escapeHtml(row.admin_rejection_note)}</p>` : ""}
-        <div class="card-actions">
-          <button class="secondary-button" type="button" data-import-edit="${row.id}" ${approved ? "disabled" : ""}>Edit</button>
-          <button class="primary-button" type="button" data-import-approve="${row.id}" ${approveDisabled ? "disabled" : ""} title="${canApprove ? "" : "Log in as admin to approve imported prices."}">Approve</button>
-          <button class="danger-button" type="button" data-import-reject="${row.id}" ${approved || rejected ? "disabled" : ""}>Reject</button>
-          ${!row.product_id && !approved ? `<button class="quiet-button" type="button" data-import-create-product="${row.id}">Create product</button>` : ""}
-          ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof</a>` : ""}
-          ${row.source_url ? `<a class="quiet-button" href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener noreferrer">View source</a>` : ""}
-        </div>
-      </article>
-    `;
-  }).join("");
+  priceImportRows.innerHTML = `
+    ${approvalNotice}
+    <div class="review-table-wrap">
+      <table class="review-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" data-import-select-all ${allSelected ? "checked" : ""} aria-label="Select all visible rows"></th>
+            <th>Proof</th>
+            <th>Item</th>
+            <th>Store</th>
+            <th>Price</th>
+            <th>Size</th>
+            <th>Promo</th>
+            <th>Product match</th>
+            <th>Review</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${visibleRows.map((row) => {
+            const selected = selectedPriceImportRows.has(String(row.id));
+            const approved = row.status === "approved";
+            const rejected = row.status === "rejected";
+            const removed = row.status === "removed";
+            const issues = importRowIssues(row);
+            const approveDisabled = approved || removed || !canApprove;
+            const lowRiskClass = issues.length ? "has-review-warning" : "";
+
+            return `
+              <tr class="${lowRiskClass}" data-import-row-card="${row.id}">
+                <td><input type="checkbox" data-import-select="${row.id}" ${selected ? "checked" : ""} ${approved || removed ? "disabled" : ""} aria-label="Select row ${row.id}"></td>
+                <td>
+                  ${proofUrl ? `<a class="proof-thumb" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener"><img src="${escapeHtml(proofUrl)}" alt="Proof ${batch.id}"></a>` : '<span class="proof-mini-placeholder">URL</span>'}
+                  <span class="badge ${importStatusClass(row.status)}">${escapeHtml(titleCase(row.status))}</span>
+                </td>
+                <td>
+                  <input data-row-field="item_name" value="${escapeHtml(row.item_name || "")}" maxlength="120" ${approved || removed ? "disabled" : ""}>
+                  <input data-row-field="brand" value="${escapeHtml(row.brand || "")}" maxlength="80" placeholder="Brand" ${approved || removed ? "disabled" : ""}>
+                  <input data-row-field="variant" value="${escapeHtml(row.variant || "")}" maxlength="80" placeholder="Variant" ${approved || removed ? "disabled" : ""}>
+                </td>
+                <td>
+                  <select data-row-field="store_id" ${approved || removed ? "disabled" : ""}>${storeOptions(row.store_id || "")}</select>
+                  <select data-row-field="category" ${approved || removed ? "disabled" : ""}>${optionRows(categories, row.category || "other")}</select>
+                </td>
+                <td>
+                  <input data-row-field="price" type="number" min="0.01" max="999" step="0.01" value="${row.price ?? ""}" ${approved || removed ? "disabled" : ""}>
+                  <label class="mini-checkbox"><input data-row-field="sale_price" type="checkbox" ${row.sale_price ? "checked" : ""} ${approved || removed ? "disabled" : ""}> Sale</label>
+                  <label class="mini-checkbox"><input data-row-field="coupon_required" type="checkbox" ${row.coupon_required ? "checked" : ""} ${approved || removed ? "disabled" : ""}> Coupon</label>
+                </td>
+                <td>
+                  <input data-row-field="size_text" value="${escapeHtml(row.size_text || "")}" maxlength="80" placeholder="16 oz" ${approved || removed ? "disabled" : ""}>
+                  <div class="inline-split">
+                    <input data-row-field="quantity" type="number" min="0.01" step="0.01" value="${row.quantity ?? 1}" ${approved || removed ? "disabled" : ""}>
+                    <input data-row-field="unit" value="${escapeHtml(row.unit || "each")}" maxlength="30" ${approved || removed ? "disabled" : ""}>
+                  </div>
+                </td>
+                <td>
+                  <input data-row-field="multibuy_details" value="${escapeHtml(row.multibuy_details || "")}" maxlength="120" placeholder="2 for $5" ${approved || removed ? "disabled" : ""}>
+                  <input data-row-field="deal_limit" value="${escapeHtml(row.deal_limit || "")}" maxlength="80" placeholder="Limit" ${approved || removed ? "disabled" : ""}>
+                  <input data-row-field="valid_end_at" type="date" value="${escapeHtml(row.valid_end_date || "")}" ${approved || removed ? "disabled" : ""}>
+                  ${row.source_url ? `<a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener noreferrer">View source</a>` : '<span class="muted">No source link</span>'}
+                </td>
+                <td>
+                  <select data-row-field="product_id" ${approved || removed ? "disabled" : ""}>${productMatchOptions(row)}</select>
+                  ${(row.product_matches || []).length ? `<small>${escapeHtml((row.product_matches || []).map((match) => `${match.display_name} ${match.score}`).join(" · "))}</small>` : '<small>No likely match</small>'}
+                </td>
+                <td>
+                  <select data-row-field="status" ${approved || removed ? "disabled" : ""}>
+                    <option value="import_draft" ${row.status === "import_draft" ? "selected" : ""}>Draft</option>
+                    <option value="ready_for_review" ${row.status === "ready_for_review" ? "selected" : ""}>Needs review</option>
+                    <option value="needs_edit" ${row.status === "needs_edit" ? "selected" : ""}>Needs edit</option>
+                    <option value="approved" ${approved ? "selected" : ""} disabled>Approved</option>
+                    <option value="rejected" ${rejected ? "selected" : ""} disabled>Rejected</option>
+                    <option value="removed" ${removed ? "selected" : ""} disabled>Removed</option>
+                  </select>
+                  <div class="row-issues">${issues.length ? issues.map((issue) => `<span>${escapeHtml(issue)}</span>`).join("") : "<span>clear</span>"}</div>
+                  ${row.duplicate_warning ? `<small class="duplicate-warning">${escapeHtml(row.duplicate_warning)}</small>` : ""}
+                </td>
+                <td>
+                  <div class="table-actions">
+                    <button class="secondary-button" type="button" data-import-save-inline="${row.id}" ${approved || removed ? "disabled" : ""}>Save</button>
+                    <button class="quiet-button" type="button" data-import-edit="${row.id}" ${approved ? "disabled" : ""}>Full edit</button>
+                    <button class="primary-button" type="button" data-import-approve="${row.id}" ${approveDisabled ? "disabled" : ""} title="${canApprove ? "" : "Log in as admin to approve imported prices."}">Approve</button>
+                    <button class="danger-button" type="button" data-import-reject="${row.id}" ${approved || rejected || removed ? "disabled" : ""}>Reject</button>
+                    ${!row.product_id && !approved && !removed ? `<button class="quiet-button" type="button" data-import-create-product="${row.id}">Create product</button>` : ""}
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const selectAll = priceImportRows.querySelector("[data-import-select-all]");
+  selectAll?.addEventListener("change", () => {
+    for (const row of allSelectableVisible) {
+      if (selectAll.checked) {
+        selectedPriceImportRows.add(String(row.id));
+      } else {
+        selectedPriceImportRows.delete(String(row.id));
+      }
+    }
+    renderPriceImportRows();
+  });
 
   for (const checkbox of priceImportRows.querySelectorAll("[data-import-select]")) {
     checkbox.addEventListener("change", () => {
@@ -3257,7 +3693,20 @@ function renderPriceImportRows() {
         selectedPriceImportRows.delete(String(checkbox.dataset.importSelect));
       }
 
-      renderPriceImportRows();
+      updateImportBulkButtons(rows);
+    });
+  }
+
+  for (const button of priceImportRows.querySelectorAll("[data-import-save-inline]")) {
+    button.addEventListener("click", () => saveInlineImportRow(button.dataset.importSaveInline));
+  }
+
+  for (const select of priceImportRows.querySelectorAll("[data-row-field='product_id']")) {
+    select.addEventListener("change", () => {
+      const rowCard = select.closest("[data-import-row-card]");
+      if (rowCard && select.value) {
+        useImportProductMatch(rowCard.dataset.importRowCard, select.value);
+      }
     });
   }
 
@@ -3287,16 +3736,21 @@ function priceImportRowPayloadFromForm() {
     store_id: formData.get("store_id"),
     item_name: formData.get("item_name"),
     brand: formData.get("brand"),
+    variant: formData.get("variant"),
     category: formData.get("category"),
     price: formData.get("price"),
     regular_price: formData.get("regular_price"),
+    member_card_price: formData.get("member_card_price"),
     sale_price: formData.get("sale_price") === "on",
     coupon_required: formData.get("coupon_required") === "on",
     deal_limit: formData.get("deal_limit"),
+    multibuy_details: formData.get("multibuy_details"),
+    promotion_text: formData.get("promotion_text"),
     size_text: formData.get("size_text"),
     quantity: formData.get("quantity"),
     unit: formData.get("unit"),
     proof_type: formData.get("proof_type"),
+    observed_at: formData.get("observed_at"),
     valid_start_at: formData.get("valid_start_at"),
     valid_end_at: formData.get("valid_end_at"),
     source_url: formData.get("source_url"),
@@ -3304,9 +3758,49 @@ function priceImportRowPayloadFromForm() {
     source_checked_at: formData.get("source_checked_at"),
     extraction_confidence: formData.get("extraction_confidence"),
     extraction_notes: formData.get("extraction_notes"),
+    duplicate_warning: formData.get("duplicate_warning"),
     notes: formData.get("notes"),
     status: formData.get("status")
   };
+}
+
+function renderPriceImportUploadPreview(files = []) {
+  if (!priceImportUploadPreview) {
+    return;
+  }
+
+  const fileList = [...files].slice(0, 10);
+
+  if (!fileList.length) {
+    priceImportUploadPreview.innerHTML = "";
+    return;
+  }
+
+  priceImportUploadPreview.innerHTML = fileList.map((file) => {
+    const url = URL.createObjectURL(file);
+
+    return `
+      <figure class="upload-preview-item">
+        <img src="${escapeHtml(url)}" alt="${escapeHtml(file.name)}">
+        <figcaption>${escapeHtml(file.name)} · ${Math.round(file.size / 1024)} KB</figcaption>
+      </figure>
+    `;
+  }).join("");
+}
+
+function setPriceImportFiles(files) {
+  if (!priceImportProofInput) {
+    return;
+  }
+
+  const transfer = new DataTransfer();
+
+  for (const file of [...files].slice(0, 10)) {
+    transfer.items.add(file);
+  }
+
+  priceImportProofInput.files = transfer.files;
+  renderPriceImportUploadPreview(priceImportProofInput.files);
 }
 
 async function submitPriceImportUpload(event) {
@@ -3324,11 +3818,53 @@ async function submitPriceImportUpload(event) {
     selectedPriceImportBatchId = String(data.batches?.[0]?.id || selectedPriceImportBatchId || "");
     selectedPriceImportRows.clear();
     priceImportUploadForm.reset();
+    renderPriceImportUploadPreview([]);
     setPriceImporterMessage(
       data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
       data.extraction_attempt?.status === "failed" ? "warning" : "success"
     );
     await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function submitPriceIntakeSourceOnly(event) {
+  event.preventDefault();
+  const formData = new FormData(priceIntakeSourceOnlyForm);
+  setPriceImporterMessage("Creating source intake batch...");
+
+  try {
+    const data = await fetchJson("/api/admin/price-intake/batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pin: getPin(),
+        source_type: formData.get("source_type"),
+        proof_type: formData.get("proof_type"),
+        default_store_id: formData.get("default_store_id"),
+        batch_title: formData.get("batch_title"),
+        source_url: formData.get("source_url"),
+        source_title: formData.get("source_title"),
+        observed_at: formData.get("observed_at"),
+        valid_start_at: formData.get("valid_start_at"),
+        valid_end_at: formData.get("valid_end_at"),
+        source_text: formData.get("source_text"),
+        notes: formData.get("notes")
+      })
+    });
+    selectedPriceImportBatchId = String(data.batch?.id || "");
+    selectedPriceImportRows.clear();
+    priceIntakeSourceOnlyForm.reset();
+    setPriceImporterMessage(
+      data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
+      data.extraction_attempt?.status === "failed" ? "warning" : "success"
+    );
+    await loadAdminData();
+    const firstRow = (data.batch?.rows || []).find((row) => !["approved", "rejected", "removed"].includes(row.status));
+    if (firstRow?.id) {
+      scrollToImportRow(firstRow.id);
+    }
   } catch (error) {
     setPriceImporterMessage(error.message, "error");
   }
@@ -3344,30 +3880,29 @@ async function submitPriceImportSourceText(event) {
   }
 
   const formData = new FormData(priceImportSourceTextForm);
-  const currentRowId = priceImportRowForm.elements.row_id.value || "";
-  setPriceImporterMessage("Parsing source text into a draft row...");
+  setPriceImporterMessage("Parsing source text into draft rows...");
 
   try {
-    const data = await fetchJson(`/api/admin/price-imports/${batchId}/extract-text`, {
+    const data = await fetchJson(`/api/admin/price-imports/${batchId}/parse-price-text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         pin: getPin(),
-        row_id: currentRowId,
         source_url: formData.get("source_url"),
         source_title: formData.get("source_title"),
         source_text: formData.get("source_text")
       })
     });
-    selectedPriceImportBatchId = String(data.row?.batch_id || batchId);
-    resetPriceImportRowForm(data.row || {});
+    selectedPriceImportBatchId = String(data.batch?.id || batchId);
+    selectedPriceImportRows.clear();
     setPriceImporterMessage(
       data.extraction_attempt?.message ? `${data.message} ${data.extraction_attempt.message}` : data.message,
       data.duplicate ? "warning" : "success"
     );
     await loadAdminData();
-    if (data.row?.id) {
-      scrollToImportRow(data.row.id);
+    const firstRow = (data.rows || []).find((row) => !["approved", "rejected", "removed"].includes(row.status));
+    if (firstRow?.id) {
+      scrollToImportRow(firstRow.id);
     }
   } catch (error) {
     setPriceImporterMessage(error.message || "Source text could not be parsed. Add rows manually.", "warning");
@@ -3402,7 +3937,7 @@ async function submitPriceImportReceiptText(event) {
       data.extraction_attempt?.status === "duplicate" ? "warning" : "success"
     );
     await loadAdminData();
-    const firstRow = (data.rows || []).find((row) => !["approved", "rejected"].includes(row.status));
+    const firstRow = (data.rows || []).find((row) => !["approved", "rejected", "removed"].includes(row.status));
     if (firstRow?.id) {
       scrollToImportRow(firstRow.id);
     }
@@ -3546,6 +4081,10 @@ async function bulkPriceImport(action) {
     return;
   }
 
+  if (action === "remove" && !window.confirm(`Remove ${rowIds.length} selected draft row${rowIds.length === 1 ? "" : "s"} from review? Approved rows will not be changed.`)) {
+    return;
+  }
+
   if (action === "reject") {
     const reason = window.prompt(`Why reject ${rowIds.length} selected import row${rowIds.length === 1 ? "" : "s"}?`, "Bulk rejected by admin.");
 
@@ -3557,7 +4096,13 @@ async function bulkPriceImport(action) {
   }
 
   try {
-    setPriceImporterMessage(action === "approve" ? "Approving selected import rows..." : "Rejecting selected import rows...");
+    setPriceImporterMessage(
+      action === "approve"
+        ? "Approving selected import rows..."
+        : action === "remove"
+          ? "Removing selected draft rows..."
+          : "Rejecting selected import rows..."
+    );
     const data = await fetchJson("/api/admin/price-import-rows/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3567,6 +4112,77 @@ async function bulkPriceImport(action) {
         row_ids: rowIds,
         admin_rejection_note: adminRejectionNote
       })
+    });
+    selectedPriceImportRows.clear();
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function submitPriceImportBulkEdit(event) {
+  event.preventDefault();
+  const rowIds = [...selectedPriceImportRows];
+
+  if (!rowIds.length) {
+    setPriceImporterMessage("Choose at least one import row before bulk editing.", "error");
+    return;
+  }
+
+  const formData = new FormData(priceImportBulkEditForm);
+  const payload = {
+    pin: getPin(),
+    action: "update",
+    row_ids: rowIds
+  };
+
+  for (const field of ["store_id", "category", "observed_at", "valid_start_at", "valid_end_at", "status"]) {
+    const value = formData.get(field);
+    if (value) {
+      payload[field] = value;
+    }
+  }
+
+  if (Object.keys(payload).length <= 3) {
+    setPriceImporterMessage("Choose at least one bulk field to update.", "error");
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Applying bulk edits...");
+    const data = await fetchJson("/api/admin/price-import-rows/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    priceImportBulkEditForm.reset();
+    selectedPriceImportRows.clear();
+    setPriceImporterMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) {
+    setPriceImporterMessage(error.message, "error");
+  }
+}
+
+async function undoSelectedImportBatch() {
+  const batch = selectedImportBatch();
+
+  if (!batch) {
+    setPriceImporterMessage("Select an import batch before undoing approvals.", "error");
+    return;
+  }
+
+  if (!window.confirm(`Undo safely created public reports from ${importProofLabel(batch)}? Reports with verification or dispute activity will be refused.`)) {
+    return;
+  }
+
+  try {
+    setPriceImporterMessage("Checking and undoing approved batch...");
+    const data = await fetchJson(`/api/admin/price-imports/${batch.id}/undo-approval`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: getPin() })
     });
     selectedPriceImportRows.clear();
     setPriceImporterMessage(data.message, "success");
@@ -3629,12 +4245,30 @@ manualProofType.addEventListener("change", updateManualPhotoRequirement);
 manualProofPhotoInput.addEventListener("change", updateManualPhotoStatus);
 manualEntryForm.addEventListener("submit", submitManualEntry);
 priceImportUploadForm.addEventListener("submit", submitPriceImportUpload);
+priceIntakeSourceOnlyForm.addEventListener("submit", submitPriceIntakeSourceOnly);
 priceImportSourceTextForm.addEventListener("submit", submitPriceImportSourceText);
 priceImportReceiptTextForm.addEventListener("submit", submitPriceImportReceiptText);
 priceImportRowForm.addEventListener("submit", submitPriceImportRow);
 priceImportResetRow.addEventListener("click", () => resetPriceImportRowForm());
 priceImportApproveSelected.addEventListener("click", () => bulkPriceImport("approve"));
 priceImportRejectSelected.addEventListener("click", () => bulkPriceImport("reject"));
+priceImportBulkEditForm.addEventListener("submit", submitPriceImportBulkEdit);
+priceImportRemoveSelected.addEventListener("click", () => bulkPriceImport("remove"));
+priceImportUndoBatch.addEventListener("click", undoSelectedImportBatch);
+
+priceImportProofInput.addEventListener("change", () => renderPriceImportUploadPreview(priceImportProofInput.files));
+priceImportDropZone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  priceImportDropZone.classList.add("is-dragover");
+});
+priceImportDropZone.addEventListener("dragleave", () => {
+  priceImportDropZone.classList.remove("is-dragover");
+});
+priceImportDropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  priceImportDropZone.classList.remove("is-dragover");
+  setPriceImportFiles([...event.dataTransfer.files].filter((file) => /^image\/(jpeg|png|webp)$/i.test(file.type)));
+});
 
 for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]")) {
   button.addEventListener("click", () => setPriceImportMode(button.dataset.importMode));
