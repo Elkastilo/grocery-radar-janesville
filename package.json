@@ -9,10 +9,12 @@
     "dev": "node server.js",
     "build:client": "node scripts/build-client.js",
     "build:all": "npm run build:client",
+    "repair:owner": "node scripts/repair-owner-identity.js",
     "test:intake": "node scripts/test-price-intake.js",
     "test:auth": "node scripts/test-super-admin-auth.js",
     "test:operations": "node scripts/test-operations-center.js",
-    "test": "npm run test:intake && npm run test:auth && npm run test:operations",
+    "test:owner-repair": "node scripts/test-owner-repair.js",
+    "test": "npm run test:intake && npm run test:auth && npm run test:operations && npm run test:owner-repair",
     "setup:email": "node scripts/setup-email.js",
     "debug:email": "node scripts/debug-email.js"
   },
