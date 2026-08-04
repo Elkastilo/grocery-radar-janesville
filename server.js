@@ -24,7 +24,10 @@ try {
 }
 
 const {
+  DATA_DIR,
   DB_PATH,
+  DATA_DIR_EXISTED_AT_START,
+  DB_FILE_EXISTED_AT_START,
   run,
   get,
   all,
@@ -2228,6 +2231,107 @@ function isOwnerAccount(user) {
 
 function isSuperAdminAccount(user = {}) {
   return Boolean(user?.is_super_admin) && isOwnerAccount(user);
+}
+
+function envFlagEnabled(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function pathIsInside(parentPath, childPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertOwnerRepairRuntimeDatabase() {
+  if (!process.env.DATA_DIR) {
+    throw new Error("OWNER_REPAIR_ON_START requires DATA_DIR to point at the persistent database directory.");
+  }
+
+  const resolvedDataDir = path.resolve(DATA_DIR);
+  const resolvedDbPath = path.resolve(DB_PATH);
+
+  if (!DATA_DIR_EXISTED_AT_START || !fs.existsSync(resolvedDataDir) || !fs.statSync(resolvedDataDir).isDirectory()) {
+    throw new Error("OWNER_REPAIR_ON_START refused to run because DATA_DIR does not exist.");
+  }
+
+  if (!pathIsInside(resolvedDataDir, resolvedDbPath)) {
+    throw new Error("OWNER_REPAIR_ON_START refused to run because DB_PATH is outside DATA_DIR.");
+  }
+
+  if (!DB_FILE_EXISTED_AT_START || !fs.existsSync(resolvedDbPath) || !fs.statSync(resolvedDbPath).isFile()) {
+    throw new Error("OWNER_REPAIR_ON_START refused to run because the SQLite database file does not exist.");
+  }
+
+  try {
+    fs.accessSync(resolvedDataDir, fs.constants.R_OK | fs.constants.W_OK);
+    fs.accessSync(resolvedDbPath, fs.constants.R_OK | fs.constants.W_OK);
+  } catch {
+    throw new Error("OWNER_REPAIR_ON_START refused to run because the SQLite database is not writable.");
+  }
+
+  return { resolvedDataDir, resolvedDbPath };
+}
+
+function compactStartupRepairOutput(output) {
+  return {
+    ok: Boolean(output?.ok),
+    applied: Boolean(output?.applied),
+    conflict_category: output?.conflict_category || "unknown",
+    preserved_account_id: output?.preserved_account_id || output?.preserved_account?.id || null,
+    username_changed: Boolean(output?.username_changed || output?.changes?.username_changed),
+    email_changed: Boolean(output?.email_changed || output?.changes?.email_changed),
+    owner_status_changed: Boolean(output?.owner_status_changed || output?.changes?.owner_status_changed),
+    audit_entry_succeeded: Boolean(output?.audit_entry_succeeded || output?.audit?.admin_audit_log_id),
+    message: output?.message || null
+  };
+}
+
+async function runOwnerRepairOnStartIfEnabled() {
+  if (!envFlagEnabled(process.env.OWNER_REPAIR_ON_START)) {
+    return;
+  }
+
+  const { resolvedDataDir, resolvedDbPath } = assertOwnerRepairRuntimeDatabase();
+  const repairScriptPath = path.join(__dirname, "scripts", "repair-owner-identity.js");
+  const repair = childProcess.spawnSync(
+    process.execPath,
+    [repairScriptPath, "--apply", "--startup"],
+    {
+      cwd: __dirname,
+      env: {
+        ...process.env,
+        DATA_DIR: resolvedDataDir,
+        DB_PATH: resolvedDbPath
+      },
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024
+    }
+  );
+
+  let parsedOutput = null;
+  const rawOutput = String(repair.stdout || repair.stderr || "").trim();
+
+  if (rawOutput) {
+    try {
+      parsedOutput = JSON.parse(rawOutput);
+    } catch {
+      parsedOutput = {
+        ok: false,
+        applied: false,
+        conflict_category: "owner_repair_unparseable_output",
+        message: "Owner startup repair returned output that could not be parsed."
+      };
+    }
+  }
+
+  console.log("OWNER_REPAIR_ON_START result:");
+  console.log(JSON.stringify(compactStartupRepairOutput(parsedOutput), null, 2));
+
+  if (repair.status !== 0) {
+    throw new Error(`OWNER_REPAIR_ON_START failed with exit status ${repair.status}. Strict startup validation was not bypassed.`);
+  }
+
+  console.warn("OWNER_REPAIR_ON_START is enabled and must now be removed from Render.");
 }
 
 async function applyBootstrapSuperAdminFlags(user) {
@@ -14585,7 +14689,9 @@ app.use((error, request, response, next) => {
   response.status(error.statusCode || 400).json({ error: error.message || "Something went wrong." });
 });
 
-initDb()
+Promise.resolve()
+  .then(runOwnerRepairOnStartIfEnabled)
+  .then(initDb)
   .then(ensureBootstrapSuperAdmin)
   .then(auditExistingUsernames)
   .then(() => {

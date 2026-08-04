@@ -66,7 +66,7 @@ SMTP_FROM="Grocery Radar Janesville <no-reply@thegroceryradar.com>"
 
 Existing `EMAIL_*` variables are still supported for local compatibility. Production can use the `SMTP_*` names above.
 
-`SUPER_ADMIN_EMAIL` is the only bootstrap Super Admin identity. Legacy `OWNER_EMAIL` is still accepted by the server only when it matches the authorized Super Admin email exactly; `ADMIN_NOTIFY_EMAIL` never grants admin access.
+The Owner / Super Admin identity is locked to the single account that has both the authorized owner email and username. `SUPER_ADMIN_EMAIL`, legacy `OWNER_EMAIL`, and `ADMIN_NOTIFY_EMAIL` do not grant Owner access by themselves.
 
 `ADMIN_PIN` is now read-only for admin mutation routes. It should be treated as a temporary development fallback, not as the real production admin workflow. Sensitive admin POST/DELETE actions require a logged-in admin account.
 
@@ -130,7 +130,7 @@ Recommended Render Web Service settings:
 Service type: Web Service
 Environment: Node
 Build command: npm install && npm run build:all
-Pre-Deploy command: DATA_DIR=/opt/render/project/src/storage npm run repair:owner
+Pre-Deploy command: leave blank
 Start command: npm start
 Health check path: /health
 Disk mount path: /opt/render/project/src/storage
@@ -141,7 +141,6 @@ This folder includes `render.yaml` with safe placeholders only. It defines:
 
 - one Node web service
 - `npm install && npm run build:all`
-- optional one-time Owner identity repair command: `DATA_DIR=/opt/render/project/src/storage npm run repair:owner`
 - `npm start`
 - `/health`
 - a persistent disk mounted at `/opt/render/project/src/storage`
@@ -151,12 +150,22 @@ Set real secret values in the Render dashboard.
 
 Important Owner repair note:
 
-- `npm run repair:owner` runs `scripts/repair-owner-identity.js --apply`.
-- It is idempotent and supports only the safe one-account repair cases already covered by tests.
-- It exits nonzero for split identities, missing identities, duplicate matches, or other unsafe conflicts.
-- It does not run automatically during normal builds or normal `npm start`.
+- Do not use a Render Pre-Deploy command for Owner repair. Render pre-deploy commands run outside the live web service instance and cannot access the web service's attached persistent disk.
+- To perform the one-time production Owner repair, temporarily set `OWNER_REPAIR_ON_START=true` in Render and deploy the latest commit.
+- Startup repair uses the same resolved `DATA_DIR` and SQLite `DB_PATH` as the running app, runs before strict Owner validation, and starts the server only if strict Owner validation passes afterward.
+- After a successful repair and healthy deploy, remove `OWNER_REPAIR_ON_START` from Render and deploy or restart once more.
 - Keep normal Start command as `npm start`; startup still performs strict Owner validation.
-- Render's public docs currently state that pre-deploy commands run on a separate instance and do not have access to attached persistent disks. If Render does not mount `/opt/render/project/src/storage` during pre-deploy for this service, run the repair manually from the live service shell using the persistent disk before deploying the strict startup commit.
+
+One-time Render sequence:
+
+1. Remove the Render Pre-Deploy Command entirely.
+2. Temporarily set `OWNER_REPAIR_ON_START=true`.
+3. Deploy the latest commit.
+4. Inspect startup logs for the sanitized `OWNER_REPAIR_ON_START result` JSON.
+5. Confirm the repair succeeded and `/health` returns 200.
+6. Remove `OWNER_REPAIR_ON_START` from Render.
+7. Deploy or restart once more.
+8. Confirm strict normal startup succeeds without repair mode.
 
 ## Persistent Storage
 

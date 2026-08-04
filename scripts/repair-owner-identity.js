@@ -17,6 +17,82 @@ const DB_PATH = process.env.DB_PATH
   : path.join(DATA_DIR, "grocery_radar.sqlite");
 
 const APPLY = process.argv.includes("--apply");
+const STARTUP_MODE = process.argv.includes("--startup");
+
+function compactResult(result) {
+  return {
+    ok: Boolean(result.ok),
+    applied: Boolean(result.applied),
+    dry_run: Boolean(result.dry_run),
+    conflict_category: result.conflict_category,
+    preserved_account_id: result.preserved_account?.id || null,
+    username_changed: Boolean(result.changes?.username_changed),
+    email_changed: Boolean(result.changes?.email_changed),
+    owner_status_changed: Boolean(result.changes?.owner_status_changed),
+    audit_entry_succeeded: Boolean(result.audit?.admin_audit_log_id && result.audit?.user_admin_note_id),
+    message: result.message || result.next_action || null
+  };
+}
+
+function printResult(result) {
+  console.log(JSON.stringify(STARTUP_MODE ? compactResult(result) : result, null, 2));
+}
+
+function pathIsInside(parentPath, childPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function startupDatabaseCheck() {
+  if (!STARTUP_MODE) {
+    return { ok: true };
+  }
+
+  if (!process.env.DATA_DIR) {
+    return {
+      ok: false,
+      conflict_category: "startup_repair_data_dir_not_configured",
+      message: "OWNER_REPAIR_ON_START requires DATA_DIR to be configured for the persistent database."
+    };
+  }
+
+  if (!fs.existsSync(DATA_DIR) || !fs.statSync(DATA_DIR).isDirectory()) {
+    return {
+      ok: false,
+      conflict_category: "startup_repair_data_dir_missing",
+      message: "DATA_DIR does not exist or is not a directory."
+    };
+  }
+
+  if (!pathIsInside(DATA_DIR, DB_PATH)) {
+    return {
+      ok: false,
+      conflict_category: "startup_repair_db_path_outside_data_dir",
+      message: "The resolved SQLite database path is outside DATA_DIR."
+    };
+  }
+
+  if (!fs.existsSync(DB_PATH) || !fs.statSync(DB_PATH).isFile()) {
+    return {
+      ok: false,
+      conflict_category: "startup_repair_database_missing",
+      message: "The configured SQLite database file does not exist."
+    };
+  }
+
+  try {
+    fs.accessSync(DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
+    fs.accessSync(DB_PATH, fs.constants.R_OK | fs.constants.W_OK);
+  } catch {
+    return {
+      ok: false,
+      conflict_category: "startup_repair_database_not_writable",
+      message: "The configured SQLite database is not readable and writable."
+    };
+  }
+
+  return { ok: true };
+}
 
 function openDb() {
   return new sqlite3.Database(DB_PATH);
@@ -107,6 +183,10 @@ async function ensureRepairSchema(database) {
 
   await addColumnIfMissing(database, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(database, "users", "is_super_admin", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing(database, "users", "is_email_verified", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing(database, "users", "account_status", "TEXT NOT NULL DEFAULT 'active'");
+  await addColumnIfMissing(database, "users", "last_activity_at", "TEXT");
+  await addColumnIfMissing(database, "users", "last_seen_at", "TEXT");
   await addColumnIfMissing(database, "users", "admin_note", "TEXT");
 
   await dbRun(database, `
@@ -345,8 +425,12 @@ async function repair(database, category, candidates) {
     return null;
   }
 
+  if (STARTUP_MODE && category === "already_exact_owner") {
+    return { owner, changes, audit: null, no_changes: true };
+  }
+
   changes.owner_status_changed = !owner.is_admin || !owner.is_super_admin;
-  changes.demoted_super_admin_ids = candidates.superAdmins
+  changes.demoted_super_admin_ids = STARTUP_MODE ? [] : candidates.superAdmins
     .filter((account) => Number(account.id) !== Number(owner.id))
     .map((account) => account.id);
 
@@ -381,11 +465,13 @@ async function repair(database, category, candidates) {
       "UPDATE users SET is_admin = 1, is_super_admin = 1 WHERE id = ?",
       [owner.id]
     );
-    await dbRun(
-      database,
-      "UPDATE users SET is_super_admin = 0 WHERE id != ? AND is_super_admin = 1",
-      [owner.id]
-    );
+    if (!STARTUP_MODE) {
+      await dbRun(
+        database,
+        "UPDATE users SET is_super_admin = 0 WHERE id != ? AND is_super_admin = 1",
+        [owner.id]
+      );
+    }
 
     const audit = await insertAuditRows(database, owner.id, category, changes);
     await dbRun(
@@ -458,8 +544,29 @@ async function buildResult(database, category, candidates, repairResult = null) 
 }
 
 async function main() {
+  const startupCheck = startupDatabaseCheck();
+
+  if (!startupCheck.ok) {
+    printResult({
+      ok: false,
+      applied: false,
+      dry_run: !APPLY,
+      conflict_category: startupCheck.conflict_category,
+      changes: {
+        username_changed: false,
+        email_changed: false,
+        owner_status_changed: false,
+        demoted_super_admin_ids: []
+      },
+      audit: null,
+      message: startupCheck.message
+    });
+    process.exitCode = 2;
+    return;
+  }
+
   if (!fs.existsSync(DB_PATH)) {
-    console.log(JSON.stringify({
+    printResult({
       ok: false,
       applied: false,
       dry_run: !APPLY,
@@ -470,7 +577,7 @@ async function main() {
         database_file_exists: false
       },
       message: "The configured database file does not exist. No Owner account was created."
-    }, null, 2));
+    });
     process.exitCode = 2;
     return;
   }
@@ -481,25 +588,52 @@ async function main() {
     const schema = await ensureRepairSchema(database);
 
     if (!schema.ok) {
-      console.log(JSON.stringify({
+      printResult({
         ok: false,
         applied: false,
         dry_run: !APPLY,
         conflict_category: schema.reason,
         missing_columns: schema.missing_columns || [],
+        changes: {
+          username_changed: false,
+          email_changed: false,
+          owner_status_changed: false,
+          demoted_super_admin_ids: []
+        },
+        audit: null,
         message: "The users table is not compatible with the owner repair script. No changes were made."
-      }, null, 2));
+      });
       process.exitCode = 2;
       return;
     }
 
     const candidates = await loadOwnerCandidates(database);
     const category = classify(candidates);
+    const startupOwner = category === "already_exact_owner"
+      ? candidates.exactMatches[0]
+      : category === "case_a_email_match_username_available"
+        ? candidates.emailMatches[0]
+        : category === "case_b_username_match_email_available"
+          ? candidates.usernameMatches[0]
+          : null;
+    const startupDuplicateOwner = STARTUP_MODE && candidates.superAdmins.some((account) =>
+      !startupOwner || Number(account.id) !== Number(startupOwner.id)
+    );
+
+    if (startupDuplicateOwner) {
+      const result = await buildResult(database, "duplicate_owner_or_super_admin", candidates, null);
+      result.ok = false;
+      result.message = "Another account is already marked Owner or Super Admin. No startup repair was attempted.";
+      printResult(result);
+      process.exitCode = 2;
+      return;
+    }
+
     const supported = ["already_exact_owner", "case_a_email_match_username_available", "case_b_username_match_email_available"].includes(category);
     const repairResult = supported ? await repair(database, category, candidates) : null;
     const result = await buildResult(database, category, candidates, repairResult);
 
-    console.log(JSON.stringify(result, null, 2));
+    printResult(result);
 
     if (!supported) {
       process.exitCode = 2;
@@ -510,12 +644,19 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(JSON.stringify({
+  console.error(JSON.stringify(compactResult({
     ok: false,
     applied: false,
     dry_run: !APPLY,
     conflict_category: "repair_script_error",
-    error: error.message
-  }, null, 2));
+    changes: {
+      username_changed: false,
+      email_changed: false,
+      owner_status_changed: false,
+      demoted_super_admin_ids: []
+    },
+    audit: null,
+    message: error.message
+  }), null, 2));
   process.exitCode = 1;
 });

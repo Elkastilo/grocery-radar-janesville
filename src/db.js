@@ -6,10 +6,20 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "..", "data");
 const DB_PATH = path.join(DATA_DIR, "grocery_radar.sqlite");
+const DATA_DIR_EXISTED_AT_START = fs.existsSync(DATA_DIR) && fs.statSync(DATA_DIR).isDirectory();
+const DB_FILE_EXISTED_AT_START = fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).isFile();
+const OWNER_REPAIR_START_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.OWNER_REPAIR_ON_START || "").trim().toLowerCase()
+);
+const DB_OPEN_FLAGS = OWNER_REPAIR_START_ENABLED
+  ? sqlite3.OPEN_READWRITE
+  : sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE;
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+if (!OWNER_REPAIR_START_ENABLED) {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+}
 
-const db = new sqlite3.Database(DB_PATH);
+const db = new sqlite3.Database(DB_PATH, DB_OPEN_FLAGS);
 
 const STORE_SEED = [
   {
@@ -1195,7 +1205,10 @@ async function refreshExpiredReports() {
 
 module.exports = {
   db,
+  DATA_DIR,
   DB_PATH,
+  DATA_DIR_EXISTED_AT_START,
+  DB_FILE_EXISTED_AT_START,
   STORE_SEED,
   run,
   get,
