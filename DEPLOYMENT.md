@@ -130,6 +130,7 @@ Recommended Render Web Service settings:
 Service type: Web Service
 Environment: Node
 Build command: npm install && npm run build:all
+Pre-Deploy command: DATA_DIR=/opt/render/project/src/storage npm run repair:owner
 Start command: npm start
 Health check path: /health
 Disk mount path: /opt/render/project/src/storage
@@ -140,12 +141,22 @@ This folder includes `render.yaml` with safe placeholders only. It defines:
 
 - one Node web service
 - `npm install && npm run build:all`
+- optional one-time Owner identity repair command: `DATA_DIR=/opt/render/project/src/storage npm run repair:owner`
 - `npm start`
 - `/health`
 - a persistent disk mounted at `/opt/render/project/src/storage`
 - secret env vars as `sync: false`
 
 Set real secret values in the Render dashboard.
+
+Important Owner repair note:
+
+- `npm run repair:owner` runs `scripts/repair-owner-identity.js --apply`.
+- It is idempotent and supports only the safe one-account repair cases already covered by tests.
+- It exits nonzero for split identities, missing identities, duplicate matches, or other unsafe conflicts.
+- It does not run automatically during normal builds or normal `npm start`.
+- Keep normal Start command as `npm start`; startup still performs strict Owner validation.
+- Render's public docs currently state that pre-deploy commands run on a separate instance and do not have access to attached persistent disks. If Render does not mount `/opt/render/project/src/storage` during pre-deploy for this service, run the repair manually from the live service shell using the persistent disk before deploying the strict startup commit.
 
 ## Persistent Storage
 

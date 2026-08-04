@@ -9,7 +9,7 @@
     "dev": "node server.js",
     "build:client": "node scripts/build-client.js",
     "build:all": "npm run build:client",
-    "repair:owner": "node scripts/repair-owner-identity.js",
+    "repair:owner": "node scripts/repair-owner-identity.js --apply",
     "test:intake": "node scripts/test-price-intake.js",
     "test:auth": "node scripts/test-super-admin-auth.js",
     "test:operations": "node scripts/test-operations-center.js",
