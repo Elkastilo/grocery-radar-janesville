@@ -92,6 +92,10 @@ const priceImportHistory = document.querySelector("#priceImportHistory");
 const priceImportResetRow = document.querySelector("#priceImportResetRow");
 const adminMessage = document.querySelector("#adminMessage");
 const adminSessionStatus = document.querySelector("#adminSessionStatus");
+const operationsCenter = document.querySelector("#operationsCenter");
+const operationsMessage = document.querySelector("#operationsMessage");
+const operationsRefreshButton = document.querySelector("#operationsRefreshButton");
+const operationsAutoRefresh = document.querySelector("#operationsAutoRefresh");
 
 let allReports = [];
 let allUsers = [];
@@ -105,6 +109,9 @@ let betaReadiness = null;
 let analyticsData = null;
 let sponsorData = null;
 let priceImporterData = null;
+let operationsData = null;
+let operationsWidgetLayout = { order: [], hidden: [], sizes: {} };
+let operationsRefreshTimer = null;
 let adminSession = { loggedIn: false, is_admin: false };
 let activePriceImportMode = "weekly_ad";
 let selectedPriceImportBatchId = "";
@@ -251,9 +258,14 @@ function renderAdminSessionStatus() {
   if (!adminSessionStatus) {
     return;
   }
+  const operationsTab = document.querySelector('[data-admin-tab="operationsTab"]');
 
   if (!adminSession?.loggedIn) {
     adminSessionStatus.innerHTML = '<span class="badge confidence-low">Not logged in as admin</span>';
+    if (operationsTab) {
+      operationsTab.classList.add("is-restricted");
+      operationsTab.title = "Log in as Super Admin to open Operations Center.";
+    }
     return;
   }
 
@@ -268,6 +280,13 @@ function renderAdminSessionStatus() {
     <span class="badge ${badgeClass}">${escapeHtml(roleLabel)}</span>
     <span class="admin-session-user">${escapeHtml(adminSession.user?.username || adminSession.username || "")}</span>
   `;
+
+  if (operationsTab) {
+    operationsTab.classList.toggle("is-restricted", !adminSession.is_super_admin);
+    operationsTab.title = adminSession.is_super_admin
+      ? "Open Operations Center"
+      : "Super Admin access is required.";
+  }
 }
 
 function switchAdminTab(tabId) {
@@ -336,6 +355,10 @@ function openAdminTab(tabId, options = {}) {
 
   if (tabId === "priceImporterTab") {
     renderPriceImporter();
+  }
+
+  if (tabId === "operationsTab") {
+    loadOperationsCenter();
   }
 
   window.setTimeout(() => highlightAdminTarget(options), 80);
@@ -457,8 +480,15 @@ async function loadAdminData() {
   }
 
   setAdminMessage("Loading admin data...");
-  const [authData, notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData] = await Promise.all([
-    fetchJson("/api/auth/me"),
+  const authData = await fetchJson("/api/auth/me");
+  const adminAccessPromise = authData?.is_super_admin
+    ? fetchJson(`/api/admin/admin-accounts${adminQuery()}`)
+    : Promise.resolve({
+        accounts: [],
+        cleanup_needed: false,
+        recommendation: "Owner / Super Admin access is required to view or change admin roles."
+      });
+  const [notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData] = await Promise.all([
     fetchJson(`/api/admin/notifications${adminQuery()}`),
     fetchJson(`/api/admin/beta-readiness${adminQuery()}`),
     fetchJson(`/api/admin/analytics${adminQuery()}`),
@@ -466,7 +496,7 @@ async function loadAdminData() {
     fetchJson(`/api/admin/email/status${adminQuery()}`),
     fetchJson(`/api/admin/reports${adminQuery()}`),
     fetchJson(`/api/admin/users${adminQuery()}`),
-    fetchJson(`/api/admin/admin-accounts${adminQuery()}`),
+    adminAccessPromise,
     fetchJson(`/api/admin/username-moderation${adminQuery()}`),
     fetchJson(`/api/admin/stores${adminQuery()}`),
     fetchJson(`/api/admin/suggestions${adminQuery()}`),
@@ -598,6 +628,682 @@ function renderDashboard(notifications = {}) {
         filter: button.dataset.adminTargetTab === "pricesTab" ? "disputed" : ""
       });
     });
+  }
+}
+
+function setOperationsMessage(text, type = "info") {
+  if (operationsMessage) {
+    setMessage(operationsMessage, text, type);
+  }
+}
+
+function healthBadge(status) {
+  const value = String(status || "").toLowerCase();
+  if (value === "green") return "confidence-high";
+  if (value === "red") return "confidence-disputed";
+  return "confidence-medium";
+}
+
+function numberValue(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function operationsMetricCards(rows = []) {
+  return rows.map((row) => `
+    <article class="notification-card">
+      <strong>${escapeHtml(row.value ?? "")}</strong>
+      <span>${escapeHtml(row.label)}</span>
+    </article>
+  `).join("");
+}
+
+function compactList(rows = [], empty = "No data yet.") {
+  return rows.length
+    ? rows.map((row) => `
+      <div class="operation-list-row">
+        <strong>${escapeHtml(row.title || row.label || row.name || "")}</strong>
+        <span>${escapeHtml(row.detail || row.message || row.status || "")}</span>
+      </div>
+    `).join("")
+    : `<div class="empty-state">${escapeHtml(empty)}</div>`;
+}
+
+async function loadOperationsCenter() {
+  if (!operationsCenter) {
+    return;
+  }
+
+  if (!adminSession?.is_super_admin) {
+    operationsCenter.innerHTML = '<div class="warning">Super Admin access is required for Operations Center.</div>';
+    setOperationsMessage("Log in as Super Admin to load Operations Center.", "warning");
+    return;
+  }
+
+  setOperationsMessage("Loading Operations Center...");
+
+  try {
+    const [overview, widgets] = await Promise.all([
+      fetchJson(`/api/admin/operations/overview${adminQuery()}`),
+      fetchJson(`/api/admin/operations/widgets${adminQuery()}`)
+    ]);
+    operationsData = overview;
+    operationsWidgetLayout = {
+      order: widgets.layout?.order?.length ? widgets.layout.order : widgets.widget_ids || [],
+      hidden: widgets.layout?.hidden || [],
+      sizes: widgets.layout?.sizes || {}
+    };
+    renderOperationsCenter();
+    setOperationsMessage(`Operations updated ${formatDate(overview.generated_at)}.`, "success");
+    scheduleOperationsRefresh();
+  } catch (error) {
+    operationsCenter.innerHTML = `<div class="warning">${escapeHtml(error.message)}</div>`;
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+function scheduleOperationsRefresh() {
+  window.clearInterval(operationsRefreshTimer);
+  operationsRefreshTimer = null;
+
+  if (operationsAutoRefresh?.checked && document.querySelector("#operationsTab")?.classList.contains("is-active")) {
+    operationsRefreshTimer = window.setInterval(() => {
+      loadOperationsCenter();
+    }, 30000);
+  }
+}
+
+function orderedOperationWidgetIds() {
+  const known = [
+    "system_health",
+    "live_activity",
+    "user_management",
+    "feedback",
+    "feature_voting",
+    "search_analytics",
+    "price_analytics",
+    "store_health",
+    "event_feed",
+    "error_center",
+    "announcements",
+    "community_pulse",
+    "security"
+  ];
+  const order = operationsWidgetLayout.order?.length
+    ? operationsWidgetLayout.order.filter((id) => known.includes(id))
+    : known;
+  return [...order, ...known.filter((id) => !order.includes(id))];
+}
+
+function renderOperationWidget(id, title, body) {
+  const hidden = operationsWidgetLayout.hidden?.includes(id);
+  const size = operationsWidgetLayout.sizes?.[id] || "normal";
+  return `
+    <article class="operation-widget operation-widget-${escapeHtml(size)} ${hidden ? "is-hidden-widget" : ""}"
+      data-operation-widget="${escapeHtml(id)}" draggable="true">
+      <div class="card-topline">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="operation-widget-controls">
+          <button class="quiet-button" type="button" data-operation-widget-move="up" data-widget-id="${escapeHtml(id)}">Up</button>
+          <button class="quiet-button" type="button" data-operation-widget-move="down" data-widget-id="${escapeHtml(id)}">Down</button>
+          <button class="quiet-button" type="button" data-operation-widget-size="${escapeHtml(id)}">${escapeHtml(size === "wide" ? "Compact" : "Wide")}</button>
+          <button class="quiet-button" type="button" data-operation-widget-hide="${escapeHtml(id)}">${hidden ? "Show" : "Hide"}</button>
+        </div>
+      </div>
+      <div class="operation-widget-body">${body}</div>
+    </article>
+  `;
+}
+
+function renderSystemHealth(data) {
+  const health = data.system_health || {};
+  const rows = [
+    ["Website Status", health.website_status],
+    ["Database Status", health.database_status],
+    ["Email/SMTP Status", health.email_smtp_status],
+    ["Storage Status", health.storage_status],
+    ["Background Jobs", health.background_jobs],
+    ["Last Successful Backup", health.last_successful_backup]
+  ];
+  return `
+    <div class="operation-health-grid">
+      ${rows.map(([label, item]) => `
+        <div class="operation-health-row">
+          <span class="badge ${healthBadge(item?.status)}">${escapeHtml(String(item?.status || "yellow").toUpperCase())}</span>
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(item?.label || "Unknown")}</span>
+        </div>
+      `).join("")}
+    </div>
+    <dl class="details-list operation-details">
+      <div><dt>Current Version</dt><dd>${escapeHtml(health.current_version || "Unknown")}</dd></div>
+      <div><dt>Current Commit</dt><dd>${escapeHtml(health.current_commit_hash || "Unavailable")}</dd></div>
+      <div><dt>Server Uptime</dt><dd>${escapeHtml(health.server_uptime_label || "")}</dd></div>
+      <div><dt>Render Environment</dt><dd>${health.render_environment?.is_render ? "Render" : "Local/dev"} ${escapeHtml(health.render_environment?.service_name || "")}</dd></div>
+    </dl>
+  `;
+}
+
+function renderLiveActivity(data) {
+  const live = data.live_activity || {};
+  return `
+    <div class="notification-grid">
+      ${operationsMetricCards([
+        { label: "Online users", value: live.current_online_users || 0 },
+        { label: "Visitors today", value: live.visitors_today || 0 },
+        { label: "Visitors this week", value: live.visitors_this_week || 0 },
+        { label: "Registered users", value: live.registered_users || 0 },
+        { label: "Verified users", value: live.verified_users || 0 },
+        { label: "Pending verification", value: live.pending_verification || 0 },
+        { label: "New users today", value: live.new_users_today || 0 },
+        { label: "New users this week", value: live.new_users_this_week || 0 },
+        { label: "Returning users", value: live.returning_users || 0 },
+        { label: "Average session", value: live.average_session_length_label || "0 sec" },
+        { label: "Active sessions", value: live.current_active_sessions || 0 },
+        { label: "Peak today", value: live.peak_users_today || 0 }
+      ])}
+    </div>
+    <div class="operation-two-col">
+      <div>
+        <h4>Recent registrations</h4>
+        ${compactList((live.recent_registrations || []).map((user) => ({
+          title: user.username,
+          detail: `${user.email || ""} · ${formatDate(user.created_at)}`
+        })), "No registrations yet.")}
+      </div>
+      <div>
+        <h4>Recent logins</h4>
+        ${compactList((live.recent_logins || []).map((login) => ({
+          title: login.username,
+          detail: `${login.is_super_admin ? "Super Admin" : login.is_admin ? "Admin" : "User"} · ${formatDate(login.created_at)}`
+        })), "No login events yet.")}
+      </div>
+    </div>
+  `;
+}
+
+function renderOperationsUsers(data) {
+  const users = data.users?.users || [];
+  return `
+    <form id="operationsUserSearchForm" class="admin-toolbar compact-toolbar">
+      <label>
+        <span>Search users</span>
+        <input name="q" type="search" placeholder="Username or email">
+      </label>
+      <button class="secondary-button" type="submit">Search</button>
+    </form>
+    <div id="operationsUserDetail" class="operation-user-detail"></div>
+    <div class="table-scroll">
+      <table class="operations-table">
+        <thead>
+          <tr>
+            <th>Username</th><th>Email</th><th>Role</th><th>Verified</th><th>Join date</th><th>Last login</th><th>Points</th><th>Trust</th><th>Submissions</th><th>Approved</th><th>Rejected</th><th>Warnings</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="operationsUsersTable">
+          ${users.map(renderOperationsUserRow).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderOperationsUserRow(user) {
+  return `
+    <tr data-operation-user-row="${user.id}" tabindex="0">
+      <td><button class="link-button" type="button" data-operation-user="${user.id}">${escapeHtml(user.username)}</button></td>
+      <td>${escapeHtml(user.email || "")}</td>
+      <td>${escapeHtml(titleCase(user.role))}</td>
+      <td>${user.verified ? "Yes" : "No"}</td>
+      <td>${escapeHtml(formatDateOnly(user.joined_at))}</td>
+      <td>${escapeHtml(formatDate(user.last_login_at) || "Never")}</td>
+      <td>${numberValue(user.points)}</td>
+      <td>${escapeHtml(user.trust_level || "")}</td>
+      <td>${numberValue(user.submissions)}</td>
+      <td>${numberValue(user.approved)}</td>
+      <td>${numberValue(user.rejected)}</td>
+      <td>${numberValue(user.warnings)}</td>
+      <td>${user.banned ? "Banned" : user.suspended ? "Suspended" : escapeHtml(titleCase(user.account_status || "active"))}</td>
+    </tr>
+  `;
+}
+
+function renderFeedbackWidget(data) {
+  const tickets = data.feedback?.tickets || [];
+  return `
+    <form id="operationsFeedbackFilterForm" class="admin-toolbar compact-toolbar">
+      <label>
+        <span>Search feedback</span>
+        <input name="q" type="search" placeholder="Title, message, or reporter">
+      </label>
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="">All</option>
+          ${["open","in_review","needs_info","closed","merged"].map((status) => `<option value="${status}">${titleCase(status)}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        <span>Category</span>
+        <select name="category">
+          <option value="">All</option>
+          ${["bug","feature_request","wrong_price","wrong_product","store_issue","question","other"].map((category) => `<option value="${category}">${titleCase(category)}</option>`).join("")}
+        </select>
+      </label>
+      <button class="secondary-button" type="submit">Filter</button>
+    </form>
+    <div class="operation-filter-row">
+      <span class="badge confidence-medium">${numberValue(data.feedback?.total || 0)} tickets</span>
+      <span>Bug, feature, wrong price, store issue, question, and other feedback.</span>
+    </div>
+    <div class="admin-list">
+      ${tickets.length ? tickets.map((ticket) => `
+        <article class="admin-card compact-card" data-feedback-ticket="${ticket.id}">
+          <div class="card-topline">
+            <h4>${escapeHtml(ticket.title)}</h4>
+            <span class="badge status-${ticket.status === "closed" ? "ready" : ticket.priority === "urgent" ? "critical" : "warning"}">${escapeHtml(titleCase(ticket.status))}</span>
+          </div>
+          <p>${escapeHtml(ticket.message)}</p>
+          <dl class="details-list">
+            <div><dt>Category</dt><dd>${escapeHtml(titleCase(ticket.category))}</dd></div>
+            <div><dt>Priority</dt><dd>${escapeHtml(titleCase(ticket.priority))}</dd></div>
+            <div><dt>Reporter</dt><dd>${escapeHtml(ticket.reporter?.username || "Unknown")}</dd></div>
+            <div><dt>Updated</dt><dd>${escapeHtml(formatDate(ticket.updated_at))}</dd></div>
+          </dl>
+          <div class="admin-control-grid">
+            <label><span>Status</span><select data-feedback-field="status">${["open","in_review","needs_info","closed","merged"].map((status) => `<option value="${status}" ${ticket.status === status ? "selected" : ""}>${titleCase(status)}</option>`).join("")}</select></label>
+            <label><span>Priority</span><select data-feedback-field="priority">${["low","normal","high","urgent"].map((priority) => `<option value="${priority}" ${ticket.priority === priority ? "selected" : ""}>${titleCase(priority)}</option>`).join("")}</select></label>
+            <label><span>Assigned admin ID</span><input data-feedback-field="assigned_admin_id" type="number" min="1" value="${escapeHtml(ticket.assigned_admin_id || "")}" placeholder="Optional"></label>
+            <label><span>Duplicate of ticket ID</span><input data-feedback-field="duplicate_of_ticket_id" type="number" min="1" value="${escapeHtml(ticket.duplicate_of_ticket_id || "")}" placeholder="Optional"></label>
+            <label class="span-full"><span>Internal note</span><input data-feedback-field="internal_notes" type="text" maxlength="1000" value="${escapeHtml(ticket.internal_notes || "")}"></label>
+            <label class="span-full"><span>Public response</span><input data-feedback-field="public_response" type="text" maxlength="1000" value="${escapeHtml(ticket.public_response || "")}"></label>
+            <button class="secondary-button" type="button" data-feedback-action="update" data-feedback-id="${ticket.id}">Save</button>
+            <button class="quiet-button" type="button" data-feedback-action="close" data-feedback-id="${ticket.id}">Close</button>
+            <button class="quiet-button" type="button" data-feedback-action="reopen" data-feedback-id="${ticket.id}">Reopen</button>
+            <button class="quiet-button" type="button" data-feedback-action="merge" data-feedback-id="${ticket.id}">Merge duplicate</button>
+          </div>
+        </article>
+      `).join("") : '<div class="empty-state">No feedback tickets yet.</div>'}
+    </div>
+  `;
+}
+
+function renderFeatureVoting(data) {
+  const options = data.feature_voting?.options || [];
+  return `
+    <div class="admin-list">
+      ${options.map((option) => `
+        <article class="admin-card compact-card">
+          <div class="card-topline">
+            <h4>${escapeHtml(option.title)}</h4>
+            <span class="badge confidence-high">${numberValue(option.votes)} votes</span>
+          </div>
+          <p>${escapeHtml(option.description || "")}</p>
+          <div class="admin-control-grid">
+            <label><span>Status</span><select data-feature-status="${option.id}">
+              ${["active","trending","completed","rejected"].map((status) => `<option value="${status}" ${option.status === status ? "selected" : ""}>${titleCase(status)}</option>`).join("")}
+            </select></label>
+            <button class="secondary-button" type="button" data-save-feature-status="${option.id}">Save status</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderSearchAnalytics(data) {
+  const search = data.search_analytics || {};
+  return `
+    <div class="notification-grid">
+      ${operationsMetricCards([
+        { label: "Searches today", value: search.searches_today || 0 },
+        { label: "Searches this week", value: search.searches_this_week || 0 },
+        { label: "Searches this month", value: search.searches_this_month || 0 }
+      ])}
+    </div>
+    <div class="operation-three-col">
+      <div><h4>Most searched products</h4>${compactList((search.most_searched_products || []).map((row) => ({ title: row.term, detail: `${row.count} searches` })), "No searches yet.")}</div>
+      <div><h4>Most searched stores</h4>${compactList((search.most_searched_stores || []).map((row) => ({ title: row.store_name, detail: `${row.count} searches` })), "No store-filtered searches yet.")}</div>
+      <div><h4>No-result searches</h4>${compactList((search.searches_with_no_results || []).map((row) => ({ title: row.term, detail: `${row.count} misses` })), "No no-result searches yet.")}</div>
+    </div>
+  `;
+}
+
+function renderPriceAnalytics(data) {
+  const price = data.price_analytics || {};
+  return `
+    <div class="notification-grid">
+      ${operationsMetricCards([
+        { label: "Submitted today", value: price.prices_submitted_today || 0 },
+        { label: "Approved today", value: price.approved_today || 0 },
+        { label: "Rejected today", value: price.rejected_today || 0 },
+        { label: "Duplicate detections", value: price.duplicate_detections || 0 },
+        { label: "Avg approval time", value: price.average_approval_time_label || "0 sec" },
+        { label: "Parser confidence", value: `${price.average_parser_confidence || 0}%` }
+      ])}
+    </div>
+    <div class="operation-two-col">
+      <div><h4>Most active contributors</h4>${compactList((price.most_active_contributors || []).map((row) => ({ title: row.username, detail: `${row.approved_count} approved` })), "No contributors yet.")}</div>
+      <div><h4>Products needing prices</h4>${compactList((price.products_without_prices || []).map((row) => ({ title: row.display_name, detail: row.category })), "All active products have prices.")}</div>
+    </div>
+    <div class="operation-two-col">
+      <div><h4>Products needing updates</h4>${compactList((price.products_needing_updates || []).map((row) => ({ title: row.display_name, detail: row.last_reported_at ? `Last checked ${formatDate(row.last_reported_at)}` : "No approved price" })), "No stale products found.")}</div>
+      <div><h4>Oldest price by store</h4>${compactList((price.oldest_price_by_store || []).map((row) => ({ title: row.store_name, detail: `${row.approved_price_count} approved · oldest ${formatDate(row.oldest_price_at) || "unknown"}` })), "No approved store prices yet.")}</div>
+    </div>
+  `;
+}
+
+function renderStoreHealth(data) {
+  const stores = data.store_health || [];
+  return `
+    <div class="admin-list">
+      ${stores.map((store) => `
+        <article class="admin-card compact-card ${store.needs_attention ? "warning" : ""}">
+          <div class="card-topline">
+            <h4>${escapeHtml(store.name)}</h4>
+            <span class="badge ${store.needs_attention ? "status-warning" : "status-ready"}">${store.coverage_percent}% coverage</span>
+          </div>
+          <dl class="details-list">
+            <div><dt>Products</dt><dd>${numberValue(store.products)}</dd></div>
+            <div><dt>Verified prices</dt><dd>${numberValue(store.verified_prices)}</dd></div>
+            <div><dt>Average age</dt><dd>${numberValue(store.average_age_days)} days</dd></div>
+            <div><dt>Last update</dt><dd>${escapeHtml(formatDate(store.last_update) || "None")}</dd></div>
+            <div><dt>Missing categories</dt><dd>${escapeHtml((store.missing_categories || []).map(titleCase).join(", ") || "None")}</dd></div>
+          </dl>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderEventFeed(data) {
+  return `
+    <div class="admin-list operation-feed">
+      ${(data.event_feed || []).map((event) => `
+        <div class="operation-list-row">
+          <strong>${escapeHtml(event.title)}</strong>
+          <span>${escapeHtml(event.message || "")} · ${escapeHtml(formatDate(event.created_at))}</span>
+        </div>
+      `).join("") || '<div class="empty-state">No events yet.</div>'}
+    </div>
+  `;
+}
+
+function renderErrorCenter(data) {
+  const errors = data.error_center || {};
+  return `
+    <div class="notification-grid">
+      ${operationsMetricCards([
+        { label: "Failed emails", value: errors.failed_emails || 0 },
+        { label: "Failed uploads", value: errors.failed_uploads || 0 },
+        { label: "Parser failures", value: errors.parser_failures || 0 },
+        { label: "Broken images", value: errors.broken_images?.broken_count || 0 },
+        { label: "Unhandled exceptions", value: errors.unhandled_exceptions || 0 },
+        { label: "Database errors", value: errors.database_errors || 0 },
+        { label: "API failures", value: errors.api_failures || 0 },
+        { label: "Rate limiting", value: errors.rate_limiting || 0 }
+      ])}
+    </div>
+    ${compactList((errors.recent_errors || []).map((error) => ({
+      title: `${titleCase(error.severity)} ${titleCase(error.error_type)}`,
+      detail: `${error.message} · ${formatDate(error.created_at)}`
+    })), "No recorded system errors.")}
+  `;
+}
+
+function renderAnnouncements(data) {
+  const announcements = data.announcements || [];
+  return `
+    <form id="operationsAnnouncementForm" class="admin-control-grid">
+      <label><span>Type</span><select name="announcement_type">${["maintenance","known_issue","new_feature","downtime","homepage_banner"].map((type) => `<option value="${type}">${titleCase(type)}</option>`).join("")}</select></label>
+      <label><span>Status</span><select name="status"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select></label>
+      <label><span>Title</span><input name="title" type="text" maxlength="160" required></label>
+      <label class="span-full"><span>Message</span><textarea name="body" maxlength="1200" rows="3" required></textarea></label>
+      <button class="primary-button" type="submit">Save announcement</button>
+    </form>
+    <div class="admin-list">
+      ${announcements.length ? announcements.map((announcement) => `
+        <article class="admin-card compact-card">
+          <div class="card-topline">
+            <h4>${escapeHtml(announcement.title)}</h4>
+            <span class="badge ${announcement.status === "published" ? "status-ready" : "status-warning"}">${escapeHtml(titleCase(announcement.status))}</span>
+          </div>
+          <p>${escapeHtml(announcement.body)}</p>
+          <span class="field-help">${escapeHtml(titleCase(announcement.announcement_type))} · ${escapeHtml(formatDate(announcement.updated_at))}</span>
+        </article>
+      `).join("") : '<div class="empty-state">No announcements yet.</div>'}
+    </div>
+  `;
+}
+
+function renderSecurityWidget(data) {
+  return `
+    <div class="warning">Role changes, user deletion/deactivation, database tools, and announcement publishing require Super Admin access.</div>
+    <div class="admin-list">
+      ${(data.audit_log || []).slice(0, 30).map((entry) => `
+        <div class="operation-list-row">
+          <strong>${escapeHtml(entry.action)}</strong>
+          <span>${escapeHtml(entry.admin_username || "Unknown admin")} · ${escapeHtml(formatDate(entry.created_at))}</span>
+        </div>
+      `).join("") || '<div class="empty-state">No audit log entries yet.</div>'}
+    </div>
+  `;
+}
+
+function renderOperationsCenter() {
+  if (!operationsCenter || !operationsData) {
+    return;
+  }
+
+  const widgetBodies = {
+    system_health: ["System Health", renderSystemHealth(operationsData)],
+    live_activity: ["Live Activity", renderLiveActivity(operationsData)],
+    user_management: ["User Management", renderOperationsUsers(operationsData)],
+    feedback: ["Community Feedback", renderFeedbackWidget(operationsData)],
+    feature_voting: ["Feature Voting", renderFeatureVoting(operationsData)],
+    search_analytics: ["Search Analytics", renderSearchAnalytics(operationsData)],
+    price_analytics: ["Price Analytics", renderPriceAnalytics(operationsData)],
+    store_health: ["Store Health", renderStoreHealth(operationsData)],
+    event_feed: ["Real-Time Event Feed", renderEventFeed(operationsData)],
+    error_center: ["Error Center", renderErrorCenter(operationsData)],
+    announcements: ["Announcements", renderAnnouncements(operationsData)],
+    community_pulse: ["Community Pulse", compactList((operationsData.community_pulse || []).map((message) => ({ title: message })), "No insights yet.")],
+    security: ["Security", renderSecurityWidget(operationsData)]
+  };
+
+  operationsCenter.innerHTML = orderedOperationWidgetIds()
+    .map((id) => renderOperationWidget(id, widgetBodies[id]?.[0] || titleCase(id), widgetBodies[id]?.[1] || ""))
+    .join("");
+
+  bindOperationsControls();
+}
+
+function bindOperationsControls() {
+  let draggedWidget = "";
+
+  for (const widget of operationsCenter.querySelectorAll("[data-operation-widget]")) {
+    widget.addEventListener("dragstart", (event) => {
+      draggedWidget = widget.dataset.operationWidget;
+      event.dataTransfer.effectAllowed = "move";
+    });
+    widget.addEventListener("dragover", (event) => event.preventDefault());
+    widget.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      const targetId = widget.dataset.operationWidget;
+      if (!draggedWidget || draggedWidget === targetId) return;
+      const order = orderedOperationWidgetIds().filter((id) => id !== draggedWidget);
+      const index = order.indexOf(targetId);
+      order.splice(index, 0, draggedWidget);
+      operationsWidgetLayout.order = order;
+      renderOperationsCenter();
+      await saveOperationsWidgetLayout();
+    });
+  }
+
+  for (const button of operationsCenter.querySelectorAll("[data-operation-widget-move]")) {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.widgetId;
+      const direction = button.dataset.operationWidgetMove;
+      const order = orderedOperationWidgetIds();
+      const index = order.indexOf(id);
+      const nextIndex = direction === "up" ? index - 1 : index + 1;
+      if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+      [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+      operationsWidgetLayout.order = order;
+      renderOperationsCenter();
+      await saveOperationsWidgetLayout();
+    });
+  }
+
+  for (const button of operationsCenter.querySelectorAll("[data-operation-widget-size]")) {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.operationWidgetSize;
+      operationsWidgetLayout.sizes = operationsWidgetLayout.sizes || {};
+      operationsWidgetLayout.sizes[id] = operationsWidgetLayout.sizes[id] === "wide" ? "compact" : "wide";
+      renderOperationsCenter();
+      await saveOperationsWidgetLayout();
+    });
+  }
+
+  for (const button of operationsCenter.querySelectorAll("[data-operation-widget-hide]")) {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.operationWidgetHide;
+      const hidden = new Set(operationsWidgetLayout.hidden || []);
+      if (hidden.has(id)) hidden.delete(id);
+      else hidden.add(id);
+      operationsWidgetLayout.hidden = [...hidden];
+      renderOperationsCenter();
+      await saveOperationsWidgetLayout();
+    });
+  }
+
+  operationsCenter.querySelector("#operationsUserSearchForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const q = new FormData(event.currentTarget).get("q") || "";
+    const params = new URLSearchParams();
+    const pin = getPin();
+    if (pin) params.set("pin", pin);
+    if (q) params.set("q", q);
+    const data = await fetchJson(`/api/admin/operations/users?${params.toString()}`);
+    const table = operationsCenter.querySelector("#operationsUsersTable");
+    if (table) table.innerHTML = data.users.map(renderOperationsUserRow).join("");
+    bindOperationsControls();
+  });
+
+  operationsCenter.querySelector("#operationsFeedbackFilterForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const params = new URLSearchParams();
+    const pin = getPin();
+    if (pin) params.set("pin", pin);
+    for (const field of ["q", "status", "category"]) {
+      const value = String(formData.get(field) || "").trim();
+      if (value) params.set(field, value);
+    }
+    const data = await fetchJson(`/api/admin/operations/feedback?${params.toString()}`);
+    operationsData.feedback = data;
+    renderOperationsCenter();
+  });
+
+  for (const button of operationsCenter.querySelectorAll("[data-operation-user]")) {
+    button.addEventListener("click", () => loadOperationUserDetail(button.dataset.operationUser));
+  }
+
+  for (const button of operationsCenter.querySelectorAll("[data-feedback-action]")) {
+    button.addEventListener("click", () => updateOperationFeedback(button.dataset.feedbackId, button.dataset.feedbackAction));
+  }
+
+  for (const button of operationsCenter.querySelectorAll("[data-save-feature-status]")) {
+    button.addEventListener("click", () => updateFeatureVoteStatus(button.dataset.saveFeatureStatus));
+  }
+
+  operationsCenter.querySelector("#operationsAnnouncementForm")?.addEventListener("submit", createOperationAnnouncement);
+}
+
+async function saveOperationsWidgetLayout() {
+  try {
+    await fetchJson(`/api/admin/operations/widgets${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: operationsWidgetLayout })
+    });
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function loadOperationUserDetail(userId) {
+  try {
+    const detail = await fetchJson(`/api/admin/operations/users/${encodeURIComponent(userId)}${adminQuery()}`);
+    const target = operationsCenter.querySelector("#operationsUserDetail");
+    if (!target) return;
+    target.innerHTML = `
+      <article class="admin-card compact-card">
+        <div class="card-topline">
+          <h4>${escapeHtml(detail.user.username)}</h4>
+          <span class="badge confidence-medium">${escapeHtml(titleCase(detail.user.role))}</span>
+        </div>
+        <div class="operation-three-col">
+          <div><h4>Activity</h4>${compactList((detail.activity_history || []).slice(0, 10).map((item) => ({ title: `${titleCase(item.type)}: ${item.title}`, detail: `${titleCase(item.status)} · ${formatDate(item.created_at)}` })), "No activity.")}</div>
+          <div><h4>Verification history</h4>${compactList((detail.verification_history || []).slice(0, 10).map((item) => ({ title: titleCase(item.event_type), detail: formatDate(item.created_at) })), "No verification history.")}</div>
+          <div><h4>Login history</h4>${compactList((detail.login_history || []).slice(0, 10).map((item) => ({ title: item.success ? "Successful login" : "Failed login", detail: formatDate(item.created_at) })), "No login history.")}</div>
+        </div>
+      </article>
+    `;
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function updateOperationFeedback(ticketId, action) {
+  const card = operationsCenter.querySelector(`[data-feedback-ticket="${ticketId}"]`);
+  const payload = { action };
+
+  if (card) {
+    for (const field of card.querySelectorAll("[data-feedback-field]")) {
+      payload[field.dataset.feedbackField] = field.value;
+    }
+  }
+
+  try {
+    await fetchJson(`/api/admin/operations/feedback/${encodeURIComponent(ticketId)}${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function updateFeatureVoteStatus(optionId) {
+  const select = operationsCenter.querySelector(`[data-feature-status="${optionId}"]`);
+  try {
+    await fetchJson(`/api/admin/operations/feature-votes/${encodeURIComponent(optionId)}/status${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: select?.value || "active" })
+    });
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function createOperationAnnouncement(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(formData.entries());
+  try {
+    await fetchJson(`/api/admin/operations/announcements${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    event.currentTarget.reset();
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
   }
 }
 
@@ -1348,7 +2054,7 @@ function renderAdminAccessCleanup(data = {}) {
   }
 
   const accounts = data.accounts || [];
-  const canChangeRoles = Boolean(adminSession?.loggedIn && adminSession?.is_admin);
+  const canChangeRoles = Boolean(adminSession?.loggedIn && adminSession?.is_super_admin);
   const warning = data.multiple_admins
     ? "Multiple admin accounts found. Review Admin Access Cleanup before beta."
     : "Admin access count looks safe.";
@@ -1356,7 +2062,7 @@ function renderAdminAccessCleanup(data = {}) {
   adminAccessCleanup.innerHTML = `
     <div class="${data.cleanup_needed ? "warning" : "inline-help"}">${escapeHtml(warning)}</div>
     <div class="inline-help">${escapeHtml(data.recommendation || "Choose the trusted owner before changing admin access.")}</div>
-    ${canChangeRoles ? "" : '<div class="warning">Log in as admin to change admin access. The ADMIN_PIN fallback cannot demote, promote, or suspend admin accounts.</div>'}
+    ${canChangeRoles ? "" : '<div class="warning">Log in as Owner / Super Admin to change admin access. The ADMIN_PIN fallback cannot demote, promote, or suspend admin accounts.</div>'}
     ${accounts.length ? accounts.map((account) => `
       <article class="admin-card compact-card" data-admin-account-card="${account.id}">
         <div class="card-topline">
@@ -4255,6 +4961,8 @@ priceImportRejectSelected.addEventListener("click", () => bulkPriceImport("rejec
 priceImportBulkEditForm.addEventListener("submit", submitPriceImportBulkEdit);
 priceImportRemoveSelected.addEventListener("click", () => bulkPriceImport("remove"));
 priceImportUndoBatch.addEventListener("click", undoSelectedImportBatch);
+operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
+operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 
 priceImportProofInput.addEventListener("change", () => renderPriceImportUploadPreview(priceImportProofInput.files));
 priceImportDropZone.addEventListener("dragover", (event) => {

@@ -4173,6 +4173,165 @@ body {
   transform: translateY(-1px);
 }
 
+.admin-tab.is-restricted {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.operations-center {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.operation-widget {
+  grid-column: span 6;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.operation-widget-wide {
+  grid-column: 1 / -1;
+}
+
+.operation-widget-compact {
+  grid-column: span 4;
+}
+
+.operation-widget.is-hidden-widget .operation-widget-body {
+  display: none;
+}
+
+.operation-widget.is-hidden-widget {
+  min-height: auto;
+  background: var(--surface-strong);
+  box-shadow: none;
+}
+
+.operation-widget-controls,
+.operation-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.operation-widget-controls .quiet-button {
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 0.82rem;
+}
+
+.operation-health-grid,
+.operation-two-col,
+.operation-three-col {
+  display: grid;
+  gap: 10px;
+}
+
+.operation-health-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.operation-two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.operation-three-col {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.operation-health-row,
+.operation-list-row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.operation-list-row strong,
+.operation-list-row span,
+.operation-health-row strong,
+.operation-health-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.operation-list-row span,
+.operation-health-row span {
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.operation-details {
+  margin-top: 10px;
+}
+
+.operation-user-detail {
+  margin: 10px 0;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.operations-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.operations-table th,
+.operations-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.operations-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.operations-table tr:hover td,
+.operations-table tr:focus-within td {
+  background: #fbfefc;
+}
+
+.compact-toolbar {
+  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.compact-toolbar label {
+  flex: 1 1 220px;
+}
+
+.compact-card {
+  box-shadow: none;
+}
+
 .shop-card-body {
   grid-template-columns: 1fr;
   gap: 6px;
@@ -5665,6 +5824,28 @@ body {
   .admin-split,
   .admin-body .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .operations-center,
+  .operation-health-grid,
+  .operation-two-col,
+  .operation-three-col {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-widget,
+  .operation-widget-wide,
+  .operation-widget-compact {
+    grid-column: 1 / -1;
+    padding: 12px;
+  }
+
+  .operation-widget-controls {
+    justify-content: flex-start;
+  }
+
+  .operations-table {
+    min-width: 860px;
   }
 
   .admin-panel-heading {

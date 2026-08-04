@@ -19,6 +19,7 @@
     <main class="admin-shell">
       <aside class="admin-sidebar" aria-label="Admin sections">
         <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Dashboard</button>
+        <button class="admin-tab" type="button" data-admin-tab="operationsTab">Operations Center</button>
         <button class="admin-tab" type="button" data-admin-tab="betaReadinessTab">Beta Readiness</button>
         <button class="admin-tab" type="button" data-admin-tab="analyticsTab">Analytics</button>
         <button class="admin-tab" type="button" data-admin-tab="sponsorsTab">Sponsors</button>
@@ -53,6 +54,24 @@
             <h2>Dashboard</h2>
           </div>
           <div id="adminNotifications" class="notification-grid"></div>
+        </section>
+
+        <section id="operationsTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Operations Center</h2>
+              <p class="field-help">Super Admin-only mission control for system health, users, analytics, feedback, voting, and audit logs.</p>
+            </div>
+            <div class="card-actions">
+              <button id="operationsRefreshButton" class="secondary-button" type="button">Refresh</button>
+              <label class="checkbox-row compact-checkbox">
+                <input id="operationsAutoRefresh" type="checkbox" checked>
+                <span>Auto refresh</span>
+              </label>
+            </div>
+          </div>
+          <div id="operationsMessage" class="message" aria-live="polite"></div>
+          <div id="operationsCenter" class="operations-center"></div>
         </section>
 
         <section id="betaReadinessTab" class="admin-panel">

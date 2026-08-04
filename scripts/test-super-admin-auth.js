@@ -6,11 +6,14 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const bcrypt = require("bcrypt");
 const sqlite3 = require("sqlite3").verbose();
 const { verificationUrlForToken } = require("../src/email");
 
 const ROOT_DIR = path.join(__dirname, "..");
 const OWNER_EMAIL = "juricbu@gmail.com";
+const OWNER_USERNAME = "elcastilo";
+const OWNER_PASSWORD = "OwnerLaunchPass123!";
 
 function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -60,6 +63,96 @@ function closeDb(database) {
   });
 }
 
+async function createUsersTable(database) {
+  await dbRun(database, `
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT,
+      password_hash TEXT,
+      points INTEGER NOT NULL DEFAULT 0,
+      accuracy_score INTEGER NOT NULL DEFAULT 0,
+      is_email_verified INTEGER NOT NULL DEFAULT 0,
+      email_verified_at TEXT,
+      email_verification_token TEXT,
+      email_verification_expires TEXT,
+      verification_email_last_sent_at TEXT,
+      verification_email_send_count INTEGER NOT NULL DEFAULT 0,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      is_super_admin INTEGER NOT NULL DEFAULT 0,
+      account_status TEXT NOT NULL DEFAULT 'active',
+      ban_reason TEXT,
+      ban_note TEXT,
+      banned_at TEXT,
+      banned_by INTEGER,
+      hide_from_leaderboard INTEGER NOT NULL DEFAULT 0,
+      force_username_change INTEGER NOT NULL DEFAULT 0,
+      username_status TEXT NOT NULL DEFAULT 'approved',
+      username_moderation_note TEXT,
+      admin_note TEXT,
+      avoid_ingredients TEXT,
+      last_activity_at TEXT,
+      last_seen_at TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+}
+
+async function seedUsers(dataDir, seedRows = []) {
+  if (!seedRows.length) return;
+  const database = openDb(dataDir);
+  try {
+    await createUsersTable(database);
+    for (const row of seedRows) {
+      const passwordHash = await bcrypt.hash(row.password || "LaunchPass123!", 12);
+      await dbRun(
+        database,
+        `
+          INSERT INTO users (
+            username,
+            email,
+            password_hash,
+            points,
+            accuracy_score,
+            is_email_verified,
+            email_verified_at,
+            is_admin,
+            is_super_admin,
+            account_status,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', ?)
+        `,
+        [
+          row.username,
+          row.email,
+          passwordHash,
+          row.points || 0,
+          row.is_email_verified === false ? 0 : 1,
+          row.is_email_verified === false ? null : new Date().toISOString(),
+          row.is_admin ? 1 : 0,
+          row.is_super_admin ? 1 : 0,
+          row.created_at || new Date().toISOString()
+        ]
+      );
+    }
+  } finally {
+    await closeDb(database);
+  }
+}
+
+function ownerSeed(overrides = {}) {
+  return {
+    username: OWNER_USERNAME,
+    email: OWNER_EMAIL,
+    password: OWNER_PASSWORD,
+    is_admin: false,
+    is_super_admin: false,
+    is_email_verified: true,
+    ...overrides
+  };
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -92,9 +185,13 @@ async function waitForHealth(baseUrl, child) {
   throw new Error("Timed out waiting for /health.");
 }
 
-async function startServer(extraEnv = {}) {
-  const dataDir = tempDir("grocery-radar-auth-data-");
-  const uploadsDir = tempDir("grocery-radar-auth-uploads-");
+async function startServer(extraEnv = {}, options = {}) {
+  const dataDir = options.dataDir || tempDir("grocery-radar-auth-data-");
+  const uploadsDir = options.uploadsDir || tempDir("grocery-radar-auth-uploads-");
+  const seedRows = Object.prototype.hasOwnProperty.call(options, "seedUsers")
+    ? options.seedUsers
+    : [ownerSeed()];
+  await seedUsers(dataDir, seedRows);
   const port = await freePort();
   const env = {
     ...process.env,
@@ -105,7 +202,8 @@ async function startServer(extraEnv = {}) {
     UPLOADS_DIR: uploadsDir,
     SESSION_SECRET: "test-session-secret",
     PUBLIC_APP_URL: "https://thegroceryradar.com",
-    SUPER_ADMIN_EMAIL: OWNER_EMAIL,
+    SUPER_ADMIN_EMAIL: "attacker@example.invalid",
+    OWNER_EMAIL: "attacker@example.invalid",
     VERIFICATION_RESEND_COOLDOWN_SECONDS: "60",
     ...extraEnv
   };
@@ -141,6 +239,50 @@ async function startServer(extraEnv = {}) {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
   };
+}
+
+async function startServerExpectFailure(extraEnv = {}, options = {}, expectedMessage = /Owner identity conflict/) {
+  const dataDir = options.dataDir || tempDir("grocery-radar-auth-fail-data-");
+  const uploadsDir = options.uploadsDir || tempDir("grocery-radar-auth-fail-uploads-");
+  await seedUsers(dataDir, Object.prototype.hasOwnProperty.call(options, "seedUsers") ? options.seedUsers : []);
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    NODE_ENV: "test",
+    HOST: "127.0.0.1",
+    PORT: String(port),
+    DATA_DIR: dataDir,
+    UPLOADS_DIR: uploadsDir,
+    SESSION_SECRET: "test-session-secret",
+    PUBLIC_APP_URL: "https://thegroceryradar.com",
+    SUPER_ADMIN_EMAIL: "attacker@example.invalid",
+    OWNER_EMAIL: "attacker@example.invalid",
+    VERIFICATION_RESEND_COOLDOWN_SECONDS: "60",
+    ...extraEnv
+  };
+  const child = childProcess.spawn(process.execPath, ["server.js"], {
+    cwd: ROOT_DIR,
+    env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const output = [];
+  child.stdout.on("data", (chunk) => output.push(String(chunk)));
+  child.stderr.on("data", (chunk) => output.push(String(chunk)));
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("Server started or hung when owner bootstrap should have failed."));
+    }, 8000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+  assert.notEqual(child.exitCode, 0, "Owner bootstrap conflict should exit non-zero.");
+  assert.match(output.join(""), expectedMessage);
+  return { dataDir, uploadsDir, output };
 }
 
 class TestClient {
@@ -239,18 +381,24 @@ async function main() {
 
   try {
     const ownerClient = new TestClient(app.baseUrl);
-    const ownerRegistration = await register(ownerClient, {
-      username: "ownerseed",
-      email: "JURICBU@GMAIL.COM"
+    const ownerLogin = await ownerClient.post("/api/auth/login", {
+      email: OWNER_EMAIL.toUpperCase(),
+      password: OWNER_PASSWORD
     });
-    assert.equal(ownerRegistration.user.email, OWNER_EMAIL);
-    assert.equal(ownerRegistration.user.username, "elcastilo");
-    assert.equal(ownerRegistration.user.is_admin, true);
-    assert.equal(ownerRegistration.user.is_super_admin, true);
-    assert.equal(ownerRegistration.verification_email_sent, true);
+    assert.equal(ownerLogin.response.status, 200, JSON.stringify(ownerLogin.body));
+    assert.equal(ownerLogin.body.user.email, OWNER_EMAIL);
+    assert.equal(ownerLogin.body.user.username, OWNER_USERNAME);
+    assert.equal(ownerLogin.body.user.is_admin, true);
+    assert.equal(ownerLogin.body.user.is_super_admin, true);
 
     const ownerMatches = await usersByEmail(app.dataDir, OWNER_EMAIL);
     assert.equal(ownerMatches.length, 1);
+    assert.equal(ownerMatches[0].username, OWNER_USERNAME);
+    assert.equal(ownerMatches[0].is_admin, 1);
+    assert.equal(ownerMatches[0].is_super_admin, 1);
+
+    const spoofedOwnerChange = await ownerClient.post("/api/account/username", { username: "owneraway" });
+    assert.equal(spoofedOwnerChange.response.status, 400);
 
     const normalClient = new TestClient(app.baseUrl);
     const normalRegistration = await register(normalClient, {
@@ -288,12 +436,57 @@ async function main() {
     });
     assert.equal(blockedIntake.response.status, 403);
 
-    const ownerRecord = await userByEmail(app.dataDir, OWNER_EMAIL);
-    assert.match(ownerRecord.email_verification_token, /^[a-f0-9]{64}$/);
-    assert.ok(ownerRecord.email_verification_expires);
-    const verified = await ownerClient.get(`/api/auth/verify-email?token=${encodeURIComponent(ownerRecord.email_verification_token)}`);
+    const blockedOperations = await normalClient.get("/api/admin/operations/overview");
+    assert.equal(blockedOperations.response.status, 403);
+
+    await updateUser(app.dataDir, "UPDATE users SET is_admin = 1 WHERE id = ?", [normalRegistration.user.id]);
+    const normalAdminIntake = await normalClient.get("/api/admin/price-imports");
+    assert.equal(normalAdminIntake.response.status, 200, JSON.stringify(normalAdminIntake.body));
+    const normalAdminOperations = await normalClient.get("/api/admin/operations/overview");
+    assert.equal(normalAdminOperations.response.status, 403);
+    const normalAdminAccountAudit = await normalClient.get("/api/admin/admin-accounts");
+    assert.equal(normalAdminAccountAudit.response.status, 403);
+    const normalAdminAnnouncement = await normalClient.post("/api/admin/operations/announcements", {
+      announcement_type: "homepage_banner",
+      status: "published",
+      title: "Blocked announcement",
+      body: "Normal admins cannot publish owner-only announcements."
+    });
+    assert.equal(normalAdminAnnouncement.response.status, 403);
+    const normalAdminRoleChange = await normalClient.post(`/api/admin/admin-accounts/${normalRegistration.user.id}/role`, {
+      action: "promote_admin",
+      confirmation: "MAKE ADMIN",
+      is_super_admin: true
+    });
+    assert.equal(normalAdminRoleChange.response.status, 403);
+    const normalAdminDeactivate = await normalClient.post(`/api/admin/users/${normalRegistration.user.id}/moderation`, {
+      action: "deactivated"
+    });
+    assert.equal(normalAdminDeactivate.response.status, 403);
+    const clientSpoof = await normalClient.post("/api/admin/operations/widgets", {
+      is_super_admin: true,
+      user: { is_super_admin: true },
+      layout: { order: ["system_health"] }
+    });
+    assert.equal(clientSpoof.response.status, 403);
+    const pinOperations = await new TestClient(app.baseUrl).get("/api/admin/operations/overview?pin=1234");
+    assert.equal(pinOperations.response.status, 403);
+    const pinRoleChange = await new TestClient(app.baseUrl).post(`/api/admin/admin-accounts/${normalRegistration.user.id}/role?pin=1234`, {
+      action: "promote_admin",
+      confirmation: "MAKE ADMIN"
+    });
+    assert.equal(pinRoleChange.response.status, 403);
+    const pinDeactivate = await new TestClient(app.baseUrl).post(`/api/admin/users/${normalRegistration.user.id}/moderation?pin=1234`, {
+      action: "deactivated"
+    });
+    assert.equal(pinDeactivate.response.status, 403);
+
+    const normalRecord = await userByEmail(app.dataDir, "janeshopper@shopper.invalid");
+    assert.match(normalRecord.email_verification_token, /^[a-f0-9]{64}$/);
+    assert.ok(normalRecord.email_verification_expires);
+    const verified = await normalClient.get(`/api/auth/verify-email?token=${encodeURIComponent(normalRecord.email_verification_token)}`);
     assert.equal(verified.response.status, 200);
-    const verifyAgain = await ownerClient.get(`/api/auth/verify-email?token=${encodeURIComponent(ownerRecord.email_verification_token)}`);
+    const verifyAgain = await normalClient.get(`/api/auth/verify-email?token=${encodeURIComponent(normalRecord.email_verification_token)}`);
     assert.equal(verifyAgain.response.status, 400);
     const invalidVerify = await ownerClient.get("/api/auth/verify-email?token=invalid-token");
     assert.equal(invalidVerify.response.status, 400);
@@ -327,7 +520,7 @@ async function main() {
     await updateUser(app.dataDir, "UPDATE users SET is_admin = 0, is_super_admin = 0 WHERE lower(email) = lower(?)", [OWNER_EMAIL]);
     const loginResult = await ownerClient.post("/api/auth/login", {
       email: OWNER_EMAIL,
-      password: ownerRegistration.password
+      password: OWNER_PASSWORD
     });
     assert.equal(loginResult.response.status, 200);
     assert.equal(loginResult.body.user.is_admin, true);
@@ -336,6 +529,16 @@ async function main() {
     assert.equal(ownerAfterLogin.length, 1);
     assert.equal(ownerAfterLogin[0].is_admin, 1);
     assert.equal(ownerAfterLogin[0].is_super_admin, 1);
+
+    const publicOwnerProfile = await normalClient.get(`/api/users/${OWNER_USERNAME}`);
+    assert.equal(publicOwnerProfile.response.status, 200);
+    assert.equal(JSON.stringify(publicOwnerProfile.body).includes(OWNER_EMAIL), false);
+    const publicLeaderboard = await normalClient.get("/api/leaderboard");
+    assert.equal(publicLeaderboard.response.status, 200);
+    assert.equal(JSON.stringify(publicLeaderboard.body).includes(OWNER_EMAIL), false);
+    const publicBrowse = await normalClient.get("/api/browse");
+    assert.equal(publicBrowse.response.status, 200);
+    assert.equal(JSON.stringify(publicBrowse.body).includes(OWNER_EMAIL), false);
 
     const storesResponse = await ownerClient.get("/api/stores");
     assert.equal(storesResponse.response.status, 200);
@@ -395,9 +598,129 @@ async function main() {
     assert.equal(duplicateApprove.body.results[0].duplicate, true);
     const browseAfterDuplicate = await ownerClient.get("/api/browse");
     assert.equal(approvedReportCountForItem(browseAfterDuplicate.body, "Milk"), 1);
+
+    await app.stop();
+    const restartedApp = await startServer(
+      { EMAIL_TEST_MODE: "1" },
+      { dataDir: app.dataDir, uploadsDir: app.uploadsDir, seedUsers: [] }
+    );
+    try {
+      const restartedOwnerRows = await usersByEmail(restartedApp.dataDir, OWNER_EMAIL);
+      assert.equal(restartedOwnerRows.length, 1);
+      assert.equal(restartedOwnerRows[0].username, OWNER_USERNAME);
+      assert.equal(restartedOwnerRows[0].is_admin, 1);
+      assert.equal(restartedOwnerRows[0].is_super_admin, 1);
+      const restartedOwner = new TestClient(restartedApp.baseUrl);
+      const restartedLogin = await restartedOwner.post("/api/auth/login", {
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
+      assert.equal(restartedLogin.response.status, 200);
+      assert.equal(restartedLogin.body.user.is_super_admin, true);
+    } finally {
+      await restartedApp.stop();
+    }
   } finally {
     await app.stop();
   }
+
+  const caseInsensitiveApp = await startServer(
+    { EMAIL_TEST_MODE: "1" },
+    {
+      seedUsers: [
+        ownerSeed({
+          username: "ELCASTILO",
+          email: "JURICBU@GMAIL.COM",
+          password: OWNER_PASSWORD,
+          is_admin: false,
+          is_super_admin: false
+        })
+      ]
+    }
+  );
+  try {
+    const rows = await usersByEmail(caseInsensitiveApp.dataDir, OWNER_EMAIL);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].is_admin, 1);
+    assert.equal(rows[0].is_super_admin, 1);
+    const caseClient = new TestClient(caseInsensitiveApp.baseUrl);
+    const login = await caseClient.post("/api/auth/login", {
+      email: OWNER_EMAIL,
+      password: OWNER_PASSWORD
+    });
+    assert.equal(login.response.status, 200);
+    assert.equal(login.body.user.is_super_admin, true);
+  } finally {
+    await caseInsensitiveApp.stop();
+  }
+
+  await startServerExpectFailure(
+    { EMAIL_TEST_MODE: "1" },
+    {
+      seedUsers: [
+        {
+          username: "ownerwrongname",
+          email: OWNER_EMAIL,
+          password: "WrongOwnerPass123!",
+          is_admin: false,
+          is_super_admin: false
+        }
+      ]
+    }
+  );
+
+  await startServerExpectFailure(
+    { EMAIL_TEST_MODE: "1" },
+    {
+      seedUsers: [
+        {
+          username: "ELCASTILO",
+          email: "not-owner@example.invalid",
+          password: "WrongOwnerPass123!",
+          is_admin: false,
+          is_super_admin: false
+        }
+      ]
+    }
+  );
+
+  await startServerExpectFailure(
+    { EMAIL_TEST_MODE: "1" },
+    {
+      seedUsers: [
+        ownerSeed({ is_admin: true, is_super_admin: true }),
+        {
+          username: "secondsuper",
+          email: "secondsuper@example.invalid",
+          password: "SecondSuperPass123!",
+          is_admin: true,
+          is_super_admin: true
+        }
+      ]
+    }
+  );
+
+  await startServerExpectFailure(
+    { EMAIL_TEST_MODE: "1" },
+    {
+      seedUsers: [
+        {
+          username: "elcastilo-wrong",
+          email: OWNER_EMAIL,
+          password: OWNER_PASSWORD,
+          is_admin: false,
+          is_super_admin: false
+        },
+        {
+          username: OWNER_USERNAME,
+          email: "wrong-owner@example.invalid",
+          password: "WrongOwnerPass123!",
+          is_admin: false,
+          is_super_admin: false
+        }
+      ]
+    }
+  );
 
   const smtpFailureApp = await startServer({
     EMAIL_TEST_MODE: "0",

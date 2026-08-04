@@ -3,6 +3,7 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const childProcess = require("child_process");
 const express = require("express");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
@@ -110,14 +111,8 @@ const PUBLIC_APP_URL = String(
 ).replace(/\/+$/, "");
 const BOOTSTRAP_SUPER_ADMIN_EMAIL = "juricbu@gmail.com";
 const BOOTSTRAP_SUPER_ADMIN_USERNAME = "elcastilo";
-const CONFIGURED_SUPER_ADMIN_EMAIL = String(
-  process.env.SUPER_ADMIN_EMAIL ||
-  process.env.OWNER_EMAIL ||
-  BOOTSTRAP_SUPER_ADMIN_EMAIL
-).trim().toLowerCase();
-const OWNER_EMAIL = CONFIGURED_SUPER_ADMIN_EMAIL === BOOTSTRAP_SUPER_ADMIN_EMAIL
-  ? CONFIGURED_SUPER_ADMIN_EMAIL
-  : BOOTSTRAP_SUPER_ADMIN_EMAIL;
+const OWNER_EMAIL = BOOTSTRAP_SUPER_ADMIN_EMAIL;
+const OWNER_USERNAME = BOOTSTRAP_SUPER_ADMIN_USERNAME;
 const VERIFICATION_TOKEN_TTL_MS = 1000 * 60 * 60 * 24;
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
   60,
@@ -140,6 +135,35 @@ const ALLOWED_IMAGE_UPLOADS = {
   ".webp": "image/webp"
 };
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const FEEDBACK_CATEGORIES = [
+  "bug",
+  "feature_request",
+  "wrong_price",
+  "wrong_product",
+  "store_issue",
+  "question",
+  "other"
+];
+const FEEDBACK_STATUSES = ["open", "in_review", "needs_info", "closed", "merged"];
+const FEEDBACK_PRIORITIES = ["low", "normal", "high", "urgent"];
+const FEATURE_VOTE_STATUSES = ["active", "trending", "completed", "rejected"];
+const ANNOUNCEMENT_TYPES = ["maintenance", "known_issue", "new_feature", "downtime", "homepage_banner"];
+const ANNOUNCEMENT_STATUSES = ["draft", "published", "archived"];
+const OPERATIONS_WIDGET_IDS = [
+  "system_health",
+  "live_activity",
+  "user_management",
+  "feedback",
+  "feature_voting",
+  "search_analytics",
+  "price_analytics",
+  "store_health",
+  "event_feed",
+  "error_center",
+  "announcements",
+  "community_pulse",
+  "security"
+];
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(OCR_TEMP_DIR, { recursive: true });
@@ -2189,12 +2213,17 @@ function normalizedEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function isBootstrapSuperAdminEmail(email) {
-  return normalizedEmail(email) === OWNER_EMAIL;
+function normalizedUsername(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isBootstrapSuperAdminIdentity(user = {}) {
+  return normalizedEmail(user.email) === OWNER_EMAIL &&
+    normalizedUsername(user.username) === OWNER_USERNAME;
 }
 
 function isOwnerAccount(user) {
-  return isBootstrapSuperAdminEmail(user?.email);
+  return isBootstrapSuperAdminIdentity(user);
 }
 
 function isSuperAdminAccount(user = {}) {
@@ -2206,60 +2235,86 @@ async function applyBootstrapSuperAdminFlags(user) {
     return user;
   }
 
-  if (!isBootstrapSuperAdminEmail(user.email)) {
-    if (user.is_super_admin) {
-      await run("UPDATE users SET is_super_admin = 0 WHERE id = ?", [user.id]);
-      return get("SELECT * FROM users WHERE id = ?", [user.id]);
-    }
-
+  if (!isOwnerAccount(user)) {
     return user;
   }
-
-  const usernameConflict = await get(
-    "SELECT id FROM users WHERE lower(username) = lower(?) AND id != ?",
-    [BOOTSTRAP_SUPER_ADMIN_USERNAME, user.id]
-  );
-  const usernameSql = usernameConflict
-    ? ""
-    : ", username = ?";
-  const params = usernameConflict
-    ? [user.id]
-    : [BOOTSTRAP_SUPER_ADMIN_USERNAME, user.id];
 
   await run(
     `
       UPDATE users
       SET is_admin = 1,
-          is_super_admin = 1${usernameSql}
+          is_super_admin = 1
       WHERE id = ?
     `,
-    params
+    [user.id]
   );
 
   return get("SELECT * FROM users WHERE id = ?", [user.id]);
 }
 
 async function ensureBootstrapSuperAdmin() {
-  await run(
-    "UPDATE users SET is_super_admin = 0 WHERE lower(COALESCE(email, '')) != lower(?) AND is_super_admin = 1",
-    [OWNER_EMAIL]
-  );
-
   const ownerAccounts = await all(
-    "SELECT * FROM users WHERE lower(email) = lower(?) ORDER BY id ASC",
-    [OWNER_EMAIL]
+    `
+      SELECT *
+      FROM users
+      WHERE lower(COALESCE(email, '')) = lower(?)
+        AND lower(COALESCE(username, '')) = lower(?)
+      ORDER BY id ASC
+    `,
+    [OWNER_EMAIL, OWNER_USERNAME]
   );
 
   if (!ownerAccounts.length) {
-    console.warn("Bootstrap Super Admin account was not found. Register or restore the authorized owner account.");
-    return null;
+    throw new Error(
+      "Owner identity conflict: no single account has both email juricbu@gmail.com and username elcastilo. Resolve this manually before deployment."
+    );
   }
 
   if (ownerAccounts.length > 1) {
-    console.warn("Multiple accounts share the bootstrap Super Admin email. No duplicate was created; review users manually.");
+    throw new Error(
+      "Owner identity conflict: multiple accounts match the required owner email and username. Resolve duplicates manually before deployment."
+    );
   }
 
-  return applyBootstrapSuperAdminFlags(ownerAccounts[0]);
+  const owner = ownerAccounts[0];
+  const relatedIdentityAccounts = await all(
+    `
+      SELECT id, username, email, is_super_admin
+      FROM users
+      WHERE id != ?
+        AND (
+          lower(COALESCE(email, '')) = lower(?)
+          OR lower(COALESCE(username, '')) = lower(?)
+        )
+      ORDER BY id ASC
+    `,
+    [owner.id, OWNER_EMAIL, OWNER_USERNAME]
+  );
+
+  if (relatedIdentityAccounts.length) {
+    throw new Error(
+      "Owner identity conflict: another account uses the protected owner email or username. Resolve this manually before deployment."
+    );
+  }
+
+  const superAdminAccounts = await all(
+    "SELECT id, username, email FROM users WHERE is_super_admin = 1 ORDER BY id ASC"
+  );
+  const conflictingSuperAdmins = superAdminAccounts.filter((account) => Number(account.id) !== Number(owner.id));
+
+  if (conflictingSuperAdmins.length) {
+    throw new Error(
+      "Owner identity conflict: another account is already marked Super Admin. Resolve this manually before deployment."
+    );
+  }
+
+  const updatedOwner = await applyBootstrapSuperAdminFlags(owner);
+
+  await run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_super_admin ON users(is_super_admin) WHERE is_super_admin = 1"
+  );
+
+  return updatedOwner;
 }
 
 async function markVerificationEmailSent(userId) {
@@ -2287,6 +2342,261 @@ function secondsUntilVerificationResendAllowed(user) {
 
   const elapsedSeconds = Math.floor((Date.now() - lastSentMs) / 1000);
   return Math.max(0, VERIFICATION_RESEND_COOLDOWN_SECONDS - elapsedSeconds);
+}
+
+function requestIpAddress(request) {
+  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return cleanText(forwarded || request.ip || request.socket?.remoteAddress || "", 80);
+}
+
+function requestUserAgent(request) {
+  return cleanText(request.headers["user-agent"] || "", 300);
+}
+
+function metadataJson(value) {
+  try {
+    return JSON.stringify(value || {});
+  } catch (error) {
+    return "{}";
+  }
+}
+
+function parseMetadataJson(value) {
+  try {
+    return value ? JSON.parse(value) : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function statusIndicator(status, label, details = {}) {
+  return {
+    status,
+    label,
+    ...details
+  };
+}
+
+function cleanEnum(value, allowed, fallback) {
+  const cleaned = cleanText(value, 80).toLowerCase();
+  return allowed.includes(cleaned) ? cleaned : fallback;
+}
+
+function cleanFeedbackCategory(value) {
+  return cleanEnum(value, FEEDBACK_CATEGORIES, "other");
+}
+
+function cleanFeedbackStatus(value) {
+  return cleanEnum(value, FEEDBACK_STATUSES, "open");
+}
+
+function cleanFeedbackPriority(value) {
+  return cleanEnum(value, FEEDBACK_PRIORITIES, "normal");
+}
+
+function cleanFeatureVoteStatus(value) {
+  return cleanEnum(value, FEATURE_VOTE_STATUSES, "active");
+}
+
+function cleanAnnouncementType(value) {
+  return cleanEnum(value, ANNOUNCEMENT_TYPES, "known_issue");
+}
+
+function cleanAnnouncementStatus(value) {
+  return cleanEnum(value, ANNOUNCEMENT_STATUSES, "draft");
+}
+
+function currentVersion() {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+    return packageJson.version || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function currentCommitHash() {
+  const envCommit = cleanText(
+    process.env.RENDER_GIT_COMMIT ||
+      process.env.GIT_COMMIT ||
+      process.env.SOURCE_VERSION ||
+      "",
+    80
+  );
+
+  if (envCommit) {
+    return envCommit;
+  }
+
+  try {
+    return childProcess
+      .execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+        cwd: __dirname,
+        encoding: "utf8",
+        timeout: 1000
+      })
+      .trim();
+  } catch (error) {
+    return "";
+  }
+}
+
+function dateWindowStarts() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const week = new Date(today);
+  week.setDate(week.getDate() - 6);
+  const month = new Date(today);
+  month.setDate(month.getDate() - 29);
+
+  return {
+    todayStart: today.toISOString(),
+    weekStart: week.toISOString(),
+    monthStart: month.toISOString()
+  };
+}
+
+async function recordLoginEvent(request, user, success = true) {
+  if (!user?.id) {
+    return;
+  }
+
+  await run(
+    `
+      INSERT INTO user_login_events (user_id, success, ip_address, user_agent, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    [user.id, success ? 1 : 0, requestIpAddress(request), requestUserAgent(request), new Date().toISOString()]
+  );
+}
+
+async function recordEmailVerificationEvent(request, user, eventType) {
+  if (!user?.id) {
+    return;
+  }
+
+  await run(
+    `
+      INSERT INTO email_verification_events (user_id, event_type, ip_address, user_agent, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    [
+      user.id,
+      cleanText(eventType || "verification_event", 80),
+      requestIpAddress(request),
+      requestUserAgent(request),
+      new Date().toISOString()
+    ]
+  );
+}
+
+async function recordOperationsError(input = {}) {
+  const message = cleanText(input.message || "Operation failed.", 500);
+
+  if (!message) {
+    return;
+  }
+
+  try {
+    await run(
+      `
+        INSERT INTO operations_errors (
+          error_type,
+          severity,
+          message,
+          source,
+          related_type,
+          related_id,
+          status,
+          metadata_json,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        cleanText(input.error_type || input.errorType || "system_error", 80),
+        cleanEnum(input.severity, ["info", "warning", "critical"], "warning"),
+        message,
+        cleanText(input.source || "", 120),
+        cleanText(input.related_type || input.relatedType || "", 80),
+        Number.isInteger(Number(input.related_id || input.relatedId)) ? Number(input.related_id || input.relatedId) : null,
+        cleanText(input.status || "open", 40),
+        metadataJson(input.metadata || {}),
+        new Date().toISOString()
+      ]
+    );
+  } catch (error) {
+    console.warn(`Operations error log skipped: ${error.message}`);
+  }
+}
+
+async function recordAdminAudit(input = {}) {
+  try {
+    await run(
+      `
+        INSERT INTO admin_audit_log (
+          admin_user_id,
+          action,
+          method,
+          path,
+          status_code,
+          ip_address,
+          user_agent,
+          affected_type,
+          affected_id,
+          metadata_json,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        input.admin_user_id || input.adminUserId || null,
+        cleanText(input.action || "admin_action", 160),
+        cleanText(input.method || "", 12),
+        cleanText(input.path || "", 240),
+        Number.isInteger(Number(input.status_code || input.statusCode)) ? Number(input.status_code || input.statusCode) : null,
+        cleanText(input.ip_address || input.ipAddress || "", 80),
+        cleanText(input.user_agent || input.userAgent || "", 300),
+        cleanText(input.affected_type || input.affectedType || "", 80),
+        Number.isInteger(Number(input.affected_id || input.affectedId)) ? Number(input.affected_id || input.affectedId) : null,
+        metadataJson(input.metadata || {}),
+        new Date().toISOString()
+      ]
+    );
+  } catch (error) {
+    console.warn(`Admin audit log skipped: ${error.message}`);
+  }
+}
+
+function adminAuditMiddleware(request, response, next) {
+  const method = String(request.method || "GET").toUpperCase();
+
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    next();
+    return;
+  }
+
+  response.on("finish", () => {
+    if (response.statusCode < 200 || response.statusCode >= 400) {
+      return;
+    }
+
+    recordAdminAudit({
+      adminUserId: request.adminUser?.id || null,
+      action: `${method} ${request.path}`,
+      method,
+      path: request.originalUrl || request.path,
+      statusCode: response.statusCode,
+      ipAddress: requestIpAddress(request),
+      userAgent: requestUserAgent(request),
+      metadata: {
+        via_pin: Boolean(request.adminAccessViaPin),
+        super_admin: Boolean(request.adminUser && isSuperAdminAccount(request.adminUser))
+      }
+    });
+  });
+
+  next();
 }
 
 function testAccountReason(user = {}) {
@@ -2438,9 +2748,8 @@ async function adminAccountAuditSummary() {
   const ownerAccount = accounts.find((account) => account.is_super_admin || account.is_owner) || null;
 
   return {
-    owner_email_configured: Boolean(OWNER_EMAIL),
-    owner_email: OWNER_EMAIL,
-    bootstrap_super_admin_email: OWNER_EMAIL,
+    owner_identity_configured: Boolean(OWNER_EMAIL && OWNER_USERNAME),
+    owner_username: OWNER_USERNAME,
     admin_capable_count: adminCapableAccounts.length,
     super_admin_count: accounts.filter((account) => account.is_super_admin).length,
     active_admin_capable_count: activeAdminCapableAccounts.length,
@@ -2450,8 +2759,8 @@ async function adminAccountAuditSummary() {
     multiple_admins: adminCapableAccounts.length > 1,
     cleanup_needed: adminCapableAccounts.length > 1 || !ownerAccount,
     recommendation: ownerAccount
-      ? `Keep ${ownerAccount.username} (${ownerAccount.email}) as owner/admin unless you choose otherwise.`
-      : "Bootstrap Super Admin account was not found. Register or restore the authorized owner account before demoting admins.",
+      ? `Keep ${ownerAccount.username} as Owner / Super Admin unless you choose otherwise.`
+      : "The required Owner account was not found. Resolve the owner identity before changing admin access.",
     accounts
   };
 }
@@ -2791,12 +3100,12 @@ async function getBetaReadinessSummary() {
     `
       SELECT
         SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) AS admin_count,
-        SUM(CASE WHEN lower(email) = lower(?) AND is_admin = 1 THEN 1 ELSE 0 END) AS target_admin,
-        SUM(CASE WHEN lower(email) = lower(?) AND is_admin = 1 AND is_email_verified = 1 THEN 1 ELSE 0 END) AS target_admin_verified
+        SUM(CASE WHEN lower(email) = lower(?) AND lower(username) = lower(?) AND is_admin = 1 AND is_super_admin = 1 THEN 1 ELSE 0 END) AS target_admin,
+        SUM(CASE WHEN lower(email) = lower(?) AND lower(username) = lower(?) AND is_admin = 1 AND is_super_admin = 1 AND is_email_verified = 1 THEN 1 ELSE 0 END) AS target_admin_verified
       FROM users
       WHERE COALESCE(account_status, 'active') NOT IN ('banned', 'deleted', 'deactivated')
     `,
-    [OWNER_EMAIL, OWNER_EMAIL]
+    [OWNER_EMAIL, OWNER_USERNAME, OWNER_EMAIL, OWNER_USERNAME]
   );
   const userCounts = await get(
     `
@@ -3011,7 +3320,7 @@ async function getBetaReadinessSummary() {
             : "Exactly one owner/admin account is active.",
     counts: {
       admins: adminCounts.admin_count || 0,
-      configured_owner_email: OWNER_EMAIL || "not configured",
+      required_owner_username: OWNER_USERNAME,
       owner_admin_present: Boolean(adminCounts.target_admin),
       owner_admin_email_verified: Boolean(adminCounts.target_admin_verified)
     },
@@ -3321,6 +3630,19 @@ async function eventCount(eventType, since) {
   const row = await get(
     "SELECT COUNT(*) AS count FROM analytics_events WHERE event_type = ? AND created_at >= ?",
     [eventType, since]
+  );
+
+  return row.count || 0;
+}
+
+async function visitorCountSince(since) {
+  const row = await get(
+    `
+      SELECT COUNT(DISTINCT COALESCE(NULLIF(session_id, ''), CASE WHEN user_id IS NOT NULL THEN 'user:' || user_id ELSE 'event:' || id END)) AS count
+      FROM analytics_events
+      WHERE created_at >= ?
+    `,
+    [since]
   );
 
   return row.count || 0;
@@ -4580,6 +4902,19 @@ function requireLoggedInAdminAction(request, response, next) {
   next();
 }
 
+const requireSuperAdminAccess = asyncRoute(async (request, response, next) => {
+  const access = await getAdminAccess(request);
+
+  if (!access.allowed || access.viaPin || !access.user || !isSuperAdminAccount(access.user)) {
+    response.status(403).json({ error: "Super Admin access is required." });
+    return;
+  }
+
+  request.adminUser = access.user;
+  request.adminAccessViaPin = false;
+  next();
+});
+
 const requireLogin = asyncRoute(async (request, response, next) => {
   const user = await getSessionUser(request);
 
@@ -4638,6 +4973,1290 @@ function authPage(title, message) {
     </html>
   `;
 }
+
+function secondsLabel(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value < 60) return `${Math.round(value)} sec`;
+  if (value < 3600) return `${Math.round(value / 60)} min`;
+  if (value < 86400) return `${Math.round(value / 3600)} hr`;
+  return `${Math.round(value / 86400)} day`;
+}
+
+function formatUserSummary(row = {}) {
+  const trustProfile = trustLevelFromStats({
+    accepted_proof_count: row.approved_count || 0,
+    approved_prices_from_proof: row.approved_count || 0,
+    rejected_proof_count: row.rejected_count || 0,
+    duplicate_proof_count: row.duplicate_count || 0,
+    unclear_proof_count: row.needs_clearer_count || 0,
+    is_admin: Boolean(row.is_admin),
+    admin_note: row.admin_note || ""
+  });
+
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email || "",
+    role: isSuperAdminAccount(row) ? "super_admin" : row.is_admin ? "admin" : "user",
+    verified: Boolean(row.is_email_verified),
+    joined_at: row.created_at,
+    last_login_at: row.last_login_at || "",
+    last_seen_at: row.last_seen_at || "",
+    points: row.points || 0,
+    trust_level: trustProfile.label,
+    trust_level_key: trustProfile.key,
+    submissions: row.submission_count || 0,
+    approved: row.approved_count || 0,
+    rejected: row.rejected_count || 0,
+    warnings: row.warning_count || 0,
+    suspended: row.account_status === "suspended",
+    banned: row.account_status === "banned",
+    account_status: row.account_status || "active"
+  };
+}
+
+function formatFeedbackTicket(row = {}, includeAdminFields = false) {
+  const ticket = {
+    id: row.id,
+    status: row.status || "open",
+    priority: row.priority || "normal",
+    category: row.category || "other",
+    title: row.title || "",
+    message: row.message || "",
+    reporter: row.reporter_username
+      ? {
+          id: row.reporter_user_id,
+          username: row.reporter_username
+        }
+      : null,
+    public_response: row.public_response || "",
+    source_url: row.source_url || "",
+    city: row.city || "Janesville",
+    region: row.region || "WI",
+    country_code: row.country_code || "US",
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    closed_at: row.closed_at || ""
+  };
+
+  if (includeAdminFields) {
+    ticket.reporter = row.reporter_username
+      ? {
+          id: row.reporter_user_id,
+          username: row.reporter_username,
+          email: row.reporter_email || ""
+        }
+      : null;
+    ticket.assigned_admin = row.assigned_admin_username
+      ? {
+          id: row.assigned_admin_id,
+          username: row.assigned_admin_username
+        }
+      : null;
+    ticket.assigned_admin_id = row.assigned_admin_id || null;
+    ticket.duplicate_of_ticket_id = row.duplicate_of_ticket_id || null;
+    ticket.internal_notes = row.internal_notes || "";
+  }
+
+  return ticket;
+}
+
+function feedbackSelectSql() {
+  return `
+    SELECT
+      tickets.*,
+      reporters.username AS reporter_username,
+      reporters.email AS reporter_email,
+      assignees.username AS assigned_admin_username
+    FROM feedback_tickets tickets
+    LEFT JOIN users reporters ON reporters.id = tickets.reporter_user_id
+    LEFT JOIN users assignees ON assignees.id = tickets.assigned_admin_id
+  `;
+}
+
+async function feedbackTicketById(ticketId) {
+  return get(`${feedbackSelectSql()} WHERE tickets.id = ?`, [ticketId]);
+}
+
+function formatFeatureVoteOption(row = {}, currentUserVoteIds = new Set()) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    description: row.description || "",
+    status: row.status || "active",
+    votes: row.vote_count || 0,
+    user_has_voted: currentUserVoteIds.has(Number(row.id)),
+    newest_vote_at: row.newest_vote_at || "",
+    city: row.city || "Janesville",
+    region: row.region || "WI",
+    country_code: row.country_code || "US",
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+async function featureVoteOptionsForUser(userId = null) {
+  const [options, userVotes] = await Promise.all([
+    all(
+      `
+        SELECT
+          options.*,
+          COUNT(votes.id) AS vote_count,
+          MAX(votes.created_at) AS newest_vote_at
+        FROM feature_vote_options options
+        LEFT JOIN feature_votes votes ON votes.option_id = options.id
+        GROUP BY options.id
+        ORDER BY
+          CASE options.status
+            WHEN 'trending' THEN 1
+            WHEN 'active' THEN 2
+            WHEN 'completed' THEN 3
+            WHEN 'rejected' THEN 4
+            ELSE 5
+          END,
+          vote_count DESC,
+          options.title ASC
+      `
+    ),
+    userId
+      ? all("SELECT option_id FROM feature_votes WHERE user_id = ?", [userId])
+      : Promise.resolve([])
+  ]);
+  const votedIds = new Set(userVotes.map((row) => Number(row.option_id)));
+  return options.map((row) => formatFeatureVoteOption(row, votedIds));
+}
+
+function formatAnnouncement(row = {}, includeAdminFields = false) {
+  const announcement = {
+    id: row.id,
+    title: row.title || "",
+    body: row.body || "",
+    announcement_type: row.announcement_type || "known_issue",
+    status: row.status || "draft",
+    scope: row.scope || "homepage_banner",
+    city: row.city || "Janesville",
+    region: row.region || "WI",
+    country_code: row.country_code || "US",
+    starts_at: row.starts_at || "",
+    ends_at: row.ends_at || "",
+    published_at: row.published_at || "",
+    updated_at: row.updated_at || row.created_at || ""
+  };
+
+  if (includeAdminFields) {
+    announcement.created_by = row.created_by || null;
+    announcement.updated_by = row.updated_by || null;
+    announcement.published_by = row.published_by || null;
+  }
+
+  return announcement;
+}
+
+function publicAnnouncementWhere(now = new Date().toISOString()) {
+  return `
+    status = 'published'
+    AND (starts_at IS NULL OR starts_at = '' OR starts_at <= ?)
+    AND (ends_at IS NULL OR ends_at = '' OR ends_at >= ?)
+  `;
+}
+
+function cleanAnnouncementPayload(body = {}, adminUserId = null, existing = {}) {
+  const now = new Date().toISOString();
+  const status = cleanAnnouncementStatus(body.status ?? existing.status ?? "draft");
+  const publishedAt = status === "published"
+    ? (existing.published_at || now)
+    : existing.published_at || null;
+
+  return {
+    title: cleanText(body.title ?? existing.title, 160),
+    body: cleanText(body.body ?? existing.body, 1200),
+    announcement_type: cleanAnnouncementType(body.announcement_type ?? existing.announcement_type),
+    status,
+    scope: cleanText(body.scope ?? existing.scope ?? "homepage_banner", 80) || "homepage_banner",
+    city: cleanText(body.city ?? existing.city ?? "Janesville", 80) || "Janesville",
+    region: cleanText(body.region ?? existing.region ?? "WI", 80) || "WI",
+    country_code: cleanText(body.country_code ?? existing.country_code ?? "US", 8).toUpperCase() || "US",
+    starts_at: body.starts_at ? normalizeOptionalTimestamp(body.starts_at) : existing.starts_at || null,
+    ends_at: body.ends_at ? normalizeOptionalTimestamp(body.ends_at) : existing.ends_at || null,
+    published_at: publishedAt,
+    published_by: status === "published" ? (existing.published_by || adminUserId) : existing.published_by || null,
+    created_by: existing.created_by || adminUserId,
+    updated_by: adminUserId,
+    created_at: existing.created_at || now,
+    updated_at: now
+  };
+}
+
+async function activeSessionCounts() {
+  try {
+    const row = await get(
+      `
+        SELECT
+          COUNT(*) AS active_sessions,
+          COUNT(DISTINCT json_extract(sess, '$.userId')) AS active_user_sessions
+        FROM app_sessions
+        WHERE expires_at > ?
+      `,
+      [Date.now()]
+    );
+
+    return {
+      active_sessions: row.active_sessions || 0,
+      active_user_sessions: row.active_user_sessions || 0
+    };
+  } catch (error) {
+    return {
+      active_sessions: 0,
+      active_user_sessions: 0
+    };
+  }
+}
+
+function searchEventSummary(events = []) {
+  const terms = new Map();
+  const stores = new Map();
+  const noResults = new Map();
+
+  for (const event of events) {
+    const term = cleanText(event.cart_item_name, 120).toLowerCase();
+    const metadata = parseMetadataJson(event.metadata_json);
+
+    if (term) {
+      terms.set(term, (terms.get(term) || 0) + 1);
+    }
+
+    if (event.store_id && event.store_name) {
+      stores.set(event.store_name, (stores.get(event.store_name) || 0) + 1);
+    }
+
+    if (term && Number(metadata.result_count || 0) === 0 && Number(metadata.product_count || 0) === 0) {
+      noResults.set(term, (noResults.get(term) || 0) + 1);
+    }
+  }
+
+  const top = (map, keyName) => [...map.entries()]
+    .map(([value, count]) => ({ [keyName]: value, count }))
+    .sort((a, b) => b.count - a.count || String(a[keyName]).localeCompare(String(b[keyName])))
+    .slice(0, 20);
+
+  return {
+    most_searched_products: top(terms, "term"),
+    most_searched_stores: top(stores, "store_name"),
+    searches_with_no_results: top(noResults, "term")
+  };
+}
+
+function scoreConfidenceRows(rows = []) {
+  const weights = {
+    high: 90,
+    "medium-high": 75,
+    medium: 60,
+    low: 30
+  };
+  let total = 0;
+  let count = 0;
+
+  for (const row of rows) {
+    const confidence = String(row.extraction_confidence || "").toLowerCase();
+    const rowCount = Number(row.count) || 0;
+    if (weights[confidence] && rowCount) {
+      total += weights[confidence] * rowCount;
+      count += rowCount;
+    }
+  }
+
+  return count ? Math.round(total / count) : 0;
+}
+
+async function brokenImageSummary() {
+  const rows = await all(
+    `
+      SELECT 'price_report' AS source, id, photo_path
+      FROM price_reports
+      WHERE COALESCE(photo_path, '') != ''
+      UNION ALL
+      SELECT 'price_import_batch' AS source, id, photo_path
+      FROM price_import_batches
+      WHERE COALESCE(photo_path, '') != ''
+    `
+  );
+  const broken = rows.filter((row) => !uploadPathFromPhotoPath(row.photo_path));
+
+  return {
+    checked: rows.length,
+    broken_count: broken.length,
+    samples: broken.slice(0, 12).map((row) => ({
+      source: row.source,
+      id: row.id
+    }))
+  };
+}
+
+async function operationsUsers({ q = "", page = 1, limit = 50 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 10), 100);
+  const safePage = Math.max(Number(page) || 1, 1);
+  const offset = (safePage - 1) * safeLimit;
+  const params = [];
+  const filters = ["1 = 1"];
+
+  if (q) {
+    filters.push("(lower(users.username) LIKE ? OR lower(COALESCE(users.email, '')) LIKE ?)");
+    params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+  }
+
+  const rows = await all(
+    `
+      SELECT
+        users.*,
+        (SELECT MAX(created_at) FROM user_login_events WHERE user_id = users.id AND success = 1) AS last_login_at,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id) AS submission_count,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id AND status = 'approved') AS approved_count,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id AND status = 'rejected') AS rejected_count,
+        (SELECT COUNT(*) FROM price_import_batches WHERE created_by = users.id AND duplicate_scope != '') AS duplicate_count,
+        (SELECT COUNT(*) FROM price_import_batches WHERE created_by = users.id AND status = 'needs_clearer_photo') AS needs_clearer_count,
+        (SELECT COUNT(*) FROM feedback_tickets WHERE reporter_user_id = users.id AND priority IN ('high', 'urgent')) AS warning_count
+      FROM users
+      WHERE ${filters.join(" AND ")}
+      ORDER BY users.created_at DESC
+      LIMIT ? OFFSET ?
+    `,
+    [...params, safeLimit, offset]
+  );
+  const countRow = await get(
+    `SELECT COUNT(*) AS count FROM users WHERE ${filters.join(" AND ")}`,
+    params
+  );
+
+  return {
+    users: rows.map(formatUserSummary),
+    page: safePage,
+    limit: safeLimit,
+    total: countRow.count || 0
+  };
+}
+
+async function operationsUserDetail(userId) {
+  const user = await get(
+    `
+      SELECT
+        users.*,
+        (SELECT MAX(created_at) FROM user_login_events WHERE user_id = users.id AND success = 1) AS last_login_at,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id) AS submission_count,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id AND status = 'approved') AS approved_count,
+        (SELECT COUNT(*) FROM price_reports WHERE user_id = users.id AND status = 'rejected') AS rejected_count,
+        (SELECT COUNT(*) FROM price_import_batches WHERE created_by = users.id AND duplicate_scope != '') AS duplicate_count,
+        (SELECT COUNT(*) FROM price_import_batches WHERE created_by = users.id AND status = 'needs_clearer_photo') AS needs_clearer_count,
+        (SELECT COUNT(*) FROM feedback_tickets WHERE reporter_user_id = users.id AND priority IN ('high', 'urgent')) AS warning_count
+      FROM users
+      WHERE users.id = ?
+    `,
+    [userId]
+  );
+
+  if (!user) {
+    return null;
+  }
+
+  const [submissions, imports, notes, loginHistory, verificationHistory, feedback] = await Promise.all([
+    all(
+      `
+        SELECT id, item_name, category, price, status, proof_type, submitted_at, reviewed_at
+        FROM price_reports
+        WHERE user_id = ?
+        ORDER BY submitted_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    ),
+    all(
+      `
+        SELECT id, source_type, proof_type, status, review_priority, created_at, updated_at
+        FROM price_import_batches
+        WHERE created_by = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    ),
+    all(
+      `
+        SELECT notes.*, admins.username AS admin_username
+        FROM user_admin_notes notes
+        LEFT JOIN users admins ON admins.id = notes.admin_user_id
+        WHERE notes.user_id = ?
+        ORDER BY notes.created_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    ),
+    all(
+      `
+        SELECT success, ip_address, user_agent, created_at
+        FROM user_login_events
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    ),
+    all(
+      `
+        SELECT event_type, ip_address, user_agent, created_at
+        FROM email_verification_events
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    ),
+    all(
+      `
+        ${feedbackSelectSql()}
+        WHERE tickets.reporter_user_id = ?
+        ORDER BY tickets.updated_at DESC
+        LIMIT 50
+      `,
+      [userId]
+    )
+  ]);
+
+  return {
+    user: formatUserSummary(user),
+    activity_history: [
+      ...submissions.map((row) => ({
+        type: "price_submission",
+        title: row.item_name,
+        status: row.status,
+        created_at: row.submitted_at,
+        id: row.id
+      })),
+      ...imports.map((row) => ({
+        type: "proof_submission",
+        title: row.source_type,
+        status: row.status,
+        created_at: row.created_at,
+        id: row.id
+      })),
+      ...feedback.map((row) => ({
+        type: "feedback",
+        title: row.title,
+        status: row.status,
+        created_at: row.created_at,
+        id: row.id
+      }))
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 75),
+    price_submissions: submissions,
+    proof_submissions: imports,
+    comments: notes.map((row) => ({
+      id: row.id,
+      note_type: row.note_type,
+      note: row.note,
+      admin_username: row.admin_username || "",
+      created_at: row.created_at
+    })),
+    reports: submissions,
+    account_actions: notes.filter((row) => /ban|moderation|admin|role|reset|delete/i.test(row.note_type || row.note || "")),
+    verification_history: verificationHistory,
+    login_history: loginHistory,
+    feedback: feedback.map((row) => formatFeedbackTicket(row, true))
+  };
+}
+
+async function operationsFeedback({ q = "", status = "", category = "", page = 1, limit = 50 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 10), 100);
+  const safePage = Math.max(Number(page) || 1, 1);
+  const offset = (safePage - 1) * safeLimit;
+  const filters = ["1 = 1"];
+  const params = [];
+
+  if (q) {
+    filters.push("(lower(tickets.title) LIKE ? OR lower(tickets.message) LIKE ? OR lower(COALESCE(reporters.username, '')) LIKE ?)");
+    params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+  }
+
+  if (FEEDBACK_STATUSES.includes(status)) {
+    filters.push("tickets.status = ?");
+    params.push(status);
+  }
+
+  if (FEEDBACK_CATEGORIES.includes(category)) {
+    filters.push("tickets.category = ?");
+    params.push(category);
+  }
+
+  const rows = await all(
+    `
+      ${feedbackSelectSql()}
+      WHERE ${filters.join(" AND ")}
+      ORDER BY
+        CASE tickets.priority
+          WHEN 'urgent' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'normal' THEN 3
+          ELSE 4
+        END,
+        tickets.updated_at DESC
+      LIMIT ? OFFSET ?
+    `,
+    [...params, safeLimit, offset]
+  );
+  const countRow = await get(
+    `
+      SELECT COUNT(*) AS count
+      FROM feedback_tickets tickets
+      LEFT JOIN users reporters ON reporters.id = tickets.reporter_user_id
+      WHERE ${filters.join(" AND ")}
+    `,
+    params
+  );
+
+  return {
+    tickets: rows.map((row) => formatFeedbackTicket(row, true)),
+    page: safePage,
+    limit: safeLimit,
+    total: countRow.count || 0
+  };
+}
+
+async function updateFeedbackTicket(ticketId, body = {}, adminUser, request) {
+  const ticket = await feedbackTicketById(ticketId);
+
+  if (!ticket) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const action = cleanText(body.action || "update", 40).toLowerCase();
+  const status = action === "close"
+    ? "closed"
+    : action === "reopen" ? "open"
+      : action === "merge" ? "merged"
+        : Object.prototype.hasOwnProperty.call(body, "status") ? cleanFeedbackStatus(body.status)
+          : ticket.status;
+  const priority = Object.prototype.hasOwnProperty.call(body, "priority")
+    ? cleanFeedbackPriority(body.priority)
+    : ticket.priority;
+  const assignedAdminId = Object.prototype.hasOwnProperty.call(body, "assigned_admin_id")
+    ? Number.parseInt(body.assigned_admin_id, 10) || null
+    : ticket.assigned_admin_id || null;
+  const duplicateOf = action === "merge"
+    ? Number.parseInt(body.duplicate_of_ticket_id, 10) || null
+    : ticket.duplicate_of_ticket_id || null;
+  const internalNote = cleanText(body.internal_notes || body.internal_note || "", 1000);
+  const publicResponse = Object.prototype.hasOwnProperty.call(body, "public_response")
+    ? cleanText(body.public_response, 1000)
+    : ticket.public_response || "";
+
+  await run(
+    `
+      UPDATE feedback_tickets
+      SET status = ?,
+          priority = ?,
+          assigned_admin_id = ?,
+          duplicate_of_ticket_id = ?,
+          public_response = ?,
+          internal_notes = ?,
+          updated_at = ?,
+          closed_at = CASE WHEN ? = 'closed' THEN COALESCE(closed_at, ?) ELSE closed_at END,
+          closed_by = CASE WHEN ? = 'closed' THEN ? ELSE closed_by END
+      WHERE id = ?
+    `,
+    [
+      status,
+      priority,
+      assignedAdminId,
+      duplicateOf,
+      publicResponse,
+      internalNote || ticket.internal_notes || "",
+      now,
+      status,
+      now,
+      status,
+      adminUser.id,
+      ticketId
+    ]
+  );
+
+  await run(
+    `
+      INSERT INTO feedback_ticket_updates (
+        ticket_id,
+        actor_user_id,
+        update_type,
+        old_value,
+        new_value,
+        internal_note,
+        public_response,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      ticketId,
+      adminUser.id,
+      action,
+      ticket.status,
+      status,
+      internalNote,
+      publicResponse,
+      now
+    ]
+  );
+
+  await recordAdminAudit({
+    adminUserId: adminUser.id,
+    action: `feedback_${action}`,
+    method: request.method,
+    path: request.originalUrl,
+    statusCode: 200,
+    ipAddress: requestIpAddress(request),
+    userAgent: requestUserAgent(request),
+    affectedType: "feedback_ticket",
+    affectedId: ticketId
+  });
+
+  return feedbackTicketById(ticketId);
+}
+
+async function publicFeedbackForUser(userId) {
+  const rows = await all(
+    `
+      ${feedbackSelectSql()}
+      WHERE tickets.reporter_user_id = ?
+      ORDER BY tickets.updated_at DESC
+      LIMIT 50
+    `,
+    [userId]
+  );
+  return rows.map(formatFeedbackTicket);
+}
+
+async function operationsSearchAnalytics() {
+  const { todayStart, weekStart, monthStart } = dateWindowStarts();
+  const searchEvents = await all(
+    `
+      SELECT analytics_events.*, stores.name AS store_name
+      FROM analytics_events
+      LEFT JOIN stores ON stores.id = analytics_events.store_id
+      WHERE analytics_events.event_type = 'search_performed'
+        AND analytics_events.created_at >= ?
+      ORDER BY analytics_events.created_at DESC
+      LIMIT 5000
+    `,
+    [monthStart]
+  );
+  const summary = searchEventSummary(searchEvents);
+
+  return {
+    searches_today: searchEvents.filter((event) => event.created_at >= todayStart).length,
+    searches_this_week: searchEvents.filter((event) => event.created_at >= weekStart).length,
+    searches_this_month: searchEvents.length,
+    trending_searches: summary.most_searched_products.slice(0, 8),
+    ...summary
+  };
+}
+
+async function operationsPriceAnalytics() {
+  const { todayStart, weekStart } = dateWindowStarts();
+  const [
+    counts,
+    duplicateRows,
+    approvalStats,
+    confidenceRows,
+    contributors,
+    productsWithoutPrices,
+    productsNeedingUpdates,
+    oldestPriceByStoreRows,
+    categoryCoverageRows,
+    totalProductsRow
+  ] = await Promise.all([
+    get(
+      `
+        SELECT
+          SUM(CASE WHEN submitted_at >= ? THEN 1 ELSE 0 END) AS submitted_today,
+          SUM(CASE WHEN status = 'approved' AND reviewed_at >= ? THEN 1 ELSE 0 END) AS approved_today,
+          SUM(CASE WHEN status = 'rejected' AND reviewed_at >= ? THEN 1 ELSE 0 END) AS rejected_today
+        FROM price_reports
+      `,
+      [todayStart, todayStart, todayStart]
+    ),
+    get(
+      `
+        SELECT
+          (SELECT COUNT(*) FROM price_import_batches WHERE COALESCE(duplicate_scope, '') != '' AND created_at >= ?) +
+          (SELECT COUNT(*) FROM price_import_rows WHERE COALESCE(duplicate_warning, '') != '' AND updated_at >= ?) AS duplicate_detections
+      `,
+      [weekStart, weekStart]
+    ),
+    get(
+      `
+        SELECT AVG((julianday(reviewed_at) - julianday(submitted_at)) * 86400.0) AS avg_seconds
+        FROM price_reports
+        WHERE status = 'approved'
+          AND reviewed_at IS NOT NULL
+          AND submitted_at IS NOT NULL
+      `
+    ),
+    all(
+      `
+        SELECT extraction_confidence, COUNT(*) AS count
+        FROM price_import_rows
+        WHERE created_at >= ?
+        GROUP BY extraction_confidence
+      `,
+      [weekStart]
+    ),
+    all(
+      `
+        SELECT users.id, users.username, COUNT(price_reports.id) AS approved_count
+        FROM price_reports
+        JOIN users ON users.id = price_reports.user_id
+        WHERE price_reports.status = 'approved'
+        GROUP BY users.id
+        ORDER BY approved_count DESC, users.username ASC
+        LIMIT 12
+      `
+    ),
+    all(
+      `
+        SELECT id, display_name, category
+        FROM products
+        WHERE status = 'active'
+          AND NOT EXISTS (
+            SELECT 1 FROM price_reports WHERE price_reports.product_id = products.id AND price_reports.status = 'approved'
+          )
+        ORDER BY display_name ASC
+        LIMIT 25
+      `
+    ),
+    all(
+      `
+        SELECT id, display_name, category, last_reported_at
+        FROM (
+          SELECT
+            products.id,
+            products.display_name,
+            products.category,
+            MAX(price_reports.submitted_at) AS last_reported_at
+          FROM products
+          LEFT JOIN price_reports ON price_reports.product_id = products.id AND price_reports.status = 'approved'
+          WHERE products.status = 'active'
+          GROUP BY products.id
+        )
+        WHERE last_reported_at IS NULL OR last_reported_at < ?
+        ORDER BY COALESCE(last_reported_at, '') ASC, display_name ASC
+        LIMIT 25
+      `,
+      [new Date(Date.now() - 1000 * 60 * 60 * 24 * 21).toISOString()]
+    ),
+    all(
+      `
+        SELECT
+          stores.id AS store_id,
+          stores.name AS store_name,
+          MIN(COALESCE(price_reports.source_checked_at, price_reports.reviewed_at, price_reports.submitted_at)) AS oldest_price_at,
+          COUNT(price_reports.id) AS approved_price_count
+        FROM stores
+        JOIN price_reports ON price_reports.store_id = stores.id
+        WHERE price_reports.status = 'approved'
+        GROUP BY stores.id
+        ORDER BY oldest_price_at ASC
+        LIMIT 20
+      `
+    ),
+    all(
+      `
+        SELECT
+          products.category,
+          COUNT(DISTINCT products.id) AS products,
+          COUNT(DISTINCT price_reports.product_id) AS products_with_prices
+        FROM products
+        LEFT JOIN price_reports ON price_reports.product_id = products.id AND price_reports.status = 'approved'
+        WHERE products.status = 'active'
+        GROUP BY products.category
+        ORDER BY products.category ASC
+      `
+    ),
+    get("SELECT COUNT(*) AS count FROM products WHERE status = 'active'")
+  ]);
+  const totalProducts = totalProductsRow.count || 0;
+
+  return {
+    prices_submitted_today: counts.submitted_today || 0,
+    approved_today: counts.approved_today || 0,
+    rejected_today: counts.rejected_today || 0,
+    duplicate_detections: duplicateRows.duplicate_detections || 0,
+    average_approval_time_seconds: Math.round(approvalStats.avg_seconds || 0),
+    average_approval_time_label: secondsLabel(approvalStats.avg_seconds || 0),
+    average_parser_confidence: scoreConfidenceRows(confidenceRows),
+    most_active_contributors: contributors,
+    store_coverage_percentages: [],
+    category_coverage_percentages: categoryCoverageRows.map((row) => ({
+      category: row.category || "other",
+      coverage_percent: row.products ? Math.round(((row.products_with_prices || 0) / row.products) * 100) : 0,
+      products: row.products || 0,
+      products_with_prices: row.products_with_prices || 0
+    })),
+    products_without_prices: productsWithoutPrices,
+    products_needing_updates: productsNeedingUpdates,
+    oldest_price_by_store: oldestPriceByStoreRows,
+    total_active_products: totalProducts
+  };
+}
+
+async function operationsStoreHealth(totalProducts = 0) {
+  const stores = await all(
+    `
+      SELECT
+        stores.id,
+        stores.name,
+        stores.city,
+        stores.state,
+        COUNT(DISTINCT price_reports.product_id) AS products_with_prices,
+        COUNT(price_reports.id) AS verified_prices,
+        MAX(COALESCE(price_reports.source_checked_at, price_reports.reviewed_at, price_reports.submitted_at)) AS last_update,
+        AVG((julianday('now') - julianday(COALESCE(price_reports.source_checked_at, price_reports.reviewed_at, price_reports.submitted_at)))) AS average_age_days
+      FROM stores
+      LEFT JOIN price_reports
+        ON price_reports.store_id = stores.id
+       AND price_reports.status = 'approved'
+      WHERE stores.active = 1
+      GROUP BY stores.id
+      ORDER BY stores.name ASC
+    `
+  );
+  const categoriesByStore = await all(
+    `
+      SELECT store_id, category, COUNT(*) AS count
+      FROM price_reports
+      WHERE status = 'approved'
+      GROUP BY store_id, category
+    `
+  );
+  const categoryMap = new Map();
+
+  for (const row of categoriesByStore) {
+    const set = categoryMap.get(row.store_id) || new Set();
+    if (row.category) set.add(row.category);
+    categoryMap.set(row.store_id, set);
+  }
+
+  return stores.map((store) => {
+    const storeCategories = categoryMap.get(store.id) || new Set();
+    const coverage = totalProducts ? Math.round(((store.products_with_prices || 0) / totalProducts) * 100) : 0;
+    return {
+      id: store.id,
+      name: store.name,
+      city: store.city,
+      region: store.state,
+      coverage_percent: coverage,
+      products: store.products_with_prices || 0,
+      verified_prices: store.verified_prices || 0,
+      average_age_days: Math.round(Number(store.average_age_days || 0)),
+      missing_categories: CATEGORIES.filter((category) => !storeCategories.has(category)).slice(0, 8),
+      missing_popular_products: [],
+      last_update: store.last_update || "",
+      needs_attention: coverage < 50 || !store.last_update || Number(store.average_age_days || 0) > 21
+    };
+  });
+}
+
+async function operationsEventFeed() {
+  const [users, verifications, imports, reports, feedback, votes, audit, errors] = await Promise.all([
+    all("SELECT id, username, created_at FROM users ORDER BY created_at DESC LIMIT 20"),
+    all(
+      `
+        SELECT events.*, users.username
+        FROM email_verification_events events
+        LEFT JOIN users ON users.id = events.user_id
+        WHERE events.event_type = 'email_verified'
+        ORDER BY events.created_at DESC
+        LIMIT 20
+      `
+    ),
+    all(
+      `
+        SELECT batches.id, batches.source_type, batches.proof_type, batches.status, batches.created_at, users.username
+        FROM price_import_batches batches
+        LEFT JOIN users ON users.id = batches.created_by
+        ORDER BY batches.created_at DESC
+        LIMIT 30
+      `
+    ),
+    all(
+      `
+        SELECT price_reports.id, price_reports.item_name, price_reports.status, price_reports.reviewed_at, stores.name AS store_name
+        FROM price_reports
+        LEFT JOIN stores ON stores.id = price_reports.store_id
+        WHERE price_reports.status IN ('approved', 'rejected')
+        ORDER BY price_reports.reviewed_at DESC
+        LIMIT 30
+      `
+    ),
+    all(
+      `
+        ${feedbackSelectSql()}
+        ORDER BY tickets.created_at DESC
+        LIMIT 20
+      `
+    ),
+    all(
+      `
+        SELECT votes.id, votes.created_at, users.username, options.title
+        FROM feature_votes votes
+        LEFT JOIN users ON users.id = votes.user_id
+        LEFT JOIN feature_vote_options options ON options.id = votes.option_id
+        ORDER BY votes.created_at DESC
+        LIMIT 20
+      `
+    ),
+    all(
+      `
+        SELECT audit.*, users.username
+        FROM admin_audit_log audit
+        LEFT JOIN users ON users.id = audit.admin_user_id
+        ORDER BY audit.created_at DESC
+        LIMIT 30
+      `
+    ),
+    all("SELECT id, error_type, severity, message, created_at FROM operations_errors ORDER BY created_at DESC LIMIT 20")
+  ]);
+
+  return [
+    ...users.map((row) => ({ type: "new_user_registered", title: "New user registered", message: row.username, created_at: row.created_at, related_type: "user", related_id: row.id })),
+    ...verifications.map((row) => ({ type: "email_verified", title: "Email verified", message: row.username || "User", created_at: row.created_at, related_type: "user", related_id: row.user_id })),
+    ...imports.map((row) => ({
+      type: `${row.source_type || row.proof_type || "proof"}_uploaded`,
+      title: row.source_type === "weekly_ad" ? "Weekly ad imported" : row.source_type === "shelf_tag" ? "Shelf tag uploaded" : row.source_type === "receipt" ? "Receipt uploaded" : "Proof uploaded",
+      message: `${row.username || "Admin/user"} submitted ${row.source_type || row.proof_type || "proof"} (${row.status}).`,
+      created_at: row.created_at,
+      related_type: "price_import_batch",
+      related_id: row.id
+    })),
+    ...reports.filter((row) => row.reviewed_at).map((row) => ({
+      type: row.status === "approved" ? "price_approved" : "price_rejected",
+      title: row.status === "approved" ? "Price approved" : "Price rejected",
+      message: `${row.item_name} ${row.store_name ? `at ${row.store_name}` : ""}`,
+      created_at: row.reviewed_at,
+      related_type: "report",
+      related_id: row.id
+    })),
+    ...feedback.map((row) => ({ type: "feedback_submitted", title: "Feedback submitted", message: row.title, created_at: row.created_at, related_type: "feedback_ticket", related_id: row.id })),
+    ...votes.map((row) => ({ type: "feature_vote", title: "Feature vote", message: `${row.username || "User"} voted for ${row.title || "a feature"}.`, created_at: row.created_at, related_type: "feature_vote", related_id: row.id })),
+    ...audit.map((row) => ({ type: row.action === "POST /api/auth/login" ? "admin_login" : "admin_action", title: "Admin action", message: `${row.username || "Admin"}: ${row.action}`, created_at: row.created_at, related_type: "audit_log", related_id: row.id })),
+    ...errors.map((row) => ({ type: "system_error", title: `${row.severity} system event`, message: `${row.error_type}: ${row.message}`, created_at: row.created_at, related_type: "operations_error", related_id: row.id }))
+  ]
+    .filter((event) => event.created_at)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, 80);
+}
+
+async function operationsErrorCenter() {
+  const [errors, failedEmails, parserFailures, brokenImages] = await Promise.all([
+    all(
+      `
+        SELECT id, error_type, severity, message, source, related_type, related_id, status, created_at, resolved_at
+        FROM operations_errors
+        ORDER BY created_at DESC
+        LIMIT 100
+      `
+    ),
+    get("SELECT COUNT(*) AS count FROM email_verification_events WHERE event_type LIKE '%failed%'"),
+    get("SELECT COUNT(*) AS count FROM price_import_rows WHERE extraction_confidence = 'low' AND status IN ('import_draft', 'ready_for_review', 'needs_edit')"),
+    brokenImageSummary()
+  ]);
+
+  return {
+    failed_emails: failedEmails.count || 0,
+    failed_uploads: errors.filter((error) => error.error_type === "upload_failed").length,
+    parser_failures: parserFailures.count || 0,
+    broken_images: brokenImages,
+    unhandled_exceptions: errors.filter((error) => error.error_type === "unhandled_exception").length,
+    database_errors: errors.filter((error) => error.error_type === "database_error").length,
+    api_failures: errors.filter((error) => error.error_type === "api_failure").length,
+    rate_limiting: errors.filter((error) => error.error_type === "rate_limited").length,
+    recent_errors: errors
+  };
+}
+
+async function communityPulse(searchAnalytics, storeHealth) {
+  const { todayStart } = dateWindowStarts();
+  const [todaySearches, todayReports] = await Promise.all([
+    all(
+      `
+        SELECT cart_item_name, COUNT(*) AS count
+        FROM analytics_events
+        WHERE event_type = 'search_performed'
+          AND created_at >= ?
+          AND COALESCE(cart_item_name, '') != ''
+        GROUP BY lower(cart_item_name)
+        ORDER BY count DESC
+        LIMIT 5
+      `,
+      [todayStart]
+    ),
+    all(
+      `
+        SELECT stores.name, COUNT(price_reports.id) AS count
+        FROM price_reports
+        JOIN stores ON stores.id = price_reports.store_id
+        WHERE price_reports.status = 'approved'
+          AND price_reports.reviewed_at >= ?
+        GROUP BY stores.id
+        ORDER BY count DESC
+        LIMIT 5
+      `,
+      [todayStart]
+    )
+  ]);
+  const insights = [];
+
+  for (const row of todaySearches) {
+    insights.push(`${row.count} user${row.count === 1 ? "" : "s"} searched ${row.cart_item_name} today.`);
+  }
+
+  for (const row of todayReports) {
+    insights.push(`${row.name} gained ${row.count} new approved price${row.count === 1 ? "" : "s"} today.`);
+  }
+
+  for (const store of storeHealth.filter((entry) => entry.coverage_percent >= 90).slice(0, 3)) {
+    insights.push(`${store.name} reached ${store.coverage_percent}% coverage.`);
+  }
+
+  const trending = searchAnalytics.trending_searches?.[0];
+  if (trending) {
+    insights.push(`${trending.term} is trending.`);
+  }
+
+  return insights.slice(0, 12);
+}
+
+async function operationsOverview(adminUser) {
+  const { todayStart, weekStart } = dateWindowStarts();
+  const now = new Date().toISOString();
+  const email = emailStatus();
+  let databaseOk = false;
+  let storageOk = false;
+
+  try {
+    await get("SELECT 1 AS ok");
+    databaseOk = true;
+  } catch (error) {
+    await recordOperationsError({ error_type: "database_error", severity: "critical", message: error.message, source: "operations_overview" });
+  }
+
+  try {
+    fs.accessSync(UPLOAD_DIR, fs.constants.W_OK);
+    storageOk = true;
+  } catch (error) {
+    await recordOperationsError({ error_type: "storage_error", severity: "critical", message: "Upload storage is not writable.", source: "operations_overview" });
+  }
+
+  const [
+    sessions,
+    liveCounts,
+    userCounts,
+    recentRegistrations,
+    recentLogins,
+    lastBackup,
+    searchAnalytics,
+    priceAnalytics,
+    feedback,
+    featureVotes,
+    announcements,
+    auditLog
+  ] = await Promise.all([
+    activeSessionCounts(),
+    get(
+      `
+        SELECT
+          SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END) AS current_online_users,
+          SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END) AS active_15_min
+        FROM users
+      `,
+      [new Date(Date.now() - 1000 * 60 * 5).toISOString(), new Date(Date.now() - 1000 * 60 * 15).toISOString()]
+    ),
+    get(
+      `
+        SELECT
+          COUNT(*) AS registered_users,
+          SUM(CASE WHEN is_email_verified = 1 THEN 1 ELSE 0 END) AS verified_users,
+          SUM(CASE WHEN is_email_verified = 0 THEN 1 ELSE 0 END) AS pending_verification,
+          SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS new_users_today,
+          SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS new_users_this_week
+        FROM users
+      `,
+      [todayStart, weekStart]
+    ),
+    all("SELECT id, username, email, created_at FROM users ORDER BY created_at DESC LIMIT 10"),
+    all(
+      `
+        SELECT events.created_at, users.id, users.username, users.email, users.is_admin, users.is_super_admin
+        FROM user_login_events events
+        JOIN users ON users.id = events.user_id
+        WHERE events.success = 1
+        ORDER BY events.created_at DESC
+        LIMIT 15
+      `
+    ),
+    get("SELECT * FROM backup_runs WHERE status = 'success' ORDER BY created_at DESC LIMIT 1"),
+    operationsSearchAnalytics(),
+    operationsPriceAnalytics(),
+    operationsFeedback({ limit: 25 }),
+    featureVoteOptionsForUser(adminUser?.id),
+    all("SELECT * FROM announcements ORDER BY updated_at DESC LIMIT 20"),
+    all(
+      `
+        SELECT audit.*, users.username
+        FROM admin_audit_log audit
+        LEFT JOIN users ON users.id = audit.admin_user_id
+        ORDER BY audit.created_at DESC
+        LIMIT 50
+      `
+    )
+  ]);
+  const totalProducts = priceAnalytics.total_active_products || 0;
+  const storeHealth = await operationsStoreHealth(totalProducts);
+  priceAnalytics.store_coverage_percentages = storeHealth.map((store) => ({
+    store_id: store.id,
+    store_name: store.name,
+    coverage_percent: store.coverage_percent,
+    products: store.products,
+    verified_prices: store.verified_prices
+  }));
+  const [eventFeed, errorCenter, usersPreview] = await Promise.all([
+    operationsEventFeed(),
+    operationsErrorCenter(),
+    operationsUsers({ limit: 25 })
+  ]);
+  const returningUsersRow = await get(
+    `
+      SELECT COUNT(DISTINCT events.user_id) AS returning_users
+      FROM user_login_events events
+      JOIN users ON users.id = events.user_id
+      WHERE events.created_at >= ?
+        AND users.created_at < ?
+    `,
+    [todayStart, todayStart]
+  );
+  const averageSessionRow = await get(
+    `
+      SELECT AVG((julianday(users.last_seen_at) - julianday(latest_login.created_at)) * 86400.0) AS avg_seconds
+      FROM users
+      JOIN (
+        SELECT user_id, MAX(created_at) AS created_at
+        FROM user_login_events
+        WHERE success = 1
+        GROUP BY user_id
+      ) latest_login ON latest_login.user_id = users.id
+      WHERE users.last_seen_at IS NOT NULL
+        AND users.last_seen_at >= latest_login.created_at
+    `
+  );
+  const peakUsersRow = await get(
+    `
+      SELECT MAX(count) AS peak_users
+      FROM (
+        SELECT strftime('%Y-%m-%dT%H', created_at) AS hour_bucket, COUNT(DISTINCT user_id) AS count
+        FROM user_login_events
+        WHERE created_at >= ?
+          AND success = 1
+        GROUP BY hour_bucket
+      )
+    `,
+    [todayStart]
+  );
+
+  return {
+    generated_at: now,
+    is_super_admin: Boolean(adminUser && isSuperAdminAccount(adminUser)),
+    system_health: {
+      website_status: hasTailwindBuild()
+        ? statusIndicator("green", "Website build is present")
+        : statusIndicator("red", "Tailwind build is missing"),
+      database_status: databaseOk
+        ? statusIndicator("green", "Database reachable")
+        : statusIndicator("red", "Database check failed"),
+      email_smtp_status: email.configured
+        ? statusIndicator("green", "SMTP configured", { provider: email.provider })
+        : statusIndicator("yellow", "SMTP incomplete", { missing: email.technical?.missing || [] }),
+      storage_status: storageOk
+        ? statusIndicator("green", "Upload storage writable")
+        : statusIndicator("red", "Upload storage not writable"),
+      background_jobs: statusIndicator("yellow", "In-process cleanup jobs only", {
+        note: "Session cleanup and price expiry run in-process. No separate worker is configured."
+      }),
+      last_successful_backup: lastBackup
+        ? statusIndicator("green", "Backup recorded", { created_at: lastBackup.created_at })
+        : statusIndicator("yellow", "No successful backup recorded"),
+      current_version: currentVersion(),
+      current_commit_hash: currentCommitHash(),
+      server_uptime_seconds: Math.round(process.uptime()),
+      server_uptime_label: secondsLabel(process.uptime()),
+      render_environment: {
+        is_render: Boolean(process.env.RENDER),
+        service_name: cleanText(process.env.RENDER_SERVICE_NAME || "", 120),
+        node_env: process.env.NODE_ENV || "development"
+      }
+    },
+    live_activity: {
+      current_online_users: liveCounts.current_online_users || 0,
+      visitors_today: await visitorCountSince(todayStart),
+      visitors_this_week: await visitorCountSince(weekStart),
+      registered_users: userCounts.registered_users || 0,
+      verified_users: userCounts.verified_users || 0,
+      pending_verification: userCounts.pending_verification || 0,
+      new_users_today: userCounts.new_users_today || 0,
+      new_users_this_week: userCounts.new_users_this_week || 0,
+      returning_users: returningUsersRow.returning_users || 0,
+      average_session_length_seconds: Math.round(averageSessionRow.avg_seconds || 0),
+      average_session_length_label: secondsLabel(averageSessionRow.avg_seconds || 0),
+      current_active_sessions: sessions.active_sessions || 0,
+      active_user_sessions: sessions.active_user_sessions || 0,
+      peak_users_today: peakUsersRow.peak_users || 0,
+      most_recent_login: recentLogins[0] || null,
+      recent_registrations: recentRegistrations,
+      recent_logins: recentLogins
+    },
+    users: usersPreview,
+    feedback,
+    feature_voting: {
+      options: featureVotes,
+      trending: featureVotes.filter((option) => option.status === "trending").slice(0, 10),
+      newest: featureVotes.slice().sort((a, b) => new Date(b.newest_vote_at || b.created_at) - new Date(a.newest_vote_at || a.created_at)).slice(0, 10),
+      completed: featureVotes.filter((option) => option.status === "completed"),
+      rejected: featureVotes.filter((option) => option.status === "rejected")
+    },
+    search_analytics: searchAnalytics,
+    price_analytics: priceAnalytics,
+    store_health: storeHealth,
+    event_feed: eventFeed,
+    error_center: errorCenter,
+    announcements: announcements.map((row) => formatAnnouncement(row, true)),
+    community_pulse: await communityPulse(searchAnalytics, storeHealth),
+    audit_log: auditLog.map((row) => ({
+      id: row.id,
+      admin_user_id: row.admin_user_id || null,
+      admin_username: row.username || "",
+      action: row.action,
+      method: row.method || "",
+      path: row.path || "",
+      status_code: row.status_code || null,
+      affected_type: row.affected_type || "",
+      affected_id: row.affected_id || null,
+      created_at: row.created_at
+    })),
+    future_ready: {
+      city: "Janesville",
+      region: "WI",
+      country_code: "US",
+      note: "New Operations tables include city, region, and country scope fields for future multi-region support."
+    }
+  };
+}
+
+app.use("/api/admin", adminAuditMiddleware);
 
 app.get("/health", asyncRoute(async (request, response) => {
   let databaseReachable = false;
@@ -5292,7 +6911,10 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
   const verificationToken = crypto.randomBytes(32).toString("hex");
   const verificationExpires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
   const createdAt = new Date().toISOString();
-  const isBootstrapAdmin = isBootstrapSuperAdminEmail(registration.email);
+  const isBootstrapAdmin = isBootstrapSuperAdminIdentity({
+    email: registration.email,
+    username: registration.username
+  });
   const result = await run(
     `
       INSERT INTO users (
@@ -5326,12 +6948,16 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
   const verificationEmail = await sendVerificationEmail(user, verificationToken);
   if (verificationEmail.sent) {
     await markVerificationEmailSent(user.id);
+    await recordEmailVerificationEvent(request, user, "verification_email_sent");
+  } else {
+    await recordEmailVerificationEvent(request, user, "verification_email_failed");
   }
   const adminEmail = await sendAdminRegistrationEmail(user);
   const warnings = [verificationEmail.warning, adminEmail.warning].filter(Boolean);
 
   await logInSessionUser(request, user);
   await markUserSeen(user.id);
+  await recordLoginEvent(request, user, true);
 
   response.status(201).json({
     message: verificationEmail.sent
@@ -5370,12 +6996,14 @@ app.get("/api/auth/verify-email", asyncRoute(async (request, response) => {
     `
       UPDATE users
       SET is_email_verified = 1,
+          email_verified_at = ?,
           email_verification_token = NULL,
           email_verification_expires = NULL
       WHERE id = ?
     `,
-    [user.id]
+    [new Date().toISOString(), user.id]
   );
+  await recordEmailVerificationEvent(request, user, "email_verified");
 
   response.send(authPage(
     "Email Verified",
@@ -5435,6 +7063,7 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
   const verificationEmail = await sendVerificationEmail(updatedUser, verificationToken);
 
   if (!verificationEmail.sent) {
+    await recordEmailVerificationEvent(request, updatedUser, "verification_email_failed");
     response.status(502).json({
       error: "Email could not be sent. Check SMTP setup in .env or Brevo."
     });
@@ -5442,6 +7071,7 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
   }
 
   await markVerificationEmailSent(user.id);
+  await recordEmailVerificationEvent(request, updatedUser, "verification_email_sent");
 
   response.json({ message: "Verification email sent." });
 }));
@@ -5474,6 +7104,7 @@ app.post("/api/auth/login", asyncRoute(async (request, response) => {
 
   await logInSessionUser(request, user);
   await markUserSeen(user.id);
+  await recordLoginEvent(request, user, true);
   response.json({ message: "Logged in.", user: publicUser(user) });
 }));
 
@@ -5619,6 +7250,175 @@ app.post("/api/notifications/read-all", requireLogin, asyncRoute(async (request,
   );
 
   response.json({ message: "All notifications marked read." });
+}));
+
+app.get("/api/announcements", asyncRoute(async (request, response) => {
+  const now = new Date().toISOString();
+  const rows = await all(
+    `
+      SELECT *
+      FROM announcements
+      WHERE ${publicAnnouncementWhere(now)}
+      ORDER BY
+        CASE announcement_type
+          WHEN 'downtime' THEN 1
+          WHEN 'maintenance' THEN 2
+          WHEN 'known_issue' THEN 3
+          WHEN 'new_feature' THEN 4
+          ELSE 5
+        END,
+        published_at DESC,
+        updated_at DESC
+      LIMIT 5
+    `,
+    [now, now]
+  );
+
+  response.json({
+    announcements: rows.map((row) => formatAnnouncement(row, false))
+  });
+}));
+
+app.get("/api/feedback/categories", asyncRoute(async (request, response) => {
+  response.json({
+    categories: FEEDBACK_CATEGORIES,
+    statuses: FEEDBACK_STATUSES
+  });
+}));
+
+app.post("/api/feedback", requireLogin, asyncRoute(async (request, response) => {
+  const category = cleanFeedbackCategory(request.body.category);
+  const title = cleanText(request.body.title, 160);
+  const message = cleanText(request.body.message, 2000);
+  const priority = cleanFeedbackPriority(request.body.priority || "normal");
+  const source = cleanSourceMetadata(request.body);
+  const relatedReportId = Number.parseInt(request.body.related_report_id, 10);
+  const relatedStoreId = Number.parseInt(request.body.related_store_id, 10);
+  const relatedProductId = Number.parseInt(request.body.related_product_id, 10);
+  const now = new Date().toISOString();
+
+  if (!title) {
+    response.status(400).json({ error: "Feedback title is required." });
+    return;
+  }
+
+  if (!message) {
+    response.status(400).json({ error: "Feedback message is required." });
+    return;
+  }
+
+  const result = await run(
+    `
+      INSERT INTO feedback_tickets (
+        reporter_user_id,
+        category,
+        title,
+        message,
+        status,
+        priority,
+        source_url,
+        related_report_id,
+        related_store_id,
+        related_product_id,
+        city,
+        region,
+        country_code,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      request.currentUser.id,
+      category,
+      title,
+      message,
+      priority,
+      source.source_url,
+      Number.isInteger(relatedReportId) ? relatedReportId : null,
+      Number.isInteger(relatedStoreId) ? relatedStoreId : null,
+      Number.isInteger(relatedProductId) ? relatedProductId : null,
+      cleanText(request.body.city || "Janesville", 80) || "Janesville",
+      cleanText(request.body.region || "WI", 80) || "WI",
+      cleanText(request.body.country_code || "US", 8).toUpperCase() || "US",
+      now,
+      now
+    ]
+  );
+
+  await createAdminNotification(
+    "feedback_submitted",
+    "New feedback submitted",
+    `${request.currentUser.username} submitted ${category.replace(/_/g, " ")} feedback.`,
+    {
+      related_type: "feedback_ticket",
+      related_id: result.lastID,
+      target_tab: "operationsTab",
+      target_url: `/admin.html?tab=operationsTab&feedback=${result.lastID}`
+    }
+  );
+
+  response.status(201).json({
+    message: "Feedback submitted.",
+    ticket: formatFeedbackTicket(await feedbackTicketById(result.lastID))
+  });
+}));
+
+app.get("/api/account/feedback", requireLogin, asyncRoute(async (request, response) => {
+  response.json({
+    tickets: await publicFeedbackForUser(request.currentUser.id)
+  });
+}));
+
+app.get("/api/feature-votes", asyncRoute(async (request, response) => {
+  const user = await getSessionUser(request);
+  const options = await featureVoteOptionsForUser(user?.id || null);
+
+  response.json({
+    options: options.filter((option) => option.status !== "rejected"),
+    user_logged_in: Boolean(user && !isBlockedAccount(user))
+  });
+}));
+
+app.post("/api/feature-votes/:id/vote", requireLogin, asyncRoute(async (request, response) => {
+  const optionId = Number.parseInt(request.params.id, 10);
+  const option = await get("SELECT * FROM feature_vote_options WHERE id = ?", [optionId]);
+
+  if (!option || option.status === "rejected") {
+    response.status(404).json({ error: "Feature option was not found." });
+    return;
+  }
+
+  try {
+    await run(
+      "INSERT INTO feature_votes (option_id, user_id, created_at) VALUES (?, ?, ?)",
+      [optionId, request.currentUser.id, new Date().toISOString()]
+    );
+  } catch (error) {
+    if (/UNIQUE|constraint/i.test(error.message || "")) {
+      response.status(409).json({ error: "You already voted for this feature." });
+      return;
+    }
+
+    throw error;
+  }
+
+  await createAdminNotification(
+    "feature_vote",
+    "Feature vote received",
+    `${request.currentUser.username} voted for ${option.title}.`,
+    {
+      related_type: "feature_vote",
+      related_id: optionId,
+      target_tab: "operationsTab",
+      target_url: `/admin.html?tab=operationsTab&feature=${optionId}`
+    }
+  );
+
+  response.status(201).json({
+    message: "Vote saved.",
+    options: await featureVoteOptionsForUser(request.currentUser.id)
+  });
 }));
 
 app.get("/api/account/reports", requireLogin, asyncRoute(async (request, response) => {
@@ -6637,6 +8437,12 @@ async function auditExistingUsernames() {
 
 app.post("/api/account/username", requireLogin, asyncRoute(async (request, response) => {
   const username = validateUsername(request.body.username);
+
+  if (isOwnerAccount(request.currentUser) && normalizedUsername(username) !== OWNER_USERNAME) {
+    response.status(400).json({ error: "The Owner account username cannot be changed." });
+    return;
+  }
+
   const moderationReason = await usernameModerationReason(username);
 
   if (moderationReason) {
@@ -10387,6 +12193,287 @@ app.post("/api/admin/analytics/missing-demand/priority", requireAdminAccess, req
   response.json({ message: "Missing price demand marked." });
 }));
 
+app.get("/api/admin/operations/overview", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json(await operationsOverview(request.adminUser));
+}));
+
+app.get("/api/admin/operations/users", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json(await operationsUsers({
+    q: cleanText(request.query.q, 120),
+    page: Number.parseInt(request.query.page, 10) || 1,
+    limit: Number.parseInt(request.query.limit, 10) || 50
+  }));
+}));
+
+app.get("/api/admin/operations/users/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const userId = Number.parseInt(request.params.id, 10);
+  const detail = await operationsUserDetail(userId);
+
+  if (!detail) {
+    response.status(404).json({ error: "User was not found." });
+    return;
+  }
+
+  response.json(detail);
+}));
+
+app.get("/api/admin/operations/feedback", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json(await operationsFeedback({
+    q: cleanText(request.query.q, 120),
+    status: cleanText(request.query.status, 40).toLowerCase(),
+    category: cleanText(request.query.category, 40).toLowerCase(),
+    page: Number.parseInt(request.query.page, 10) || 1,
+    limit: Number.parseInt(request.query.limit, 10) || 50
+  }));
+}));
+
+app.post("/api/admin/operations/feedback/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const ticketId = Number.parseInt(request.params.id, 10);
+  const ticket = await updateFeedbackTicket(ticketId, request.body, request.adminUser, request);
+
+  if (!ticket) {
+    response.status(404).json({ error: "Feedback ticket was not found." });
+    return;
+  }
+
+  response.json({
+    message: "Feedback ticket updated.",
+    ticket: formatFeedbackTicket(ticket, true)
+  });
+}));
+
+app.get("/api/admin/operations/feature-votes", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const options = await featureVoteOptionsForUser(request.adminUser.id);
+  response.json({
+    options,
+    trending: options.filter((option) => option.status === "trending"),
+    newest: options.slice().sort((a, b) => new Date(b.newest_vote_at || b.created_at) - new Date(a.newest_vote_at || a.created_at)).slice(0, 20),
+    completed: options.filter((option) => option.status === "completed"),
+    rejected: options.filter((option) => option.status === "rejected")
+  });
+}));
+
+app.post("/api/admin/operations/feature-votes/:id/status", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const optionId = Number.parseInt(request.params.id, 10);
+  const status = cleanFeatureVoteStatus(request.body.status);
+  const result = await run(
+    "UPDATE feature_vote_options SET status = ?, updated_at = ? WHERE id = ?",
+    [status, new Date().toISOString(), optionId]
+  );
+
+  if (!result.changes) {
+    response.status(404).json({ error: "Feature vote option was not found." });
+    return;
+  }
+
+  response.json({
+    message: "Feature vote status updated.",
+    options: await featureVoteOptionsForUser(request.adminUser.id)
+  });
+}));
+
+app.get("/api/admin/operations/announcements", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const rows = await all("SELECT * FROM announcements ORDER BY updated_at DESC LIMIT 100");
+  response.json({
+    announcements: rows.map((row) => formatAnnouncement(row, true)),
+    types: ANNOUNCEMENT_TYPES,
+    statuses: ANNOUNCEMENT_STATUSES
+  });
+}));
+
+app.post("/api/admin/operations/announcements", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const announcement = cleanAnnouncementPayload(request.body, request.adminUser.id);
+
+  if (!announcement.title || !announcement.body) {
+    response.status(400).json({ error: "Announcement title and body are required." });
+    return;
+  }
+
+  const result = await run(
+    `
+      INSERT INTO announcements (
+        title,
+        body,
+        announcement_type,
+        status,
+        scope,
+        city,
+        region,
+        country_code,
+        starts_at,
+        ends_at,
+        published_at,
+        published_by,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      announcement.title,
+      announcement.body,
+      announcement.announcement_type,
+      announcement.status,
+      announcement.scope,
+      announcement.city,
+      announcement.region,
+      announcement.country_code,
+      announcement.starts_at,
+      announcement.ends_at,
+      announcement.published_at,
+      announcement.published_by,
+      announcement.created_by,
+      announcement.updated_by,
+      announcement.created_at,
+      announcement.updated_at
+    ]
+  );
+
+  response.status(201).json({
+    message: "Announcement saved.",
+    announcement: formatAnnouncement(await get("SELECT * FROM announcements WHERE id = ?", [result.lastID]), true)
+  });
+}));
+
+app.post("/api/admin/operations/announcements/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const announcementId = Number.parseInt(request.params.id, 10);
+  const existing = await get("SELECT * FROM announcements WHERE id = ?", [announcementId]);
+
+  if (!existing) {
+    response.status(404).json({ error: "Announcement was not found." });
+    return;
+  }
+
+  const announcement = cleanAnnouncementPayload(request.body, request.adminUser.id, existing);
+
+  if (!announcement.title || !announcement.body) {
+    response.status(400).json({ error: "Announcement title and body are required." });
+    return;
+  }
+
+  await run(
+    `
+      UPDATE announcements
+      SET title = ?,
+          body = ?,
+          announcement_type = ?,
+          status = ?,
+          scope = ?,
+          city = ?,
+          region = ?,
+          country_code = ?,
+          starts_at = ?,
+          ends_at = ?,
+          published_at = ?,
+          published_by = ?,
+          updated_by = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    [
+      announcement.title,
+      announcement.body,
+      announcement.announcement_type,
+      announcement.status,
+      announcement.scope,
+      announcement.city,
+      announcement.region,
+      announcement.country_code,
+      announcement.starts_at,
+      announcement.ends_at,
+      announcement.published_at,
+      announcement.published_by,
+      announcement.updated_by,
+      announcement.updated_at,
+      announcementId
+    ]
+  );
+
+  response.json({
+    message: "Announcement updated.",
+    announcement: formatAnnouncement(await get("SELECT * FROM announcements WHERE id = ?", [announcementId]), true)
+  });
+}));
+
+app.get("/api/admin/operations/widgets", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const row = await get("SELECT layout_json FROM admin_widget_layouts WHERE admin_user_id = ?", [request.adminUser.id]);
+  response.json({
+    widget_ids: OPERATIONS_WIDGET_IDS,
+    layout: parseMetadataJson(row?.layout_json)
+  });
+}));
+
+app.post("/api/admin/operations/widgets", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const layout = request.body.layout && typeof request.body.layout === "object" ? request.body.layout : {};
+  const order = Array.isArray(layout.order)
+    ? layout.order.filter((id) => OPERATIONS_WIDGET_IDS.includes(id))
+    : OPERATIONS_WIDGET_IDS;
+  const hidden = Array.isArray(layout.hidden)
+    ? layout.hidden.filter((id) => OPERATIONS_WIDGET_IDS.includes(id))
+    : [];
+  const sizes = layout.sizes && typeof layout.sizes === "object"
+    ? Object.fromEntries(Object.entries(layout.sizes).filter(([id, size]) =>
+        OPERATIONS_WIDGET_IDS.includes(id) && ["compact", "normal", "wide"].includes(size)
+      ))
+    : {};
+  const cleanLayout = { order, hidden, sizes };
+  const now = new Date().toISOString();
+
+  await run(
+    `
+      INSERT INTO admin_widget_layouts (admin_user_id, layout_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(admin_user_id) DO UPDATE SET
+        layout_json = excluded.layout_json,
+        updated_at = excluded.updated_at
+    `,
+    [request.adminUser.id, JSON.stringify(cleanLayout), now, now]
+  );
+
+  response.json({
+    message: "Operations widget layout saved.",
+    layout: cleanLayout
+  });
+}));
+
+app.get("/api/admin/operations/audit-log", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const rows = await all(
+    `
+      SELECT audit.*, users.username
+      FROM admin_audit_log audit
+      LEFT JOIN users ON users.id = audit.admin_user_id
+      ORDER BY audit.created_at DESC
+      LIMIT 200
+    `
+  );
+  response.json({
+    audit_log: rows.map((row) => ({
+      id: row.id,
+      admin_user_id: row.admin_user_id,
+      admin_username: row.username || "",
+      action: row.action,
+      method: row.method || "",
+      path: row.path || "",
+      status_code: row.status_code || null,
+      affected_type: row.affected_type || "",
+      affected_id: row.affected_id || null,
+      created_at: row.created_at
+    }))
+  });
+}));
+
+app.get("/api/admin/operations/events", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json({
+    events: await operationsEventFeed()
+  });
+}));
+
+app.get("/api/admin/operations/errors", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json(await operationsErrorCenter());
+}));
+
 app.get("/api/admin/sponsors", requireAdminAccess, asyncRoute(async (request, response) => {
   const sponsors = await all("SELECT * FROM sponsors ORDER BY updated_at DESC, created_at DESC");
   const stats = await sponsorStatsById();
@@ -10652,11 +12739,11 @@ app.get("/api/admin/users", requireAdminAccess, asyncRoute(async (request, respo
   });
 }));
 
-app.get("/api/admin/admin-accounts", requireAdminAccess, asyncRoute(async (request, response) => {
+app.get("/api/admin/admin-accounts", requireSuperAdminAccess, asyncRoute(async (request, response) => {
   response.json(await adminAccountAuditSummary());
 }));
 
-app.post("/api/admin/admin-accounts/:id/role", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/admin-accounts/:id/role", requireSuperAdminAccess, asyncRoute(async (request, response) => {
   if (!request.adminUser || request.adminAccessViaPin) {
     response.status(403).json({
       error: "Admin role cleanup requires a logged-in admin session. The ADMIN_PIN fallback cannot change admin access."
@@ -12276,6 +14363,16 @@ app.post("/api/admin/users/:id/moderation", requireAdminAccess, requireLoggedInA
     let bannedAt = null;
     let bannedBy = null;
 
+    if (["deleted", "deactivated"].includes(status) && !isSuperAdminAccount(request.adminUser)) {
+      response.status(403).json({ error: "Super Admin access is required to delete or deactivate users." });
+      return;
+    }
+
+    if (isOwnerAccount(user) && status !== "active") {
+      response.status(400).json({ error: "The bootstrap Super Admin account cannot be moderated to a blocked status." });
+      return;
+    }
+
     if (status === "banned") {
       ban = validateBanDetails(request.body);
       bannedAt = new Date().toISOString();
@@ -12457,6 +14554,13 @@ app.use((error, request, response, next) => {
   }
 
   if (error instanceof multer.MulterError) {
+    recordOperationsError({
+      error_type: "upload_failed",
+      severity: "warning",
+      message: error.code || "Upload failed.",
+      source: request.originalUrl || request.path
+    });
+
     if (error.code === "LIMIT_FILE_SIZE") {
       response.status(400).json({ error: "Upload failed: image must be 5 MB or smaller." });
       return;
@@ -12470,6 +14574,13 @@ app.use((error, request, response, next) => {
     response.status(400).json({ error: `Upload failed: ${error.message}` });
     return;
   }
+
+  recordOperationsError({
+    error_type: error.statusCode && error.statusCode < 500 ? "api_failure" : "unhandled_exception",
+    severity: error.statusCode && error.statusCode < 500 ? "warning" : "critical",
+    message: error.message || "Unhandled server error.",
+    source: request.originalUrl || request.path
+  });
 
   response.status(error.statusCode || 400).json({ error: error.message || "Something went wrong." });
 });

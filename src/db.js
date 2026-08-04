@@ -111,6 +111,16 @@ const STORE_SEED = [
   }
 ];
 
+const FEATURE_VOTE_SEED = [
+  { slug: "dark-mode", title: "Dark Mode", description: "A lower-glare display option for night shopping." },
+  { slug: "barcode-scanner", title: "Barcode Scanner", description: "Scan grocery items to find or submit prices faster." },
+  { slug: "shopping-lists", title: "Shopping Lists", description: "Reusable grocery lists for weekly trips." },
+  { slug: "sale-alerts", title: "Sale Alerts", description: "Notify users when watched items get a new approved deal." },
+  { slug: "receipt-rewards", title: "Receipt Rewards", description: "More reward tools for accepted receipt proof." },
+  { slug: "price-history", title: "Price History", description: "Show how approved prices change over time." },
+  { slug: "notifications", title: "Notifications", description: "More control over price and proof notifications." }
+];
+
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function onRun(error) {
@@ -177,6 +187,7 @@ async function initDb() {
       points INTEGER NOT NULL DEFAULT 0,
       accuracy_score INTEGER NOT NULL DEFAULT 0,
       is_email_verified INTEGER NOT NULL DEFAULT 0,
+      email_verified_at TEXT,
       email_verification_token TEXT,
       email_verification_expires TEXT,
       verification_email_last_sent_at TEXT,
@@ -609,6 +620,191 @@ async function initDb() {
     )
   `);
 
+  await run(`
+    CREATE TABLE IF NOT EXISTS feedback_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reporter_user_id INTEGER,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      assigned_admin_id INTEGER,
+      duplicate_of_ticket_id INTEGER,
+      public_response TEXT,
+      internal_notes TEXT,
+      source_url TEXT,
+      related_report_id INTEGER,
+      related_store_id INTEGER,
+      related_product_id INTEGER,
+      city TEXT NOT NULL DEFAULT 'Janesville',
+      region TEXT NOT NULL DEFAULT 'WI',
+      country_code TEXT NOT NULL DEFAULT 'US',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by INTEGER,
+      FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (assigned_admin_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (duplicate_of_ticket_id) REFERENCES feedback_tickets(id) ON DELETE SET NULL,
+      FOREIGN KEY (related_report_id) REFERENCES price_reports(id) ON DELETE SET NULL,
+      FOREIGN KEY (related_store_id) REFERENCES stores(id) ON DELETE SET NULL,
+      FOREIGN KEY (related_product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (closed_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS feedback_ticket_updates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      actor_user_id INTEGER,
+      update_type TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      internal_note TEXT,
+      public_response TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (ticket_id) REFERENCES feedback_tickets(id) ON DELETE CASCADE,
+      FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS feature_vote_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      city TEXT NOT NULL DEFAULT 'Janesville',
+      region TEXT NOT NULL DEFAULT 'WI',
+      country_code TEXT NOT NULL DEFAULT 'US',
+      created_by_admin_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by_admin_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS feature_votes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      option_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (option_id) REFERENCES feature_vote_options(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(option_id, user_id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS announcements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      announcement_type TEXT NOT NULL DEFAULT 'known_issue',
+      status TEXT NOT NULL DEFAULT 'draft',
+      scope TEXT NOT NULL DEFAULT 'homepage_banner',
+      city TEXT NOT NULL DEFAULT 'Janesville',
+      region TEXT NOT NULL DEFAULT 'WI',
+      country_code TEXT NOT NULL DEFAULT 'US',
+      starts_at TEXT,
+      ends_at TEXT,
+      published_at TEXT,
+      published_by INTEGER,
+      created_by INTEGER,
+      updated_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_user_id INTEGER,
+      action TEXT NOT NULL,
+      method TEXT,
+      path TEXT,
+      status_code INTEGER,
+      ip_address TEXT,
+      user_agent TEXT,
+      affected_type TEXT,
+      affected_id INTEGER,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_widget_layouts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_user_id INTEGER NOT NULL UNIQUE,
+      layout_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS operations_errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      error_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'warning',
+      message TEXT NOT NULL,
+      source TEXT,
+      related_type TEXT,
+      related_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'open',
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by INTEGER,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_login_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      success INTEGER NOT NULL DEFAULT 1,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS email_verification_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      event_type TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS backup_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL,
+      storage_path TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_item ON price_reports(item_name)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_store ON price_reports(store_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_category ON price_reports(category)");
@@ -647,6 +843,20 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_report ON notifications(related_report_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_import_batch ON notifications(related_import_batch_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_import_row ON notifications(related_import_row_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_status_priority ON feedback_tickets(status, priority, updated_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_reporter ON feedback_tickets(reporter_user_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_category ON feedback_tickets(category, status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feedback_ticket_updates_ticket ON feedback_ticket_updates(ticket_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feature_votes_option ON feature_votes(option_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_feature_votes_user ON feature_votes(user_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_announcements_status_scope ON announcements(status, scope, starts_at, ends_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin_time ON admin_audit_log(admin_user_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action_time ON admin_audit_log(action, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_operations_errors_status_time ON operations_errors(status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_user_time ON user_login_events(user_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_time ON user_login_events(created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_user_time ON email_verification_events(user_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_type_time ON email_verification_events(event_type, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_admin_notes_user ON user_admin_notes(user_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_username_history_user ON username_history(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)");
@@ -666,6 +876,20 @@ async function initDb() {
           active = excluded.active
       `,
       [store.name, store.address, store.city, store.state, store.store_type, store.active, new Date().toISOString()]
+    );
+  }
+
+  for (const option of FEATURE_VOTE_SEED) {
+    await run(
+      `
+        INSERT INTO feature_vote_options (slug, title, description, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          title = excluded.title,
+          description = excluded.description,
+          updated_at = excluded.updated_at
+      `,
+      [option.slug, option.title, option.description, new Date().toISOString(), new Date().toISOString()]
     );
   }
 
@@ -695,6 +919,7 @@ async function migrateUsersTable() {
   await addColumnIfMissing("users", "password_hash", "TEXT");
   await addColumnIfMissing("users", "accuracy_score", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "is_email_verified", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("users", "email_verified_at", "TEXT");
   await addColumnIfMissing("users", "email_verification_token", "TEXT");
   await addColumnIfMissing("users", "email_verification_expires", "TEXT");
   await addColumnIfMissing("users", "verification_email_last_sent_at", "TEXT");

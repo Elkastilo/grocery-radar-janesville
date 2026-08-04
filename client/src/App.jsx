@@ -1773,10 +1773,36 @@ function proofIdFromNotification(notification) {
   return notification?.related_import_batch_id || params.get('proof') || ''
 }
 
-function ProfileScreen({ me, profileStats, reports, verifications, rewards, notifications, unreadNotifications, loading, error, onAuthChanged, openScreen, openProduct, onNotificationsChanged, selectedProofId, setSelectedProofId }) {
+function ProfileScreen({
+  me,
+  profileStats,
+  reports,
+  verifications,
+  rewards,
+  notifications,
+  unreadNotifications,
+  feedbackTickets,
+  featureVotes,
+  loading,
+  error,
+  onAuthChanged,
+  openScreen,
+  openProduct,
+  onNotificationsChanged,
+  selectedProofId,
+  setSelectedProofId,
+}) {
   const [message, setMessage] = useState('')
   const [username, setUsername] = useState((me.user || me).username || '')
   const [proofState, setProofState] = useState({ loading: false, error: '', proof: null })
+  const [feedbackForm, setFeedbackForm] = useState({
+    category: 'bug',
+    title: '',
+    message: '',
+    source_url: '',
+  })
+  const [feedbackStatus, setFeedbackStatus] = useState({ loading: false, error: '', message: '' })
+  const [voteStatus, setVoteStatus] = useState({ loading: false, error: '', message: '' })
 
   useEffect(() => {
     setUsername((me.user || me).username || '')
@@ -1836,6 +1862,40 @@ function ProfileScreen({ me, profileStats, reports, verifications, rewards, noti
       await onAuthChanged()
     } catch (saveError) {
       setMessage(saveError.message)
+    }
+  }
+
+  const submitFeedback = async (event) => {
+    event.preventDefault()
+    const sourceUrl = feedbackForm.source_url.trim()
+
+    if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
+      setFeedbackStatus({ loading: false, error: 'Source link must start with http:// or https://.', message: '' })
+      return
+    }
+
+    setFeedbackStatus({ loading: true, error: '', message: '' })
+    try {
+      await postJson('/api/feedback', {
+        ...feedbackForm,
+        source_url: sourceUrl,
+      })
+      setFeedbackForm({ category: 'bug', title: '', message: '', source_url: '' })
+      setFeedbackStatus({ loading: false, error: '', message: 'Feedback sent to Grocery Radar support.' })
+      await onNotificationsChanged()
+    } catch (submitError) {
+      setFeedbackStatus({ loading: false, error: submitError.message, message: '' })
+    }
+  }
+
+  const voteFeature = async (optionId) => {
+    setVoteStatus({ loading: true, error: '', message: '' })
+    try {
+      await postJson(`/api/feature-votes/${optionId}/vote`, {})
+      setVoteStatus({ loading: false, error: '', message: 'Vote saved.' })
+      await onNotificationsChanged()
+    } catch (voteError) {
+      setVoteStatus({ loading: false, error: voteError.message, message: '' })
     }
   }
 
@@ -2014,6 +2074,105 @@ function ProfileScreen({ me, profileStats, reports, verifications, rewards, noti
             </article>
           ))}
           {!notifications.length ? <EmptyState title="No notifications yet" body="Proof updates and points will appear here." icon={BellRing} /> : null}
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+          <SectionHeader title="Send feedback" />
+          <form onSubmit={submitFeedback} className="space-y-3">
+            <label className="block">
+              <span className="mb-2 block text-sm font-black text-slate-700">Category</span>
+              <select
+                value={feedbackForm.category}
+                onChange={(event) => setFeedbackForm((current) => ({ ...current, category: event.target.value }))}
+                className="field"
+              >
+                <option value="bug">Bug</option>
+                <option value="feature_request">Feature request</option>
+                <option value="wrong_price">Wrong price</option>
+                <option value="wrong_product">Wrong product</option>
+                <option value="store_issue">Store issue</option>
+                <option value="question">Question</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-sm font-black text-slate-700">Title</span>
+              <input
+                value={feedbackForm.title}
+                onChange={(event) => setFeedbackForm((current) => ({ ...current, title: event.target.value }))}
+                className="field"
+                maxLength={160}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-sm font-black text-slate-700">Details</span>
+              <textarea
+                value={feedbackForm.message}
+                onChange={(event) => setFeedbackForm((current) => ({ ...current, message: event.target.value }))}
+                className="field min-h-28"
+                maxLength={2000}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="mb-2 block text-sm font-black text-slate-700">Source link optional</span>
+              <input
+                type="url"
+                value={feedbackForm.source_url}
+                onChange={(event) => setFeedbackForm((current) => ({ ...current, source_url: event.target.value }))}
+                className="field"
+                placeholder="https://store.com/page"
+              />
+            </label>
+            {feedbackStatus.error ? <p className="rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-800">{feedbackStatus.error}</p> : null}
+            {feedbackStatus.message ? <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{feedbackStatus.message}</p> : null}
+            <button
+              type="submit"
+              disabled={feedbackStatus.loading}
+              className="w-full rounded-2xl bg-emerald-700 px-5 py-4 text-lg font-black text-white disabled:opacity-60"
+            >
+              Send feedback
+            </button>
+          </form>
+          <div className="mt-4 space-y-2">
+            {(feedbackTickets || []).slice(0, 3).map((ticket) => (
+              <div key={ticket.id} className="rounded-2xl bg-slate-50 p-3">
+                <p className="font-black text-slate-950">{ticket.title}</p>
+                <p className="mt-1 text-sm font-bold text-slate-500">{titleCase(ticket.category.replace(/_/g, ' '))} · {titleCase(ticket.status.replace(/_/g, ' '))}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+          <SectionHeader title="Vote on future tools" />
+          {voteStatus.error ? <p className="mb-3 rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-800">{voteStatus.error}</p> : null}
+          {voteStatus.message ? <p className="mb-3 rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{voteStatus.message}</p> : null}
+          <div className="space-y-3">
+            {(featureVotes || []).slice(0, 6).map((option) => (
+              <article key={option.id} className="rounded-2xl bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-black text-slate-950">{option.title}</h3>
+                    <p className="mt-1 text-sm font-bold text-slate-500">{option.description}</p>
+                    <p className="mt-2 text-sm font-black text-emerald-800">{Number(option.votes || 0).toLocaleString()} vote{Number(option.votes || 0) === 1 ? '' : 's'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={voteStatus.loading || option.user_has_voted || option.status === 'completed'}
+                    onClick={() => voteFeature(option.id)}
+                    className="shrink-0 rounded-full bg-white px-3 py-2 text-sm font-black text-emerald-800 ring-1 ring-emerald-100 disabled:text-slate-400"
+                  >
+                    {option.user_has_voted ? 'Voted' : 'Vote'}
+                  </button>
+                </div>
+              </article>
+            ))}
+            {!featureVotes?.length ? <EmptyState title="No feature votes yet" body="Voting options will appear here." icon={Star} /> : null}
+          </div>
         </div>
       </section>
 
@@ -2200,6 +2359,8 @@ function App() {
   const [profileReports, setProfileReports] = useState([])
   const [profileVerifications, setProfileVerifications] = useState([])
   const [profileNotifications, setProfileNotifications] = useState([])
+  const [profileFeedback, setProfileFeedback] = useState([])
+  const [featureVotes, setFeatureVotes] = useState([])
   const [unreadNotifications, setUnreadNotifications] = useState(0)
   const [rewards, setRewards] = useState(null)
   const [leaderboard, setLeaderboard] = useState([])
@@ -2325,18 +2486,22 @@ function App() {
     setProfileState({ loading: true, error: '' })
     try {
       const user = me.user || me
-      const [reportsData, verificationsData, rewardsData, statsData, notificationsData] = await Promise.all([
+      const [reportsData, verificationsData, rewardsData, statsData, notificationsData, feedbackData, featureVotesData] = await Promise.all([
         getJson('/api/account/reports'),
         getJson('/api/account/verifications'),
         getJson('/api/rewards'),
         user.username ? getJson(`/api/users/${encodeURIComponent(user.username)}`) : Promise.resolve(null),
         getJson('/api/notifications'),
+        getJson('/api/account/feedback'),
+        getJson('/api/feature-votes'),
       ])
       setProfileReports(reportsData.reports || [])
       setProfileVerifications(verificationsData.verifications || [])
       setRewards(rewardsData)
       setProfileStats(statsData)
       setProfileNotifications(notificationsData.notifications || [])
+      setProfileFeedback(feedbackData.tickets || [])
+      setFeatureVotes(featureVotesData.options || [])
       setUnreadNotifications(notificationsData.unread_count || 0)
       setProfileState({ loading: false, error: '' })
     } catch (error) {
@@ -2568,6 +2733,8 @@ function App() {
             rewards={rewards}
             notifications={profileNotifications}
             unreadNotifications={unreadNotifications}
+            feedbackTickets={profileFeedback}
+            featureVotes={featureVotes}
             loading={profileState.loading}
             error={profileState.error}
             onAuthChanged={loadMe}
