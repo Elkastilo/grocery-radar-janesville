@@ -24,6 +24,7 @@ try {
 }
 
 const {
+  db,
   DATA_DIR,
   DB_PATH,
   DATA_DIR_EXISTED_AT_START,
@@ -152,6 +153,15 @@ const FEEDBACK_PRIORITIES = ["low", "normal", "high", "urgent"];
 const FEATURE_VOTE_STATUSES = ["active", "trending", "completed", "rejected"];
 const ANNOUNCEMENT_TYPES = ["maintenance", "known_issue", "new_feature", "downtime", "homepage_banner"];
 const ANNOUNCEMENT_STATUSES = ["draft", "published", "archived"];
+const HOMEPAGE_SERVICE_STATUSES = ["online", "maintenance", "degraded", "updating"];
+const HOMEPAGE_MAINTENANCE_STATUSES = ["scheduled", "in_progress", "monitoring", "complete"];
+const HOMEPAGE_CONTENT_STATUSES = ["draft", "published", "archived"];
+const HOMEPAGE_ISSUE_STATUSES = ["investigating", "identified", "fix_in_progress", "monitoring", "resolved"];
+const HOMEPAGE_ISSUE_VISIBILITY_STATUSES = ["draft", "published", "hidden"];
+const STAFF_ROLES = ["owner", "manager", "reviewer", "data_entry", "user"];
+const ACTIVE_USAGE_WINDOW_MINUTES = Math.max(2, Number.parseInt(process.env.ACTIVE_USAGE_WINDOW_MINUTES || "10", 10) || 10);
+const REVIEW_CLAIM_MINUTES = Math.max(10, Number.parseInt(process.env.REVIEW_CLAIM_MINUTES || "30", 10) || 30);
+const APP_TIME_ZONE = "America/Chicago";
 const OPERATIONS_WIDGET_IDS = [
   "system_health",
   "live_activity",
@@ -164,6 +174,7 @@ const OPERATIONS_WIDGET_IDS = [
   "event_feed",
   "error_center",
   "announcements",
+  "homepage_service",
   "community_pulse",
   "security"
 ];
@@ -1117,6 +1128,13 @@ function formatPriceImportBatch(batch, rows = []) {
     duplicate_of_batch_id: batch.duplicate_of_batch_id || null,
     duplicate_scope: batch.duplicate_scope || "",
     review_priority: batch.review_priority || "normal",
+    review_status: batch.review_status || "waiting",
+    review_claimed_by: batch.review_claimed_by || null,
+    review_claimed_by_username: batch.review_claimed_by_username || "",
+    review_claimed_at: batch.review_claimed_at || "",
+    review_claim_expires_at: batch.review_claim_expires_at || "",
+    review_escalated_at: batch.review_escalated_at || "",
+    review_escalation_reason: batch.review_escalation_reason || "",
     proof_quality_flags: String(batch.proof_quality_flags || "")
       .split(",")
       .map((flag) => flag.trim())
@@ -1636,6 +1654,8 @@ function publicSponsor(row) {
 }
 
 function formatNotification(row) {
+  const targetUrl = row.target_url || "";
+  const safeTargetUrl = !row.admin_only && targetUrl.startsWith("/admin") ? "" : targetUrl;
   return {
     id: row.id,
     user_id: row.user_id || null,
@@ -1650,7 +1670,7 @@ function formatNotification(row) {
     related_import_row_id: row.related_import_row_id || null,
     points_awarded: row.points_awarded || 0,
     target_tab: row.target_tab || "",
-    target_url: row.target_url || "",
+    target_url: safeTargetUrl,
     is_read: Boolean(row.is_read),
     created_at: row.created_at,
     read_at: row.read_at || ""
@@ -2231,6 +2251,31 @@ function isOwnerAccount(user) {
 
 function isSuperAdminAccount(user = {}) {
   return Boolean(user?.is_super_admin) && isOwnerAccount(user);
+}
+
+function staffRoleForUser(user = {}) {
+  if (isSuperAdminAccount(user) || isOwnerAccount(user)) return "owner";
+  const stored = String(user.staff_role || "").trim().toLowerCase();
+  if (["manager", "reviewer", "data_entry"].includes(stored)) return stored;
+  return user.is_admin ? "manager" : "user";
+}
+
+function staffCan(user, permission) {
+  const role = staffRoleForUser(user);
+  const permissions = {
+    owner: ["manage", "review", "approve", "draft", "workers", "operations", "backup"],
+    manager: ["manage", "review", "approve", "draft", "workers"],
+    reviewer: ["review", "approve", "draft"],
+    data_entry: ["review", "draft"],
+    user: []
+  };
+  return (permissions[role] || []).includes(permission);
+}
+
+function workPreferencesForUser(user = {}) {
+  const allowed = ["larger_text", "focus_mode", "reduced_motion", "keyboard_first", "high_contrast", "quiet_notifications", "one_task_at_a_time"];
+  const parsed = parseMetadataJson(user.work_preferences_json);
+  return Object.fromEntries(allowed.map((key) => [key, Boolean(parsed[key])]));
 }
 
 function envFlagEnabled(value) {
@@ -4160,7 +4205,9 @@ function publicUser(user) {
     is_admin: Boolean(user.is_admin),
     is_super_admin: isSuperAdminAccount(user),
     is_owner: isOwnerAccount(user),
-    admin_role: isSuperAdminAccount(user) ? "super_admin" : user.is_admin ? "admin" : "user",
+    admin_role: staffRoleForUser(user),
+    staff_role: staffRoleForUser(user),
+    work_preferences: workPreferencesForUser(user),
     account_status: user.account_status || "active",
     hide_from_leaderboard: Boolean(user.hide_from_leaderboard),
     force_username_change: Boolean(user.force_username_change),
@@ -4318,6 +4365,114 @@ async function markUserSeen(userId) {
     "UPDATE users SET last_seen_at = ?, last_activity_at = ? WHERE id = ?",
     [now, now, userId]
   );
+}
+
+function localDateFor(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function localDateDistance(previousDate, nextDate) {
+  if (!previousDate || !nextDate) return null;
+  const previous = Date.parse(`${previousDate}T12:00:00Z`);
+  const next = Date.parse(`${nextDate}T12:00:00Z`);
+  if (!Number.isFinite(previous) || !Number.isFinite(next)) return null;
+  return Math.round((next - previous) / 86400000);
+}
+
+function visitorKeyFor(request, user) {
+  if (user?.id) return `user:${user.id}`;
+  const raw = cleanText(request.body?.visitor_id || request.get("x-grocery-visitor") || request.sessionID || "guest", 160);
+  return `guest:${crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32)}`;
+}
+
+async function updateUserStreak(userId, localDate, now) {
+  if (!userId) return null;
+  const existing = await get("SELECT * FROM user_engagement WHERE user_id = ?", [userId]);
+  if (existing?.last_qualifying_date === localDate) return existing;
+  const distance = localDateDistance(existing?.last_qualifying_date, localDate);
+  const current = distance === 1 ? Number(existing?.current_streak || 0) + 1 : 1;
+  const longest = Math.max(current, Number(existing?.longest_streak || 0));
+  const total = Number(existing?.total_qualifying_days || 0) + 1;
+  await run(
+    `
+      INSERT INTO user_engagement (user_id, current_streak, longest_streak, last_qualifying_date, total_qualifying_days, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        current_streak = excluded.current_streak,
+        longest_streak = excluded.longest_streak,
+        last_qualifying_date = excluded.last_qualifying_date,
+        total_qualifying_days = excluded.total_qualifying_days,
+        updated_at = excluded.updated_at
+    `,
+    [userId, current, longest, localDate, total, now]
+  );
+  return get("SELECT * FROM user_engagement WHERE user_id = ?", [userId]);
+}
+
+async function recordActivityHeartbeat(request, user) {
+  const now = new Date().toISOString();
+  const localDate = localDateFor(new Date(now));
+  const visitorKey = visitorKeyFor(request, user);
+  const role = user ? staffRoleForUser(user) : "guest";
+  const category = role === "user" ? "member" : role;
+  await run(
+    `
+      INSERT INTO activity_presence (visitor_key, user_id, role_category, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(visitor_key) DO UPDATE SET
+        user_id = excluded.user_id,
+        role_category = excluded.role_category,
+        last_seen_at = excluded.last_seen_at
+    `,
+    [visitorKey, user?.id || null, category, now, now]
+  );
+  await run(
+    `
+      INSERT INTO activity_daily (local_date, visitor_key, user_id, first_seen_at, last_seen_at, heartbeat_count)
+      VALUES (?, ?, ?, ?, ?, 1)
+      ON CONFLICT(local_date, visitor_key) DO UPDATE SET
+        user_id = excluded.user_id,
+        last_seen_at = excluded.last_seen_at,
+        heartbeat_count = activity_daily.heartbeat_count + 1
+    `,
+    [localDate, visitorKey, user?.id || null, now, now]
+  );
+  const streak = await updateUserStreak(user?.id, localDate, now);
+  return { now, localDate, streak };
+}
+
+async function liveUsageSummary() {
+  const cutoff = new Date(Date.now() - ACTIVE_USAGE_WINDOW_MINUTES * 60000).toISOString();
+  const today = localDateFor();
+  const active = await all(
+    "SELECT role_category, COUNT(*) AS count FROM activity_presence WHERE last_seen_at >= ? GROUP BY role_category",
+    [cutoff]
+  );
+  const visitors = await get(
+    `
+      SELECT COUNT(*) AS visitors,
+             SUM(CASE WHEN presence.first_seen_at < daily.first_seen_at THEN 1 ELSE 0 END) AS returning_count
+      FROM activity_daily daily
+      LEFT JOIN activity_presence presence ON presence.visitor_key = daily.visitor_key
+      WHERE daily.local_date = ?
+    `,
+    [today]
+  );
+  const byRole = Object.fromEntries(active.map((row) => [row.role_category, row.count || 0]));
+  return {
+    active_window_minutes: ACTIVE_USAGE_WINDOW_MINUTES,
+    active_now: active.reduce((sum, row) => sum + Number(row.count || 0), 0),
+    by_role: byRole,
+    visitors_today: visitors?.visitors || 0,
+    returning_visitors: visitors?.returning_count || 0
+  };
 }
 
 async function createNotification(input) {
@@ -5019,6 +5174,53 @@ const requireSuperAdminAccess = asyncRoute(async (request, response, next) => {
   next();
 });
 
+function requireStaffPermission(permission) {
+  return (request, response, next) => {
+    if (!request.adminUser || request.adminAccessViaPin || !staffCan(request.adminUser, permission)) {
+      response.status(403).json({ error: "Your worker role does not allow this action." });
+      return;
+    }
+    next();
+  };
+}
+
+const adminV2RoleGuard = asyncRoute(async (request, response, next) => {
+  const user = await getSessionUser(request);
+  const role = staffRoleForUser(user || {});
+  if (!["reviewer", "data_entry"].includes(role)) {
+    next();
+    return;
+  }
+
+  const pathname = String(request.originalUrl || request.path).split("?")[0];
+  const method = request.method.toUpperCase();
+  const sharedRead = method === "GET" && [
+    /^\/api\/admin\/notifications$/,
+    /^\/api\/admin\/reports$/,
+    /^\/api\/admin\/price-imports$/,
+    /^\/api\/admin\/product-tools$/,
+    /^\/api\/admin\/stores$/,
+    /^\/api\/admin\/uploads\//,
+    /^\/api\/admin\/v2\//
+  ].some((pattern) => pattern.test(pathname));
+  const draftWrite = method === "POST" && [
+    /^\/api\/admin\/price-imports\/\d+\/(rows|source|parse-price-text)$/,
+    /^\/api\/admin\/price-import-rows\/\d+$/,
+    /^\/api\/admin\/v2\//
+  ].some((pattern) => pattern.test(pathname));
+  const reviewerDecision = role === "reviewer" && method === "POST" && [
+    /^\/api\/admin\/price-import-rows\/\d+\/(approve|reject)$/,
+    /^\/api\/admin\/price-import-rows\/bulk$/,
+    /^\/api\/admin\/proof-submissions\/\d+\/status$/
+  ].some((pattern) => pattern.test(pathname));
+
+  if (!sharedRead && !draftWrite && !reviewerDecision) {
+    response.status(403).json({ error: "This area is not available to your worker role." });
+    return;
+  }
+  next();
+});
+
 const requireLogin = asyncRoute(async (request, response, next) => {
   const user = await getSessionUser(request);
 
@@ -5101,7 +5303,7 @@ function formatUserSummary(row = {}) {
     id: row.id,
     username: row.username,
     email: row.email || "",
-    role: isSuperAdminAccount(row) ? "super_admin" : row.is_admin ? "admin" : "user",
+    role: staffRoleForUser(row),
     verified: Boolean(row.is_email_verified),
     joined_at: row.created_at,
     last_login_at: row.last_login_at || "",
@@ -5289,6 +5491,322 @@ function cleanAnnouncementPayload(body = {}, adminUserId = null, existing = {}) 
     updated_by: adminUserId,
     created_at: existing.created_at || now,
     updated_at: now
+  };
+}
+
+function parseJsonList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cleanText(item, 180)).filter(Boolean);
+  }
+
+  try {
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed)
+      ? parsed.map((item) => cleanText(item, 180)).filter(Boolean)
+      : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function cleanTextList(value, maxItems = 8) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cleanText(item, 180)).filter(Boolean).slice(0, maxItems);
+  }
+
+  const raw = String(value || "");
+  const trimmed = raw.trim();
+
+  if (trimmed.startsWith("[")) {
+    return parseJsonList(trimmed).slice(0, maxItems);
+  }
+
+  return raw
+    .split(/\r?\n/)
+    .map((item) => cleanText(item.replace(/^[-*]\s*/, ""), 180))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function cleanHomepageServiceStatus(value) {
+  return cleanEnum(value, HOMEPAGE_SERVICE_STATUSES, "online");
+}
+
+function cleanHomepageMaintenanceStatus(value) {
+  return cleanEnum(value, HOMEPAGE_MAINTENANCE_STATUSES, "monitoring");
+}
+
+function cleanHomepageContentStatus(value) {
+  return cleanEnum(value, HOMEPAGE_CONTENT_STATUSES, "draft");
+}
+
+function cleanHomepageIssueStatus(value) {
+  return cleanEnum(value, HOMEPAGE_ISSUE_STATUSES, "investigating");
+}
+
+function cleanHomepageIssueVisibilityStatus(value) {
+  return cleanEnum(value, HOMEPAGE_ISSUE_VISIBILITY_STATUSES, "draft");
+}
+
+function normalizeOptionalHomepageTimestamp(value, existing = null) {
+  if (value === undefined) {
+    return existing || null;
+  }
+
+  if (value === null || value === "") {
+    return null;
+  }
+
+  return normalizeOptionalTimestamp(value);
+}
+
+function formatHomepageServiceStatus(row = {}, includeAdminFields = false) {
+  const maintenance = {
+    enabled: Boolean(row.maintenance_enabled),
+    title: row.maintenance_title || "",
+    message: row.maintenance_message || "",
+    impact: row.maintenance_impact || "",
+    start_at: row.maintenance_start_at || "",
+    expected_end_at: row.maintenance_end_at || "",
+    status: row.maintenance_status || "monitoring"
+  };
+
+  const formatted = {
+    location: {
+      city: "Janesville",
+      region: "Wisconsin"
+    },
+    service_status: row.service_status || "online",
+    version_label: row.version_label || "Early Access 0.2.0",
+    current_focus: row.current_focus || "Adding and verifying Janesville grocery prices.",
+    main_message: row.main_message || "Grocery Radar is live, but the radar is still filling up.",
+    community_mission_title: row.community_mission_title || "Help fill the Janesville radar.",
+    community_mission_body: row.community_mission_body || "One receipt can help shoppers across Janesville.",
+    homepage_announcement: row.homepage_announcement || "",
+    maintenance,
+    published_at: row.published_at || "",
+    updated_at: row.updated_at || row.published_at || row.created_at || ""
+  };
+
+  if (includeAdminFields) {
+    formatted.id = row.id || 1;
+    formatted.published_by = row.published_by || null;
+    formatted.updated_by = row.updated_by || null;
+    formatted.created_at = row.created_at || "";
+  }
+
+  return formatted;
+}
+
+function cleanHomepageServiceStatusPayload(body = {}, adminUserId = null, existing = {}) {
+  const now = new Date().toISOString();
+  const serviceStatus = cleanHomepageServiceStatus(body.service_status ?? existing.service_status ?? "online");
+  const maintenanceEnabled = parseImportBoolean(body.maintenance_enabled ?? existing.maintenance_enabled);
+
+  return {
+    service_status: serviceStatus,
+    version_label: cleanText(body.version_label ?? existing.version_label ?? "Early Access 0.2.0", 80) || "Early Access 0.2.0",
+    current_focus: cleanText(body.current_focus ?? existing.current_focus, 240) || "Adding and verifying Janesville grocery prices.",
+    main_message: cleanText(body.main_message ?? existing.main_message, 1200) || "Grocery Radar is live, but the radar is still filling up.",
+    community_mission_title: cleanText(body.community_mission_title ?? existing.community_mission_title, 120) || "Help fill the Janesville radar.",
+    community_mission_body: cleanText(body.community_mission_body ?? existing.community_mission_body, 700) || "One receipt can help shoppers across Janesville.",
+    homepage_announcement: cleanText(body.homepage_announcement ?? existing.homepage_announcement, 400),
+    maintenance_enabled: maintenanceEnabled ? 1 : 0,
+    maintenance_title: cleanText(body.maintenance_title ?? existing.maintenance_title, 160),
+    maintenance_message: cleanText(body.maintenance_message ?? existing.maintenance_message, 700),
+    maintenance_impact: cleanText(body.maintenance_impact ?? existing.maintenance_impact, 500),
+    maintenance_start_at: normalizeOptionalHomepageTimestamp(body.maintenance_start_at, existing.maintenance_start_at),
+    maintenance_end_at: normalizeOptionalHomepageTimestamp(body.maintenance_end_at, existing.maintenance_end_at),
+    maintenance_status: cleanHomepageMaintenanceStatus(body.maintenance_status ?? existing.maintenance_status ?? "monitoring"),
+    published_at: existing.published_at || now,
+    published_by: existing.published_by || adminUserId,
+    updated_by: adminUserId,
+    created_at: existing.created_at || now,
+    updated_at: now
+  };
+}
+
+function formatHomepagePatchNote(row = {}, includeAdminFields = false) {
+  const formatted = {
+    id: row.id,
+    version_label: row.version_label || "",
+    title: row.title || "",
+    summary: row.summary || "",
+    added: parseJsonList(row.added_json),
+    changed: parseJsonList(row.changed_json),
+    fixed: parseJsonList(row.fixed_json),
+    known_issues: parseJsonList(row.known_issues_json),
+    next_focus: parseJsonList(row.next_focus_json),
+    status: row.status || "draft",
+    published_at: row.published_at || "",
+    updated_at: row.updated_at || row.created_at || ""
+  };
+
+  if (includeAdminFields) {
+    formatted.created_by = row.created_by || null;
+    formatted.updated_by = row.updated_by || null;
+    formatted.published_by = row.published_by || null;
+    formatted.created_at = row.created_at || "";
+  }
+
+  return formatted;
+}
+
+function cleanHomepagePatchNotePayload(body = {}, adminUserId = null, existing = {}) {
+  const now = new Date().toISOString();
+  const status = cleanHomepageContentStatus(body.status ?? existing.status ?? "draft");
+  const publishedAt = status === "published" ? (existing.published_at || now) : existing.published_at || null;
+
+  return {
+    version_label: cleanText(body.version_label ?? existing.version_label, 80),
+    title: cleanText(body.title ?? existing.title, 160),
+    summary: cleanText(body.summary ?? existing.summary, 700),
+    added_json: JSON.stringify(cleanTextList(body.added ?? existing.added_json)),
+    changed_json: JSON.stringify(cleanTextList(body.changed ?? existing.changed_json)),
+    fixed_json: JSON.stringify(cleanTextList(body.fixed ?? existing.fixed_json)),
+    known_issues_json: JSON.stringify(cleanTextList(body.known_issues ?? existing.known_issues_json)),
+    next_focus_json: JSON.stringify(cleanTextList(body.next_focus ?? existing.next_focus_json)),
+    status,
+    published_at: publishedAt,
+    published_by: status === "published" ? (existing.published_by || adminUserId) : existing.published_by || null,
+    created_by: existing.created_by || adminUserId,
+    updated_by: adminUserId,
+    created_at: existing.created_at || now,
+    updated_at: now
+  };
+}
+
+function formatHomepageKnownIssue(row = {}, includeAdminFields = false) {
+  const formatted = {
+    id: row.id,
+    title: row.title || "",
+    status: row.issue_status || "investigating",
+    description: row.description || "",
+    workaround: row.workaround || "",
+    visibility_status: row.visibility_status || "draft",
+    opened_at: row.opened_at || "",
+    last_updated_at: row.last_updated_at || row.updated_at || ""
+  };
+
+  if (includeAdminFields) {
+    formatted.created_by = row.created_by || null;
+    formatted.updated_by = row.updated_by || null;
+    formatted.published_by = row.published_by || null;
+    formatted.published_at = row.published_at || "";
+    formatted.created_at = row.created_at || "";
+    formatted.updated_at = row.updated_at || "";
+  }
+
+  return formatted;
+}
+
+function cleanHomepageKnownIssuePayload(body = {}, adminUserId = null, existing = {}) {
+  const now = new Date().toISOString();
+  const visibilityStatus = cleanHomepageIssueVisibilityStatus(body.visibility_status ?? existing.visibility_status ?? "draft");
+  const openedAt = normalizeOptionalHomepageTimestamp(body.opened_at, existing.opened_at) || now;
+
+  return {
+    title: cleanText(body.title ?? existing.title, 160),
+    issue_status: cleanHomepageIssueStatus(body.issue_status ?? body.status ?? existing.issue_status ?? "investigating"),
+    description: cleanText(body.description ?? existing.description, 900),
+    workaround: cleanText(body.workaround ?? existing.workaround, 500),
+    visibility_status: visibilityStatus,
+    opened_at: openedAt,
+    last_updated_at: normalizeOptionalHomepageTimestamp(body.last_updated_at, existing.last_updated_at) || now,
+    published_at: visibilityStatus === "published" ? (existing.published_at || now) : existing.published_at || null,
+    published_by: visibilityStatus === "published" ? (existing.published_by || adminUserId) : existing.published_by || null,
+    created_by: existing.created_by || adminUserId,
+    updated_by: adminUserId,
+    created_at: existing.created_at || now,
+    updated_at: now
+  };
+}
+
+async function homepagePublicCounts() {
+  const todayStart = todayStartIso();
+  const [
+    verifiedPrices,
+    productsWithPrices,
+    storesTracked,
+    updatedToday,
+    pendingProofs
+  ] = await Promise.all([
+    get("SELECT COUNT(*) AS count FROM price_reports WHERE status = 'approved'"),
+    get("SELECT COUNT(DISTINCT product_id) AS count FROM price_reports WHERE status = 'approved' AND product_id IS NOT NULL"),
+    get("SELECT COUNT(*) AS count FROM stores WHERE active = 1"),
+    get(
+      `
+        SELECT COUNT(*) AS count
+        FROM price_reports
+        WHERE status = 'approved'
+          AND COALESCE(source_checked_at, reviewed_at, submitted_at) >= ?
+      `,
+      [todayStart]
+    ),
+    get(
+      `
+        SELECT COUNT(*) AS count
+        FROM price_import_batches
+        WHERE created_by IS NOT NULL
+          AND status IN ('needs_admin_review', 'import_draft', 'ready_for_review', 'needs_edit')
+      `
+    )
+  ]);
+
+  return {
+    verified_prices: verifiedPrices?.count || 0,
+    products_with_active_prices: productsWithPrices?.count || 0,
+    janesville_stores_tracked: storesTracked?.count || 0,
+    prices_updated_today: updatedToday?.count || 0,
+    community_submissions_awaiting_review: pendingProofs?.count || 0
+  };
+}
+
+async function homepageServiceData({ includeAdminFields = false } = {}) {
+  const [statusRow, patchRows, issueRows, counts] = await Promise.all([
+    get("SELECT * FROM homepage_service_status WHERE id = 1"),
+    all(
+      `
+        SELECT *
+        FROM homepage_patch_notes
+        ${includeAdminFields ? "" : "WHERE status = 'published'"}
+        ORDER BY
+          CASE status WHEN 'published' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+          COALESCE(published_at, updated_at, created_at) DESC
+        LIMIT ?
+      `,
+      [includeAdminFields ? 100 : 5]
+    ),
+    all(
+      `
+        SELECT *
+        FROM homepage_known_issues
+        ${includeAdminFields ? "" : "WHERE visibility_status = 'published'"}
+        ORDER BY
+          CASE issue_status
+            WHEN 'fix_in_progress' THEN 1
+            WHEN 'investigating' THEN 2
+            WHEN 'identified' THEN 3
+            WHEN 'monitoring' THEN 4
+            WHEN 'resolved' THEN 5
+            ELSE 6
+          END,
+          last_updated_at DESC
+        LIMIT ?
+      `,
+      [includeAdminFields ? 100 : 10]
+    ),
+    homepagePublicCounts()
+  ]);
+
+  return {
+    generated_at: new Date().toISOString(),
+    service: formatHomepageServiceStatus(statusRow || {}, includeAdminFields),
+    patch_notes: patchRows.map((row) => formatHomepagePatchNote(row, includeAdminFields)),
+    known_issues: issueRows.map((row) => formatHomepageKnownIssue(row, includeAdminFields)),
+    community_counts: counts,
+    price_freshness_labels: ["Updated today", "Updated this week", "Aging", "Needs verification", "Expired"],
+    privacy_note: "Public homepage data is aggregate-only. Pending submissions, private feedback, user identities, and raw proof files are not exposed."
   };
 }
 
@@ -6169,6 +6687,7 @@ async function operationsOverview(adminUser) {
     feedback,
     featureVotes,
     announcements,
+    homepageService,
     auditLog
   ] = await Promise.all([
     activeSessionCounts(),
@@ -6210,6 +6729,7 @@ async function operationsOverview(adminUser) {
     operationsFeedback({ limit: 25 }),
     featureVoteOptionsForUser(adminUser?.id),
     all("SELECT * FROM announcements ORDER BY updated_at DESC LIMIT 20"),
+    homepageServiceData({ includeAdminFields: true }),
     all(
       `
         SELECT audit.*, users.username
@@ -6338,6 +6858,7 @@ async function operationsOverview(adminUser) {
     event_feed: eventFeed,
     error_center: errorCenter,
     announcements: announcements.map((row) => formatAnnouncement(row, true)),
+    homepage_service: homepageService,
     community_pulse: await communityPulse(searchAnalytics, storeHealth),
     audit_log: auditLog.map((row) => ({
       id: row.id,
@@ -6361,6 +6882,7 @@ async function operationsOverview(adminUser) {
 }
 
 app.use("/api/admin", adminAuditMiddleware);
+app.use("/api/admin", adminV2RoleGuard);
 
 app.get("/health", asyncRoute(async (request, response) => {
   let databaseReachable = false;
@@ -7281,14 +7803,23 @@ app.get("/api/auth/me", asyncRoute(async (request, response) => {
 
 app.post("/api/heartbeat", asyncRoute(async (request, response) => {
   const user = await getSessionUser(request);
+  const activeUser = user && !isBlockedAccount(user) ? user : null;
 
-  if (user && !isBlockedAccount(user)) {
-    await markUserSeen(user.id);
+  if (activeUser) {
+    await markUserSeen(activeUser.id);
   }
+
+  const activity = await recordActivityHeartbeat(request, activeUser);
 
   response.json({
     ok: true,
-    loggedIn: Boolean(user && !isBlockedAccount(user))
+    loggedIn: Boolean(activeUser),
+    active_window_minutes: ACTIVE_USAGE_WINDOW_MINUTES,
+    streak: activity.streak ? {
+      current: activity.streak.current_streak || 0,
+      longest: activity.streak.longest_streak || 0,
+      last_qualifying_date: activity.streak.last_qualifying_date || ""
+    } : null
   });
 }));
 
@@ -7354,6 +7885,10 @@ app.post("/api/notifications/read-all", requireLogin, asyncRoute(async (request,
   );
 
   response.json({ message: "All notifications marked read." });
+}));
+
+app.get("/api/homepage-service", asyncRoute(async (request, response) => {
+  response.json(await homepageServiceData());
 }));
 
 app.get("/api/announcements", asyncRoute(async (request, response) => {
@@ -7575,6 +8110,46 @@ app.get("/api/account/verifications", requireLogin, asyncRoute(async (request, r
       verification_type: row.verification_type,
       note: row.note || "",
       created_at: row.created_at
+    }))
+  });
+}));
+
+app.get("/api/account/engagement", requireLogin, asyncRoute(async (request, response) => {
+  const [engagement, contributionStats, proofStats, recentEvents] = await Promise.all([
+    get("SELECT * FROM user_engagement WHERE user_id = ?", [request.currentUser.id]),
+    get(
+      `SELECT COUNT(CASE WHEN status = 'approved' THEN 1 END) AS approved_prices, COUNT(*) AS reports FROM price_reports WHERE user_id = ?`,
+      [request.currentUser.id]
+    ),
+    get(
+      `SELECT COUNT(*) AS receipts FROM price_import_batches WHERE created_by = ? AND notes LIKE ?`,
+      [request.currentUser.id, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+    ),
+    all(
+      `SELECT action, points, price_report_id, related_import_batch_id, created_at FROM point_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`,
+      [request.currentUser.id]
+    )
+  ]);
+  response.json({
+    streak: {
+      current: engagement?.current_streak || 0,
+      longest: engagement?.longest_streak || 0,
+      last_qualifying_date: engagement?.last_qualifying_date || "",
+      message: engagement?.current_streak
+        ? `Thanks for using Grocery Radar ${engagement.current_streak} day${engagement.current_streak === 1 ? "" : "s"} in a row.`
+        : "Welcome back. Start a new streak today."
+    },
+    contributions: {
+      approved_prices: contributionStats?.approved_prices || 0,
+      reports_submitted: contributionStats?.reports || 0,
+      receipts_submitted: proofStats?.receipts || 0
+    },
+    recent_activity: recentEvents.map((event) => ({
+      type: event.action,
+      points: event.points || 0,
+      report_id: event.price_report_id || null,
+      proof_id: event.related_import_batch_id || null,
+      created_at: event.created_at
     }))
   });
 }));
@@ -8679,9 +9254,10 @@ app.get("/api/rewards", (request, response) => {
 async function priceImportBatchById(batchId) {
   return get(
     `
-      SELECT batches.*, users.username AS created_by_username
+      SELECT batches.*, users.username AS created_by_username, reviewer.username AS review_claimed_by_username
       FROM price_import_batches batches
       LEFT JOIN users ON users.id = batches.created_by
+      LEFT JOIN users reviewer ON reviewer.id = batches.review_claimed_by
       WHERE batches.id = ?
     `,
     [batchId]
@@ -10490,9 +11066,10 @@ app.get("/api/admin/price-imports", requireAdminAccess, asyncRoute(async (reques
   const cleanupReport = await approvedReceiptCleanupReport();
   const batches = await all(
     `
-      SELECT batches.*, users.username AS created_by_username
+      SELECT batches.*, users.username AS created_by_username, reviewer.username AS review_claimed_by_username
       FROM price_import_batches batches
       LEFT JOIN users ON users.id = batches.created_by
+      LEFT JOIN users reviewer ON reviewer.id = batches.review_claimed_by
       ORDER BY
         CASE batches.review_priority
           WHEN 'high' THEN 1
@@ -12297,6 +12874,402 @@ app.post("/api/admin/analytics/missing-demand/priority", requireAdminAccess, req
   response.json({ message: "Missing price demand marked." });
 }));
 
+function plainReviewStatus(batch = {}) {
+  if (batch.review_escalated_at || batch.review_status === "needs_help") return "Needs Help";
+  if (batch.review_claimed_by && batch.review_claim_expires_at > new Date().toISOString()) return "In Review";
+  if (["proof_rejected", "rejected"].includes(batch.status)) return "Rejected";
+  if (batch.duplicate_of_batch_id) return "Duplicate";
+  if (["reviewed_no_prices", "approved", "completed"].includes(batch.status)) return "Approved";
+  return "Waiting";
+}
+
+async function adminV2Home(user) {
+  const today = localDateFor();
+  const todayStart = `${today}T00:00:00.000Z`;
+  const [attention, todayCounts, feedback, live, workers, systemError, backup] = await Promise.all([
+    get(
+      `
+        SELECT
+          COUNT(CASE WHEN notes LIKE ? AND status NOT IN ('proof_rejected','reviewed_no_prices','completed') THEN 1 END) AS proofs_waiting,
+          COUNT(CASE WHEN review_escalated_at IS NOT NULL AND review_status = 'needs_help' THEN 1 END) AS escalations,
+          (SELECT COUNT(*) FROM price_reports WHERE status = 'disputed') AS disputes
+        FROM price_import_batches
+      `,
+      [`${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+    ),
+    get(
+      `
+        SELECT
+          (SELECT COUNT(*) FROM price_reports WHERE status = 'approved' AND reviewed_at >= ?) AS prices_approved,
+          (SELECT COUNT(DISTINCT batch_id) FROM price_import_rows WHERE approved_at >= ?) AS receipts_reviewed,
+          (SELECT COUNT(*) FROM users WHERE created_at >= ?) AS new_users,
+          (SELECT COUNT(*) FROM price_import_batches WHERE notes LIKE ? AND created_at >= ?) AS receipts_submitted,
+          (SELECT COUNT(*) FROM analytics_events WHERE event_type = 'search_performed' AND created_at >= ?) AS searches
+      `,
+      [todayStart, todayStart, todayStart, `${PROOF_SUBMISSION_NOTE_PREFIX}%`, todayStart, todayStart]
+    ),
+    get("SELECT COUNT(*) AS count FROM feedback_tickets WHERE status IN ('open','in_review') AND created_at >= ?", [todayStart]),
+    liveUsageSummary(),
+    get("SELECT COUNT(*) AS count FROM activity_presence WHERE role_category IN ('manager','reviewer','data_entry','owner') AND last_seen_at >= ?", [new Date(Date.now() - ACTIVE_USAGE_WINDOW_MINUTES * 60000).toISOString()]),
+    get("SELECT COUNT(*) AS count FROM operations_errors WHERE status = 'open' AND severity IN ('error','critical')"),
+    get("SELECT id, status, created_at, storage_path FROM backup_runs WHERE status = 'success' ORDER BY created_at DESC LIMIT 1")
+  ]);
+  let databaseReachable = true;
+  try { await get("SELECT 1 AS ok"); } catch (error) { databaseReachable = false; }
+  const storageAvailable = fs.existsSync(DATA_DIR) && fs.existsSync(UPLOAD_DIR);
+  return {
+    generated_at: new Date().toISOString(),
+    greeting_name: user.username,
+    role: staffRoleForUser(user),
+    needs_attention: {
+      proofs_waiting: attention?.proofs_waiting || 0,
+      worker_escalations: attention?.escalations || 0,
+      price_disputes: attention?.disputes || 0,
+      system_problems: systemError?.count || 0
+    },
+    today: {
+      prices_approved: todayCounts?.prices_approved || 0,
+      receipts_reviewed: todayCounts?.receipts_reviewed || 0,
+      new_users: todayCounts?.new_users || 0,
+      feedback_messages: feedback?.count || 0,
+      searches: todayCounts?.searches || 0,
+      receipts_submitted: todayCounts?.receipts_submitted || 0
+    },
+    live,
+    team: { workers_active: workers?.count || 0, unfinished_reviews: attention?.proofs_waiting || 0, urgent_problems: attention?.escalations || 0 },
+    system: {
+      website: "Online",
+      database: databaseReachable ? "Reachable" : "Needs attention",
+      persistent_storage: storageAvailable ? "Available" : "Needs attention",
+      email: emailStatus().configured ? "Configured" : "Not configured",
+      backup: backup ? `Last backup ${backup.created_at}` : "No backup recorded"
+    }
+  };
+}
+
+async function adminV2Inbox() {
+  const batches = await all(
+    `
+      SELECT batches.*, creator.username AS created_by_username, reviewer.username AS review_claimed_by_username,
+             stores.name AS store_name,
+             COUNT(rows.id) AS possible_price_count
+      FROM price_import_batches batches
+      LEFT JOIN users creator ON creator.id = batches.created_by
+      LEFT JOIN users reviewer ON reviewer.id = batches.review_claimed_by
+      LEFT JOIN stores ON stores.id = batches.default_store_id
+      LEFT JOIN price_import_rows rows ON rows.batch_id = batches.id AND rows.status NOT IN ('removed','rejected')
+      WHERE batches.notes LIKE ?
+        AND batches.status NOT IN ('proof_rejected','reviewed_no_prices','completed')
+      GROUP BY batches.id
+      ORDER BY
+        CASE WHEN batches.review_status = 'needs_help' THEN 1 WHEN batches.review_claimed_by IS NULL THEN 2 ELSE 3 END,
+        batches.created_at ASC
+      LIMIT 100
+    `,
+    [`${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+  );
+  const disputes = await all(
+    `${reportSelectWithProduct()} WHERE pr.status = 'disputed' ORDER BY pr.submitted_at ASC LIMIT 50`
+  );
+  return {
+    claim_window_minutes: REVIEW_CLAIM_MINUTES,
+    items: [
+      ...batches.map((batch) => ({
+        id: `receipt:${batch.id}`,
+        target_type: "price_import_batch",
+        target_id: batch.id,
+        type: batch.review_status === "needs_help" ? "needs_help" : "receipt",
+        title: batch.store_name || batch.receipt_store_name || batch.batch_title || `Receipt #${batch.id}`,
+        submitted_at: batch.created_at,
+        possible_price_count: batch.possible_price_count || 0,
+        status: plainReviewStatus(batch),
+        claimed_by: batch.review_claimed_by || null,
+        claimed_by_username: batch.review_claimed_by_username || "",
+        claim_expires_at: batch.review_claim_expires_at || "",
+        escalation_reason: batch.review_escalation_reason || "",
+        priority: batch.review_status === "needs_help" ? 1 : 2,
+        target_url: `/admin.html?tab=inboxTab&batch=${batch.id}`
+      })),
+      ...disputes.map((report) => ({
+        id: `dispute:${report.id}`,
+        target_type: "report",
+        target_id: report.id,
+        type: "dispute",
+        title: report.product_display_name || report.item_name,
+        subtitle: report.store_name,
+        price: report.price,
+        submitted_at: report.submitted_at,
+        status: "Waiting",
+        priority: 3,
+        target_url: `/admin.html?tab=pricesTab&filter=disputed&report=${report.id}`
+      }))
+    ].sort((a, b) => a.priority - b.priority || String(a.submitted_at).localeCompare(String(b.submitted_at)))
+  };
+}
+
+app.get("/api/admin/v2/home", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  response.json(await adminV2Home(request.adminUser));
+}));
+
+app.get("/api/admin/v2/inbox", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  response.json(await adminV2Inbox());
+}));
+
+app.get("/api/admin/v2/feedback", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const rows = await all("SELECT id, category, title, status, priority, created_at, updated_at FROM feedback_tickets ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END, updated_at DESC LIMIT 100");
+  response.json({ feedback: rows });
+}));
+
+app.get("/api/admin/v2/announcements", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const rows = await all("SELECT id, announcement_type, title, message, status, published_at, updated_at FROM announcements ORDER BY updated_at DESC LIMIT 50");
+  response.json({ announcements: rows });
+}));
+
+app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) {
+    response.status(404).json({ error: "Receipt review was not found." });
+    return;
+  }
+  const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batchId]));
+  response.json({
+    batch: formatPriceImportBatch(batch, rows),
+    proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
+    can_approve: staffCan(request.adminUser, "approve"),
+    focus_mode_available: true
+  });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/claim", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresAt = new Date(now.getTime() + REVIEW_CLAIM_MINUTES * 60000).toISOString();
+  const result = await run(
+    `
+      UPDATE price_import_batches
+      SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = 'in_review', updated_at = ?
+      WHERE id = ? AND notes LIKE ?
+        AND (review_claimed_by IS NULL OR review_claim_expires_at <= ? OR review_claimed_by = ?)
+    `,
+    [request.adminUser.id, nowIso, expiresAt, nowIso, batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`, nowIso, request.adminUser.id]
+  );
+  if (!result.changes) {
+    const current = await priceImportBatchById(batchId);
+    response.status(409).json({
+      error: current?.review_claimed_by_username
+        ? `Currently being reviewed by ${current.review_claimed_by_username}.`
+        : "This receipt is already being reviewed.",
+      claimed_by: current?.review_claimed_by || null,
+      claimed_by_username: current?.review_claimed_by_username || "",
+      claim_expires_at: current?.review_claim_expires_at || ""
+    });
+    return;
+  }
+  await run(
+    "INSERT INTO review_task_events (batch_id, worker_user_id, event_type, created_at) VALUES (?, ?, 'claimed', ?)",
+    [batchId, request.adminUser.id, nowIso]
+  );
+  response.json({ message: "Receipt claimed for review.", batch: formatPriceImportBatch(await priceImportBatchById(batchId), []) });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/release", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch) {
+    response.status(404).json({ error: "Receipt review was not found." });
+    return;
+  }
+  if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+    response.status(403).json({ error: "Only the current reviewer or a Manager can release this review." });
+    return;
+  }
+  const now = new Date().toISOString();
+  await run(
+    "UPDATE price_import_batches SET review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, review_status = CASE WHEN review_escalated_at IS NULL THEN 'waiting' ELSE 'needs_help' END, updated_at = ? WHERE id = ?",
+    [now, batchId]
+  );
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, created_at) VALUES (?, ?, 'released', ?)", [batchId, request.adminUser.id, now]);
+  response.json({ message: "Review saved and released." });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/reassign", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const workerId = Number.parseInt(request.body.user_id, 10);
+  const worker = await get("SELECT * FROM users WHERE id = ?", [workerId]);
+  if (!worker || !staffCan(worker, "review")) {
+    response.status(400).json({ error: "Choose a Manager, Reviewer, or Data Entry worker." });
+    return;
+  }
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + REVIEW_CLAIM_MINUTES * 60000).toISOString();
+  const result = await run(
+    "UPDATE price_import_batches SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = 'in_review', updated_at = ? WHERE id = ? AND notes LIKE ?",
+    [workerId, now.toISOString(), expiresAt, now.toISOString(), batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+  );
+  if (!result.changes) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'reassigned', ?, ?)", [batchId, request.adminUser.id, `Assigned to user #${workerId}`, now.toISOString()]);
+  response.json({ message: `Review assigned to ${worker.username}.` });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/escalate", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const reason = cleanText(request.body.reason, 500);
+  if (!reason) {
+    response.status(400).json({ error: "Explain what help is needed." });
+    return;
+  }
+  const now = new Date().toISOString();
+  const result = await run(
+    "UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = ?, updated_at = ? WHERE id = ? AND notes LIKE ?",
+    [now, reason, now, batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+  );
+  if (!result.changes) {
+    response.status(404).json({ error: "Receipt review was not found." });
+    return;
+  }
+  await run(
+    "INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'escalated', ?, ?)",
+    [batchId, request.adminUser.id, reason, now]
+  );
+  await createAdminNotification("worker_needs_help", "Worker needs help", `Receipt #${batchId}: ${reason}`, {
+    related_type: "price_import_batch", related_id: batchId, related_import_batch_id: batchId,
+    target_tab: "inboxTab", target_url: `/admin.html?tab=inboxTab&batch=${batchId}`
+  });
+  response.json({ message: "A Manager has been asked to help." });
+}));
+
+app.get("/api/admin/v2/workers", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("workers"), asyncRoute(async (request, response) => {
+  const rows = await all(
+    `
+      SELECT users.id, users.username, users.email, users.staff_role, users.is_admin, users.is_super_admin,
+             presence.last_seen_at, shifts.id AS shift_id, shifts.status AS shift_status, shifts.clocked_in_at,
+             batches.id AS current_batch_id,
+             (SELECT COUNT(*) FROM price_import_rows rows WHERE rows.approved_by = users.id AND rows.approved_at >= ?) AS reviews_today
+      FROM users
+      LEFT JOIN activity_presence presence ON presence.user_id = users.id
+      LEFT JOIN worker_shifts shifts ON shifts.user_id = users.id AND shifts.clocked_out_at IS NULL
+      LEFT JOIN price_import_batches batches ON batches.review_claimed_by = users.id AND batches.review_claim_expires_at > ?
+      WHERE users.is_admin = 1 OR users.is_super_admin = 1 OR users.staff_role IN ('manager','reviewer','data_entry')
+      GROUP BY users.id
+      ORDER BY users.is_super_admin DESC, users.username
+    `,
+    [`${localDateFor()}T00:00:00.000Z`, new Date().toISOString()]
+  );
+  response.json({ workers: rows.map((row) => ({
+    id: row.id, username: row.username, email: row.email || "", role: staffRoleForUser(row),
+    active_now: Boolean(row.last_seen_at && row.last_seen_at >= new Date(Date.now() - ACTIVE_USAGE_WINDOW_MINUTES * 60000).toISOString()),
+    last_seen_at: row.last_seen_at || "", shift: row.shift_id ? { id: row.shift_id, status: row.shift_status, clocked_in_at: row.clocked_in_at } : null,
+    current_batch_id: row.current_batch_id || null, reviews_today: row.reviews_today || 0
+  })) });
+}));
+
+app.post("/api/admin/v2/workers/:userId/role", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const userId = Number.parseInt(request.params.userId, 10);
+  const role = cleanText(request.body.role, 30).toLowerCase();
+  if (!["manager", "reviewer", "data_entry", "user"].includes(role)) {
+    response.status(400).json({ error: "Choose Manager, Reviewer, Data Entry, or User." });
+    return;
+  }
+  const target = await get("SELECT * FROM users WHERE id = ?", [userId]);
+  if (!target) {
+    response.status(404).json({ error: "User was not found." });
+    return;
+  }
+  if (isOwnerAccount(target)) {
+    response.status(400).json({ error: "The protected Owner role cannot be changed here." });
+    return;
+  }
+  await run("UPDATE users SET staff_role = ?, is_admin = ? WHERE id = ?", [role, role === "user" ? 0 : 1, userId]);
+  await appendAdminRoleAuditNote({ targetUserId: userId, adminUserId: request.adminUser.id, note: `Admin V2 role changed to ${role}.` });
+  response.json({ message: `Worker role changed to ${role.replace(/_/g, " ")}.` });
+}));
+
+app.post("/api/admin/v2/preferences", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  const preferences = workPreferencesForUser({ work_preferences_json: JSON.stringify(request.body || {}) });
+  await run("UPDATE users SET work_preferences_json = ? WHERE id = ?", [JSON.stringify(preferences), request.adminUser.id]);
+  response.json({ message: "Work preferences saved.", preferences });
+}));
+
+app.post("/api/admin/v2/shifts/:action", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+  const action = cleanText(request.params.action, 30).toLowerCase();
+  const now = new Date().toISOString();
+  const shift = await get("SELECT * FROM worker_shifts WHERE user_id = ? AND clocked_out_at IS NULL ORDER BY id DESC LIMIT 1", [request.adminUser.id]);
+  if (action === "clock-in") {
+    if (shift) { response.status(409).json({ error: "You are already clocked in." }); return; }
+    const result = await run("INSERT INTO worker_shifts (user_id, status, clocked_in_at, created_at, updated_at) VALUES (?, 'clocked_in', ?, ?, ?)", [request.adminUser.id, now, now, now]);
+    response.status(201).json({ message: "Clocked in.", shift_id: result.lastID });
+    return;
+  }
+  if (!shift) { response.status(409).json({ error: "Clock in before changing your shift." }); return; }
+  if (action === "take-break") {
+    if (shift.status === "on_break") { response.status(409).json({ error: "You are already on break." }); return; }
+    await run("UPDATE worker_shifts SET status = 'on_break', break_started_at = ?, updated_at = ? WHERE id = ?", [now, now, shift.id]);
+  } else if (action === "return") {
+    if (shift.status !== "on_break") { response.status(409).json({ error: "Your shift is not currently on break." }); return; }
+    const breakSeconds = Math.max(0, Math.round((Date.now() - Date.parse(shift.break_started_at)) / 1000));
+    await run("UPDATE worker_shifts SET status = 'clocked_in', break_started_at = NULL, total_break_seconds = total_break_seconds + ?, updated_at = ? WHERE id = ?", [breakSeconds, now, shift.id]);
+  } else if (action === "clock-out") {
+    let extraBreak = 0;
+    if (shift.status === "on_break" && shift.break_started_at) extraBreak = Math.max(0, Math.round((Date.now() - Date.parse(shift.break_started_at)) / 1000));
+    await run("UPDATE worker_shifts SET status = 'clocked_out', break_started_at = NULL, total_break_seconds = total_break_seconds + ?, clocked_out_at = ?, updated_at = ? WHERE id = ?", [extraBreak, now, now, shift.id]);
+  } else {
+    response.status(400).json({ error: "Shift action is not valid." }); return;
+  }
+  response.json({ message: action === "take-break" ? "Break started." : action === "return" ? "Welcome back." : "Clocked out." });
+}));
+
+function createSqliteBackup(destination) {
+  return new Promise((resolve, reject) => {
+    const backup = db.backup(destination);
+    backup.step(-1, (stepError) => {
+      backup.finish((finishError) => {
+        if (stepError || finishError) reject(stepError || finishError);
+        else resolve();
+      });
+    });
+  });
+}
+
+function safeBackupSummary(row) {
+  return row ? { id: row.id, status: row.status, filename: row.storage_path ? path.basename(row.storage_path) : "", created_at: row.created_at } : null;
+}
+
+app.get("/api/admin/operations/backups", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const rows = await all("SELECT * FROM backup_runs ORDER BY created_at DESC LIMIT 25");
+  response.json({ note: "Local backups are a same-disk safety layer, not disaster recovery. Off-site backups should be added later.", backups: rows.map(safeBackupSummary) });
+}));
+
+app.post("/api/admin/operations/backups", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `grocery_radar-${stamp}.sqlite`;
+  const destination = path.join(backupDir, filename);
+  const createdAt = new Date().toISOString();
+  try {
+    await createSqliteBackup(destination);
+    const check = fs.statSync(destination);
+    if (!check.isFile() || check.size <= 0) throw new Error("Backup verification failed.");
+    const result = await run("INSERT INTO backup_runs (status, storage_path, metadata_json, created_by, created_at) VALUES ('success', ?, ?, ?, ?)", [destination, JSON.stringify({ size_bytes: check.size, method: "sqlite_backup_api" }), request.adminUser.id, createdAt]);
+    response.status(201).json({ message: "Database backup created and verified.", backup: safeBackupSummary({ id: result.lastID, status: "success", storage_path: destination, created_at: createdAt }) });
+  } catch (error) {
+    await run("INSERT INTO backup_runs (status, storage_path, metadata_json, created_by, created_at) VALUES ('failed', ?, ?, ?, ?)", [destination, JSON.stringify({ error: cleanText(error.message, 300) }), request.adminUser.id, createdAt]);
+    response.status(500).json({ error: "The database backup could not be completed." });
+  }
+}));
+
+app.get("/api/admin/operations/backups/:id/download", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const backup = await get("SELECT * FROM backup_runs WHERE id = ? AND status = 'success'", [Number.parseInt(request.params.id, 10)]);
+  const backupDir = path.join(DATA_DIR, "backups");
+  if (!backup || !backup.storage_path || !pathIsInside(backupDir, backup.storage_path) || !fs.existsSync(backup.storage_path)) {
+    response.status(404).json({ error: "Backup file was not found." });
+    return;
+  }
+  response.download(backup.storage_path, path.basename(backup.storage_path));
+}));
+
 app.get("/api/admin/operations/overview", requireSuperAdminAccess, asyncRoute(async (request, response) => {
   response.json(await operationsOverview(request.adminUser));
 }));
@@ -12498,6 +13471,304 @@ app.post("/api/admin/operations/announcements/:id", requireSuperAdminAccess, asy
   response.json({
     message: "Announcement updated.",
     announcement: formatAnnouncement(await get("SELECT * FROM announcements WHERE id = ?", [announcementId]), true)
+  });
+}));
+
+app.get("/api/admin/operations/homepage-service", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json(await homepageServiceData({ includeAdminFields: true }));
+}));
+
+app.post("/api/admin/operations/homepage-service/status", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const existing = await get("SELECT * FROM homepage_service_status WHERE id = 1");
+  const status = cleanHomepageServiceStatusPayload(request.body, request.adminUser.id, existing || {});
+
+  await run(
+    `
+      INSERT INTO homepage_service_status (
+        id,
+        service_status,
+        version_label,
+        current_focus,
+        main_message,
+        community_mission_title,
+        community_mission_body,
+        homepage_announcement,
+        maintenance_enabled,
+        maintenance_title,
+        maintenance_message,
+        maintenance_impact,
+        maintenance_start_at,
+        maintenance_end_at,
+        maintenance_status,
+        published_at,
+        published_by,
+        created_at,
+        updated_at,
+        updated_by
+      )
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        service_status = excluded.service_status,
+        version_label = excluded.version_label,
+        current_focus = excluded.current_focus,
+        main_message = excluded.main_message,
+        community_mission_title = excluded.community_mission_title,
+        community_mission_body = excluded.community_mission_body,
+        homepage_announcement = excluded.homepage_announcement,
+        maintenance_enabled = excluded.maintenance_enabled,
+        maintenance_title = excluded.maintenance_title,
+        maintenance_message = excluded.maintenance_message,
+        maintenance_impact = excluded.maintenance_impact,
+        maintenance_start_at = excluded.maintenance_start_at,
+        maintenance_end_at = excluded.maintenance_end_at,
+        maintenance_status = excluded.maintenance_status,
+        published_at = excluded.published_at,
+        published_by = excluded.published_by,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    [
+      status.service_status,
+      status.version_label,
+      status.current_focus,
+      status.main_message,
+      status.community_mission_title,
+      status.community_mission_body,
+      status.homepage_announcement,
+      status.maintenance_enabled,
+      status.maintenance_title,
+      status.maintenance_message,
+      status.maintenance_impact,
+      status.maintenance_start_at,
+      status.maintenance_end_at,
+      status.maintenance_status,
+      status.published_at,
+      status.published_by,
+      status.created_at,
+      status.updated_at,
+      status.updated_by
+    ]
+  );
+
+  response.json({
+    message: "Homepage service status saved.",
+    service: formatHomepageServiceStatus(await get("SELECT * FROM homepage_service_status WHERE id = 1"), true)
+  });
+}));
+
+app.post("/api/admin/operations/homepage-service/patch-notes", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const patch = cleanHomepagePatchNotePayload(request.body, request.adminUser.id);
+
+  if (!patch.version_label || !patch.title || !patch.summary) {
+    response.status(400).json({ error: "Patch note version, title, and summary are required." });
+    return;
+  }
+
+  const result = await run(
+    `
+      INSERT INTO homepage_patch_notes (
+        version_label,
+        title,
+        summary,
+        added_json,
+        changed_json,
+        fixed_json,
+        known_issues_json,
+        next_focus_json,
+        status,
+        published_at,
+        published_by,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      patch.version_label,
+      patch.title,
+      patch.summary,
+      patch.added_json,
+      patch.changed_json,
+      patch.fixed_json,
+      patch.known_issues_json,
+      patch.next_focus_json,
+      patch.status,
+      patch.published_at,
+      patch.published_by,
+      patch.created_by,
+      patch.updated_by,
+      patch.created_at,
+      patch.updated_at
+    ]
+  );
+
+  response.status(201).json({
+    message: "Homepage patch note saved.",
+    patch_note: formatHomepagePatchNote(await get("SELECT * FROM homepage_patch_notes WHERE id = ?", [result.lastID]), true)
+  });
+}));
+
+app.post("/api/admin/operations/homepage-service/patch-notes/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const patchId = Number.parseInt(request.params.id, 10);
+  const existing = await get("SELECT * FROM homepage_patch_notes WHERE id = ?", [patchId]);
+
+  if (!existing) {
+    response.status(404).json({ error: "Homepage patch note was not found." });
+    return;
+  }
+
+  const patch = cleanHomepagePatchNotePayload(request.body, request.adminUser.id, existing);
+
+  if (!patch.version_label || !patch.title || !patch.summary) {
+    response.status(400).json({ error: "Patch note version, title, and summary are required." });
+    return;
+  }
+
+  await run(
+    `
+      UPDATE homepage_patch_notes
+      SET version_label = ?,
+          title = ?,
+          summary = ?,
+          added_json = ?,
+          changed_json = ?,
+          fixed_json = ?,
+          known_issues_json = ?,
+          next_focus_json = ?,
+          status = ?,
+          published_at = ?,
+          published_by = ?,
+          updated_by = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    [
+      patch.version_label,
+      patch.title,
+      patch.summary,
+      patch.added_json,
+      patch.changed_json,
+      patch.fixed_json,
+      patch.known_issues_json,
+      patch.next_focus_json,
+      patch.status,
+      patch.published_at,
+      patch.published_by,
+      patch.updated_by,
+      patch.updated_at,
+      patchId
+    ]
+  );
+
+  response.json({
+    message: "Homepage patch note updated.",
+    patch_note: formatHomepagePatchNote(await get("SELECT * FROM homepage_patch_notes WHERE id = ?", [patchId]), true)
+  });
+}));
+
+app.post("/api/admin/operations/homepage-service/known-issues", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const issue = cleanHomepageKnownIssuePayload(request.body, request.adminUser.id);
+
+  if (!issue.title || !issue.description) {
+    response.status(400).json({ error: "Known issue title and description are required." });
+    return;
+  }
+
+  const result = await run(
+    `
+      INSERT INTO homepage_known_issues (
+        title,
+        issue_status,
+        description,
+        workaround,
+        visibility_status,
+        opened_at,
+        last_updated_at,
+        published_at,
+        published_by,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      issue.title,
+      issue.issue_status,
+      issue.description,
+      issue.workaround,
+      issue.visibility_status,
+      issue.opened_at,
+      issue.last_updated_at,
+      issue.published_at,
+      issue.published_by,
+      issue.created_by,
+      issue.updated_by,
+      issue.created_at,
+      issue.updated_at
+    ]
+  );
+
+  response.status(201).json({
+    message: "Homepage known issue saved.",
+    known_issue: formatHomepageKnownIssue(await get("SELECT * FROM homepage_known_issues WHERE id = ?", [result.lastID]), true)
+  });
+}));
+
+app.post("/api/admin/operations/homepage-service/known-issues/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const issueId = Number.parseInt(request.params.id, 10);
+  const existing = await get("SELECT * FROM homepage_known_issues WHERE id = ?", [issueId]);
+
+  if (!existing) {
+    response.status(404).json({ error: "Homepage known issue was not found." });
+    return;
+  }
+
+  const issue = cleanHomepageKnownIssuePayload(request.body, request.adminUser.id, existing);
+
+  if (!issue.title || !issue.description) {
+    response.status(400).json({ error: "Known issue title and description are required." });
+    return;
+  }
+
+  await run(
+    `
+      UPDATE homepage_known_issues
+      SET title = ?,
+          issue_status = ?,
+          description = ?,
+          workaround = ?,
+          visibility_status = ?,
+          opened_at = ?,
+          last_updated_at = ?,
+          published_at = ?,
+          published_by = ?,
+          updated_by = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    [
+      issue.title,
+      issue.issue_status,
+      issue.description,
+      issue.workaround,
+      issue.visibility_status,
+      issue.opened_at,
+      issue.last_updated_at,
+      issue.published_at,
+      issue.published_by,
+      issue.updated_by,
+      issue.updated_at,
+      issueId
+    ]
+  );
+
+  response.json({
+    message: "Homepage known issue updated.",
+    known_issue: formatHomepageKnownIssue(await get("SELECT * FROM homepage_known_issues WHERE id = ?", [issueId]), true)
   });
 }));
 

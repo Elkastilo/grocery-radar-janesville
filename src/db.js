@@ -204,6 +204,8 @@ async function initDb() {
       verification_email_send_count INTEGER NOT NULL DEFAULT 0,
       is_admin INTEGER NOT NULL DEFAULT 0,
       is_super_admin INTEGER NOT NULL DEFAULT 0,
+      staff_role TEXT NOT NULL DEFAULT 'user',
+      work_preferences_json TEXT NOT NULL DEFAULT '{}',
       account_status TEXT NOT NULL DEFAULT 'active',
       ban_reason TEXT,
       ban_note TEXT,
@@ -735,6 +737,79 @@ async function initDb() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS homepage_service_status (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      service_status TEXT NOT NULL DEFAULT 'online',
+      version_label TEXT NOT NULL DEFAULT 'Early Access 0.2.0',
+      current_focus TEXT NOT NULL DEFAULT 'Adding and verifying Janesville grocery prices.',
+      main_message TEXT NOT NULL,
+      community_mission_title TEXT NOT NULL DEFAULT 'Help fill the Janesville radar.',
+      community_mission_body TEXT NOT NULL,
+      homepage_announcement TEXT,
+      maintenance_enabled INTEGER NOT NULL DEFAULT 0,
+      maintenance_title TEXT,
+      maintenance_message TEXT,
+      maintenance_impact TEXT,
+      maintenance_start_at TEXT,
+      maintenance_end_at TEXT,
+      maintenance_status TEXT NOT NULL DEFAULT 'monitoring',
+      published_at TEXT,
+      published_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by INTEGER,
+      FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS homepage_patch_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_label TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      added_json TEXT NOT NULL DEFAULT '[]',
+      changed_json TEXT NOT NULL DEFAULT '[]',
+      fixed_json TEXT NOT NULL DEFAULT '[]',
+      known_issues_json TEXT NOT NULL DEFAULT '[]',
+      next_focus_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'draft',
+      published_at TEXT,
+      published_by INTEGER,
+      created_by INTEGER,
+      updated_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS homepage_known_issues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      issue_status TEXT NOT NULL DEFAULT 'investigating',
+      description TEXT NOT NULL,
+      workaround TEXT,
+      visibility_status TEXT NOT NULL DEFAULT 'draft',
+      opened_at TEXT NOT NULL,
+      last_updated_at TEXT NOT NULL,
+      published_at TEXT,
+      published_by INTEGER,
+      created_by INTEGER,
+      updated_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS admin_audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       admin_user_id INTEGER,
@@ -811,9 +886,193 @@ async function initDb() {
       status TEXT NOT NULL,
       storage_path TEXT,
       metadata_json TEXT,
+      created_by INTEGER,
       created_at TEXT NOT NULL
     )
   `);
+
+  await migrateBackupRunsTable();
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS activity_presence (
+      visitor_key TEXT PRIMARY KEY,
+      user_id INTEGER,
+      role_category TEXT NOT NULL DEFAULT 'guest',
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS activity_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      local_date TEXT NOT NULL,
+      visitor_key TEXT NOT NULL,
+      user_id INTEGER,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      heartbeat_count INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(local_date, visitor_key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_engagement (
+      user_id INTEGER PRIMARY KEY,
+      current_streak INTEGER NOT NULL DEFAULT 0,
+      longest_streak INTEGER NOT NULL DEFAULT 0,
+      last_qualifying_date TEXT,
+      total_qualifying_days INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS review_task_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      worker_user_id INTEGER,
+      event_type TEXT NOT NULL,
+      reason TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES price_import_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (worker_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS worker_shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'clocked_in',
+      clocked_in_at TEXT NOT NULL,
+      break_started_at TEXT,
+      total_break_seconds INTEGER NOT NULL DEFAULT 0,
+      clocked_out_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS worker_time_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL,
+      changed_by INTEGER NOT NULL,
+      old_values_json TEXT NOT NULL,
+      new_values_json TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (shift_id) REFERENCES worker_shifts(id) ON DELETE CASCADE,
+      FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE RESTRICT
+    )
+  `);
+
+  const now = new Date().toISOString();
+
+  await run(
+    `
+      INSERT INTO homepage_service_status (
+        id,
+        service_status,
+        version_label,
+        current_focus,
+        main_message,
+        community_mission_title,
+        community_mission_body,
+        homepage_announcement,
+        maintenance_enabled,
+        maintenance_status,
+        published_at,
+        created_at,
+        updated_at
+      )
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `,
+    [
+      "online",
+      "Early Access 0.2.0",
+      "Adding and verifying Janesville grocery prices.",
+      "Grocery Radar is live, but the radar is still filling up. We are actively adding and verifying grocery prices from Janesville stores using receipts, shelf tags, weekly ads, and community submissions. Some products or categories may temporarily appear empty while prices are being reviewed, updated, or imported.",
+      "Help fill the Janesville radar.",
+      "One receipt, shelf tag, weekly ad, or store link can help shoppers across Janesville compare prices with better confidence.",
+      "Built in Janesville. Powered by neighbors.",
+      "monitoring",
+      now,
+      now,
+      now
+    ]
+  );
+
+  await run(
+    `
+      INSERT INTO homepage_patch_notes (
+        version_label,
+        title,
+        summary,
+        added_json,
+        changed_json,
+        fixed_json,
+        known_issues_json,
+        next_focus_json,
+        status,
+        published_at,
+        created_at,
+        updated_at
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes)
+    `,
+    [
+      "Early Access 0.2.0",
+      "Operations Update",
+      "Grocery Radar now has stronger review tools for managing proof, approved prices, and public service updates.",
+      JSON.stringify(["Community feedback", "Feature voting", "Price Intake Center", "Admin Operations Center"]),
+      JSON.stringify(["Stronger Owner and Super Admin controls", "Improved price import review", "Clearer public proof-submission workflow"]),
+      JSON.stringify(["Safer duplicate-price handling", "Better production deployment checks", "Cleaner approved-price display"]),
+      JSON.stringify(["Initial price database is still being populated", "Email verification is being tested", "Short maintenance periods may occur during updates"]),
+      JSON.stringify(["Importing the first large set of verified Janesville prices"]),
+      now,
+      now,
+      now
+    ]
+  );
+
+  await run(
+    `
+      INSERT INTO homepage_known_issues (
+        title,
+        issue_status,
+        description,
+        workaround,
+        visibility_status,
+        opened_at,
+        last_updated_at,
+        published_at,
+        created_at,
+        updated_at
+      )
+      SELECT ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM homepage_known_issues)
+    `,
+    [
+      "Some categories are still filling up",
+      "identified",
+      "Several Janesville grocery categories may look empty while receipt, shelf tag, and weekly ad proof is being reviewed.",
+      "Try searching a specific item, check again after updates, or submit proof to help fill the radar.",
+      now,
+      now,
+      now,
+      now,
+      now
+    ]
+  );
 
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_item ON price_reports(item_name)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_store ON price_reports(store_id)");
@@ -841,6 +1100,7 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_status ON price_import_batches(status, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_source ON price_import_batches(source_type, status, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_store ON price_import_batches(default_store_id, status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_import_batches_claim ON price_import_batches(review_status, review_claim_expires_at, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_batch ON price_import_rows(batch_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_status ON price_import_rows(status, updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_store_status ON price_import_rows(store_id, status, updated_at)");
@@ -860,6 +1120,8 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_feature_votes_option ON feature_votes(option_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_feature_votes_user ON feature_votes(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_announcements_status_scope ON announcements(status, scope, starts_at, ends_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_homepage_patch_notes_public ON homepage_patch_notes(status, published_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_homepage_known_issues_public ON homepage_known_issues(visibility_status, last_updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin_time ON admin_audit_log(admin_user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action_time ON admin_audit_log(action, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_operations_errors_status_time ON operations_errors(status, created_at)");
@@ -867,6 +1129,11 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_time ON user_login_events(created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_user_time ON email_verification_events(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_type_time ON email_verification_events(event_type, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_activity_presence_last_seen ON activity_presence(last_seen_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_activity_daily_date ON activity_daily(local_date, last_seen_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_review_task_events_batch ON review_task_events(batch_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_worker_shifts_user_time ON worker_shifts(user_id, clocked_in_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_worker_shifts_status ON worker_shifts(status, updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_admin_notes_user ON user_admin_notes(user_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_username_history_user ON username_history(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)");
@@ -936,6 +1203,8 @@ async function migrateUsersTable() {
   await addColumnIfMissing("users", "verification_email_send_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("users", "is_super_admin", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("users", "staff_role", "TEXT NOT NULL DEFAULT 'user'");
+  await addColumnIfMissing("users", "work_preferences_json", "TEXT NOT NULL DEFAULT '{}'");
   await addColumnIfMissing("users", "account_status", "TEXT NOT NULL DEFAULT 'active'");
   await addColumnIfMissing("users", "ban_reason", "TEXT");
   await addColumnIfMissing("users", "ban_note", "TEXT");
@@ -991,6 +1260,10 @@ async function migrateNotificationsTable() {
   await addColumnIfMissing("notifications", "related_import_batch_id", "INTEGER");
   await addColumnIfMissing("notifications", "related_import_row_id", "INTEGER");
   await addColumnIfMissing("notifications", "points_awarded", "INTEGER");
+}
+
+async function migrateBackupRunsTable() {
+  await addColumnIfMissing("backup_runs", "created_by", "INTEGER");
 }
 
 async function migrateProductsTable() {
@@ -1071,6 +1344,12 @@ async function migratePriceImportBatchesTable() {
   await addColumnIfMissing("price_import_batches", "duplicate_scope", "TEXT");
   await addColumnIfMissing("price_import_batches", "review_priority", "TEXT");
   await addColumnIfMissing("price_import_batches", "proof_quality_flags", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_claimed_by", "INTEGER");
+  await addColumnIfMissing("price_import_batches", "review_claimed_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_claim_expires_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_escalated_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_escalation_reason", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_status", "TEXT NOT NULL DEFAULT 'waiting'");
   await addColumnIfMissing("price_import_batches", "updated_at", "TEXT");
   await run("UPDATE price_import_batches SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }

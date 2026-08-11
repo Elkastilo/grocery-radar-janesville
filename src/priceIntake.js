@@ -347,21 +347,95 @@ function createDraftFromLine(line, defaults = {}) {
   };
 }
 
+function structuredDraft(input = {}, defaults = {}) {
+  const itemName = cleanText(input.item_name || input.item || input.name, 120);
+  const sizeText = cleanText(input.size_text || input.size || "", 80);
+  const price = moneyValue(String(input.price ?? "").replace(/^\$/, ""));
+  if (!itemName || price === null || price <= 0) return null;
+  const size = extractSize(`${itemName} ${sizeText}`);
+  return {
+    product_id: "",
+    store_id: defaults.store_id || "",
+    item_name: itemName,
+    brand: cleanText(input.brand || "", 80),
+    variant: "",
+    category: defaults.category || "other",
+    price: priceString(price),
+    regular_price: "",
+    sale_price: false,
+    coupon_required: false,
+    deal_limit: "",
+    size_text: sizeText || size.size_text,
+    quantity: Number(input.quantity) > 0 ? Number(input.quantity) : 1,
+    unit: cleanText(input.unit || size.package_unit || "each", 30).toLowerCase(),
+    member_card_price: "",
+    multibuy_details: "",
+    promotion_text: "",
+    proof_type: defaults.proof_type || "receipt_photo",
+    observed_at: defaults.observed_at || "",
+    valid_start_at: defaults.valid_start_at || "",
+    valid_end_at: defaults.valid_end_at || "",
+    source_url: defaults.source_url || "",
+    source_title: defaults.source_title || "",
+    source_checked_at: defaults.source_checked_at || defaults.observed_at || "",
+    raw_receipt_line: cleanText(input.raw || `${itemName} | ${sizeText} | ${priceString(price)}`, 500),
+    extracted_item_name: itemName,
+    extracted_price: priceString(price),
+    extracted_quantity: "",
+    extracted_weight: "",
+    extracted_unit: cleanText(input.unit || size.package_unit || "each", 30).toLowerCase(),
+    extraction_confidence: "medium",
+    extraction_notes: "Pasted AI result. Human review required before approval.",
+    notes: "Created as a draft from pasted AI results. Human review required.",
+    status: "ready_for_review"
+  };
+}
+
+function parseStructuredInput(sourceText, defaults = {}) {
+  const text = String(sourceText || "").trim();
+  if (!text) return null;
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text);
+      const values = Array.isArray(parsed) ? parsed : Array.isArray(parsed.items) ? parsed.items : [parsed];
+      return values.map((value, index) => ({ row: structuredDraft(value, defaults), line: JSON.stringify(value), index: index + 1 }));
+    } catch (error) {
+      return [{ row: null, line: "JSON", index: 1, reason: "JSON is not valid" }];
+    }
+  }
+  const lines = splitIntakeLines(text);
+  if (!lines.some((line) => line.includes("|") || line.split(",").length >= 3)) return null;
+  return lines.map((line, index) => {
+    const delimiter = line.includes("|") ? "|" : ",";
+    const parts = line.split(delimiter).map((part) => part.trim().replace(/^"|"$/g, ""));
+    const header = /^(item|product|name)$/i.test(parts[0] || "");
+    return {
+      row: header ? null : structuredDraft({ item_name: parts[0], size_text: parts[1], price: parts[2], brand: parts[3], raw: line }, defaults),
+      line,
+      index: index + 1,
+      reason: header ? "header row" : "expected Item | Size | Price"
+    };
+  });
+}
+
 function parsePriceText(sourceText, defaults = {}) {
-  const lines = splitIntakeLines(sourceText);
+  const structured = parseStructuredInput(sourceText, defaults);
+  const lines = structured || splitIntakeLines(sourceText).map((line, index) => ({ line, index: index + 1 }));
   const rows = [];
   const skipped_lines = [];
   const seen = new Set();
 
-  for (const line of lines) {
-    const row = createDraftFromLine(line, defaults);
+  for (const entry of lines) {
+    const line = typeof entry === "string" ? entry : entry.line;
+    const row = structured ? entry.row : createDraftFromLine(line, defaults);
 
     if (!row) {
       skipped_lines.push({
         line,
-        reason: /\b(?:tax|subtotal|total|balance|cash|change|payment|visa|mastercard|barcode|receipt)\b/i.test(line)
+        row: entry.index || null,
+        reason: entry.reason || (/\b(?:tax|subtotal|total|balance|cash|change|payment|visa|mastercard|barcode|receipt)\b/i.test(line)
           ? "receipt total, payment, or footer line"
-          : "no supported price pattern detected"
+          : "no supported price pattern detected")
       });
       continue;
     }

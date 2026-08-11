@@ -96,6 +96,18 @@ const operationsCenter = document.querySelector("#operationsCenter");
 const operationsMessage = document.querySelector("#operationsMessage");
 const operationsRefreshButton = document.querySelector("#operationsRefreshButton");
 const operationsAutoRefresh = document.querySelector("#operationsAutoRefresh");
+const inboxList = document.querySelector("#inboxList");
+const inboxMessage = document.querySelector("#inboxMessage");
+const inboxFilters = document.querySelector("#inboxFilters");
+const reviewNextButton = document.querySelector("#reviewNextButton");
+const receiptReviewWorkspace = document.querySelector("#receiptReviewWorkspace");
+const workersList = document.querySelector("#workersList");
+const workerShiftControls = document.querySelector("#workerShiftControls");
+const v2FeedbackList = document.querySelector("#v2FeedbackList");
+const v2AnnouncementsList = document.querySelector("#v2AnnouncementsList");
+const adminNotificationBell = document.querySelector("#adminNotificationBell");
+const adminBellCount = document.querySelector("#adminBellCount");
+const adminV2NotificationPanel = document.querySelector("#adminV2NotificationPanel");
 
 let allReports = [];
 let allUsers = [];
@@ -113,6 +125,12 @@ let operationsData = null;
 let operationsWidgetLayout = { order: [], hidden: [], sizes: {} };
 let operationsRefreshTimer = null;
 let adminSession = { loggedIn: false, is_admin: false };
+let adminV2HomeData = null;
+let adminV2InboxData = { items: [] };
+let adminV2WorkersData = { workers: [] };
+let adminV2FeedbackData = { feedback: [] };
+let adminV2AnnouncementsData = { announcements: [] };
+let activeInboxFilter = "all";
 let activePriceImportMode = "weekly_ad";
 let selectedPriceImportBatchId = "";
 let selectedPriceImportRows = new Set();
@@ -199,6 +217,34 @@ function formatDateOnly(value) {
   }).format(date);
 }
 
+function dateInputValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value).slice(0, 10);
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function dateTimeLocalValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toISOString().slice(0, 16);
+}
+
 function formatBytes(value) {
   const bytes = Number(value) || 0;
 
@@ -269,9 +315,8 @@ function renderAdminSessionStatus() {
     return;
   }
 
-  const roleLabel = adminSession.is_super_admin
-    ? "Super Admin"
-    : adminSession.is_admin ? "Admin" : "User";
+  const role = adminSession.staff_role || adminSession.admin_role || (adminSession.is_super_admin ? "owner" : adminSession.is_admin ? "manager" : "user");
+  const roleLabel = titleCase(role);
   const badgeClass = adminSession.is_super_admin
     ? "confidence-high"
     : adminSession.is_admin ? "status-ready" : "confidence-low";
@@ -280,6 +325,16 @@ function renderAdminSessionStatus() {
     <span class="badge ${badgeClass}">${escapeHtml(roleLabel)}</span>
     <span class="admin-session-user">${escapeHtml(adminSession.user?.username || adminSession.username || "")}</span>
   `;
+
+  const managerAllowed = ["owner", "manager"].includes(role);
+  for (const element of document.querySelectorAll("[data-manager-only]")) {
+    element.hidden = !managerAllowed;
+  }
+  for (const element of document.querySelectorAll("[data-owner-only]")) {
+    element.hidden = role !== "owner";
+  }
+  document.body.classList.toggle("focus-review", Boolean(adminSession.work_preferences?.focus_mode));
+  document.body.classList.toggle("admin-large-text", Boolean(adminSession.work_preferences?.larger_text));
 
   if (operationsTab) {
     operationsTab.classList.toggle("is-restricted", !adminSession.is_super_admin);
@@ -481,6 +536,15 @@ async function loadAdminData() {
 
   setAdminMessage("Loading admin data...");
   const authData = await fetchJson("/api/auth/me");
+  adminSession = authData || { loggedIn: false, is_admin: false };
+  const role = authData.staff_role || authData.admin_role || (authData.is_super_admin ? "owner" : authData.is_admin ? "manager" : "user");
+  const managerAllowed = ["owner", "manager"].includes(role);
+  const safeFetch = async (url, fallback) => {
+    try { return await fetchJson(url); } catch (error) {
+      if ([401, 403].includes(error.status)) return fallback;
+      throw error;
+    }
+  };
   const adminAccessPromise = authData?.is_super_admin
     ? fetchJson(`/api/admin/admin-accounts${adminQuery()}`)
     : Promise.resolve({
@@ -488,20 +552,25 @@ async function loadAdminData() {
         cleanup_needed: false,
         recommendation: "Owner / Super Admin access is required to view or change admin roles."
       });
-  const [notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData] = await Promise.all([
+  const [notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData, v2Home, v2Inbox, v2Workers, v2Feedback, v2Announcements] = await Promise.all([
     fetchJson(`/api/admin/notifications${adminQuery()}`),
-    fetchJson(`/api/admin/beta-readiness${adminQuery()}`),
-    fetchJson(`/api/admin/analytics${adminQuery()}`),
-    fetchJson(`/api/admin/sponsors${adminQuery()}`),
-    fetchJson(`/api/admin/email/status${adminQuery()}`),
+    managerAllowed ? fetchJson(`/api/admin/beta-readiness${adminQuery()}`) : Promise.resolve({}),
+    managerAllowed ? fetchJson(`/api/admin/analytics${adminQuery()}`) : Promise.resolve({}),
+    managerAllowed ? fetchJson(`/api/admin/sponsors${adminQuery()}`) : Promise.resolve({ sponsors: [] }),
+    role === "owner" ? fetchJson(`/api/admin/email/status${adminQuery()}`) : Promise.resolve({}),
     fetchJson(`/api/admin/reports${adminQuery()}`),
-    fetchJson(`/api/admin/users${adminQuery()}`),
+    managerAllowed ? fetchJson(`/api/admin/users${adminQuery()}`) : Promise.resolve({ users: [] }),
     adminAccessPromise,
-    fetchJson(`/api/admin/username-moderation${adminQuery()}`),
+    managerAllowed ? fetchJson(`/api/admin/username-moderation${adminQuery()}`) : Promise.resolve({ phrases: [] }),
     fetchJson(`/api/admin/stores${adminQuery()}`),
-    fetchJson(`/api/admin/suggestions${adminQuery()}`),
+    managerAllowed ? fetchJson(`/api/admin/suggestions${adminQuery()}`) : Promise.resolve({ suggestions: [] }),
     fetchJson(`/api/admin/product-tools${adminQuery()}`),
-    fetchJson(`/api/admin/price-imports${adminQuery()}`)
+    fetchJson(`/api/admin/price-imports${adminQuery()}`),
+    safeFetch(`/api/admin/v2/home${adminQuery()}`, null),
+    safeFetch(`/api/admin/v2/inbox${adminQuery()}`, { items: [] }),
+    managerAllowed ? fetchJson(`/api/admin/v2/workers${adminQuery()}`) : Promise.resolve({ workers: [] }),
+    managerAllowed ? safeFetch(`/api/admin/v2/feedback${adminQuery()}`, { feedback: [] }) : Promise.resolve({ feedback: [] }),
+    managerAllowed ? safeFetch(`/api/admin/v2/announcements${adminQuery()}`, { announcements: [] }) : Promise.resolve({ announcements: [] })
   ]);
 
   allReports = reportData.reports || [];
@@ -516,11 +585,20 @@ async function loadAdminData() {
   analyticsData = analyticsResponse || {};
   sponsorData = sponsorResponse || {};
   priceImporterData = priceImportData || { batches: [] };
-  adminSession = authData || { loggedIn: false, is_admin: false };
+  adminV2HomeData = v2Home;
+  adminV2InboxData = v2Inbox || { items: [] };
+  adminV2WorkersData = v2Workers || { workers: [] };
+  adminV2FeedbackData = v2Feedback || { feedback: [] };
+  adminV2AnnouncementsData = v2Announcements || { announcements: [] };
   renderAdminSessionStatus();
 
   populatePriceIntakeControls();
-  renderDashboard(notificationData.notifications);
+  renderDashboard(notificationData.notifications, adminV2HomeData);
+  renderAdminNotificationPanel(notificationData.notifications);
+  renderInbox();
+  renderWorkers();
+  renderV2Feedback();
+  renderV2Announcements();
   renderBetaReadiness(betaReadiness);
   renderAnalytics(analyticsData);
   renderSponsors(sponsorData);
@@ -536,7 +614,53 @@ async function loadAdminData() {
   setAdminMessage("Admin data loaded.", "success");
 }
 
-function renderDashboard(notifications = {}) {
+function renderDashboard(notifications = {}, home = null) {
+  if (home) {
+    const attention = home.needs_attention || {};
+    const today = home.today || {};
+    const live = home.live || {};
+    const team = home.team || {};
+    const system = home.system || {};
+    const cards = [
+      [attention.proofs_waiting || 0, "Proofs waiting", "inboxTab"],
+      [attention.worker_escalations || 0, "Worker escalations", "inboxTab"],
+      [attention.price_disputes || 0, "Price disputes", "pricesTab"],
+      [attention.system_problems || 0, "System problems", "operationsTab"]
+    ];
+    adminNotifications.innerHTML = `
+      <section class="admin-home-section">
+        <p class="field-help">Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, ${escapeHtml(home.greeting_name || "")}</p>
+        <h3>Needs attention</h3>
+        <div class="attention-grid">${cards.map(([value, label, tab]) => `
+          <button class="attention-card" type="button" data-jump-tab="${tab}"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></button>
+        `).join("")}</div>
+        <button class="primary-button" type="button" data-start-review>Review Next</button>
+      </section>
+      <section class="admin-home-section"><h3>Today</h3><div class="attention-grid">
+        ${[[today.prices_approved,"Prices approved"],[today.receipts_reviewed,"Receipts reviewed"],[today.new_users,"New users"],[today.feedback_messages,"New feedback"]].map(([value,label]) => `<article class="attention-card"><strong>${escapeHtml(value || 0)}</strong><span>${escapeHtml(label)}</span></article>`).join("")}
+      </div></section>
+      <section class="admin-home-section"><h3>Live now</h3><div class="simple-status-list">
+        <div class="simple-status-row"><span>People active now</span><span>${escapeHtml(live.active_now || 0)}</span></div>
+        <div class="simple-status-row"><span>Guests / Members / Team</span><span>${escapeHtml(live.by_role?.guest || 0)} / ${escapeHtml(live.by_role?.member || 0)} / ${escapeHtml((live.active_now || 0) - (live.by_role?.guest || 0) - (live.by_role?.member || 0))}</span></div>
+        <div class="simple-status-row"><span>Visitors today</span><span>${escapeHtml(live.visitors_today || 0)}</span></div>
+        <div class="simple-status-row"><span>Searches / Receipts today</span><span>${escapeHtml(today.searches || 0)} / ${escapeHtml(today.receipts_submitted || 0)}</span></div>
+      </div></section>
+      <section class="admin-home-section"><h3>Team</h3><div class="simple-status-list">
+        <div class="simple-status-row"><span>Workers active</span><span>${escapeHtml(team.workers_active || 0)}</span></div>
+        <div class="simple-status-row"><span>Unfinished reviews</span><span>${escapeHtml(team.unfinished_reviews || 0)}</span></div>
+        <div class="simple-status-row"><span>Urgent problems</span><span>${escapeHtml(team.urgent_problems || 0)}</span></div>
+      </div></section>
+      <section class="admin-home-section"><h3>System</h3><div class="simple-status-list">
+        ${Object.entries(system).map(([label,value]) => `<div class="simple-status-row"><span>${escapeHtml(titleCase(label))}</span><span>${escapeHtml(value)}</span></div>`).join("")}
+      </div>${home.role === "owner" ? '<button class="secondary-button" type="button" data-jump-tab="operationsTab">Open Operations</button>' : ""}</section>
+    `;
+    for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
+    adminNotifications.querySelector("[data-start-review]")?.addEventListener("click", startReviewNext);
+    const unread = Number(notifications.unread_admin_notifications || notifications.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
+    if (adminBellCount) adminBellCount.textContent = `${unread} unread`;
+    adminNotificationBell?.classList.toggle("has-unread", unread > 0);
+    return;
+  }
   const lastDiagnostic = notifications.last_email_diagnostic;
   const diagnosticLabel = lastDiagnostic
     ? lastDiagnostic.send?.ok ? "Passed" : "Needs attention"
@@ -629,6 +753,229 @@ function renderDashboard(notifications = {}) {
       });
     });
   }
+}
+
+function inboxItems() {
+  const items = adminV2InboxData.items || [];
+  return activeInboxFilter === "all" ? items : items.filter((item) => item.type === activeInboxFilter);
+}
+
+function renderAdminNotificationPanel(notifications = {}) {
+  if (!adminV2NotificationPanel) return;
+  const rows = notifications.recent_admin_notifications || [];
+  adminV2NotificationPanel.innerHTML = `<div class="admin-panel-heading"><h2>Notifications</h2><button class="quiet-button" type="button" data-close-notifications aria-label="Close notifications">Close</button></div><div class="admin-list">${rows.length ? rows.map((item) => `<button class="notification-list-button ${item.is_read ? "" : "is-unread"}" type="button" data-panel-notification="${item.id}" data-target-url="${escapeHtml(item.target_url || "")}" data-target-tab="${escapeHtml(item.target_tab || "dashboardTab")}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.message)} · ${escapeHtml(formatDate(item.created_at))}</span></button>`).join("") : '<div class="empty-state">No admin notifications yet.</div>'}</div>`;
+  adminV2NotificationPanel.querySelector("[data-close-notifications]")?.addEventListener("click", closeAdminNotifications);
+  for (const button of adminV2NotificationPanel.querySelectorAll("[data-panel-notification]")) {
+    button.addEventListener("click", async () => {
+      await markAdminNotificationRead(button.dataset.panelNotification);
+      closeAdminNotifications();
+      if (button.dataset.targetUrl?.startsWith("/admin.html")) window.location.assign(button.dataset.targetUrl);
+      else openAdminTab(button.dataset.targetTab || "dashboardTab");
+    });
+  }
+}
+
+function closeAdminNotifications() {
+  if (!adminV2NotificationPanel) return;
+  adminV2NotificationPanel.hidden = true;
+  adminNotificationBell?.setAttribute("aria-expanded", "false");
+}
+
+function renderInbox() {
+  if (!inboxList) return;
+  const items = inboxItems();
+  inboxList.innerHTML = items.length ? items.map((item) => `
+    <article class="inbox-card" data-inbox-item="${escapeHtml(item.id)}">
+      <div class="inbox-card-main">
+        <span class="badge ${item.type === "needs_help" ? "status-warning" : "status-ready"}">${escapeHtml(titleCase(item.type))}</span>
+        <strong>${escapeHtml(item.title)}</strong>
+        ${item.subtitle ? `<span>${escapeHtml(item.subtitle)}</span>` : ""}
+        <span>${escapeHtml(formatDate(item.submitted_at))}${item.possible_price_count ? ` · ${item.possible_price_count} possible prices` : ""}</span>
+        <span class="plain-status">Status: ${escapeHtml(item.status)}</span>
+        ${item.claimed_by_username ? `<span>Currently being reviewed by ${escapeHtml(item.claimed_by_username)}</span>` : ""}
+        ${item.escalation_reason ? `<span class="warning">Help needed: ${escapeHtml(item.escalation_reason)}</span>` : ""}
+      </div>
+      <button class="primary-button" type="button" data-open-inbox="${escapeHtml(item.id)}">${item.type === "dispute" ? "Resolve" : "Review"}</button>
+    </article>
+  `).join("") : '<div class="empty-state">No work in this view.</div>';
+  for (const button of inboxList.querySelectorAll("[data-open-inbox]")) {
+    button.addEventListener("click", () => {
+      const item = (adminV2InboxData.items || []).find((entry) => entry.id === button.dataset.openInbox);
+      if (item?.target_type === "price_import_batch") openReceiptReview(item.target_id);
+      else if (item) openAdminTab("pricesTab", { reportId: item.target_id, filter: "disputed" });
+    });
+  }
+}
+
+async function startReviewNext() {
+  const role = adminSession.staff_role || adminSession.admin_role;
+  const candidate = (adminV2InboxData.items || []).find((item) => item.target_type === "price_import_batch" && (!item.claimed_by || Number(item.claimed_by) === Number(adminSession.id || adminSession.user?.id)) && (item.type !== "needs_help" || ["owner","manager"].includes(role)));
+  if (!candidate) {
+    setMessage(inboxMessage, "No available receipt is waiting right now.", "success");
+    openAdminTab("inboxTab");
+    return;
+  }
+  openAdminTab("inboxTab");
+  await openReceiptReview(candidate.target_id);
+}
+
+async function openReceiptReview(batchId) {
+  setMessage(inboxMessage, "Opening receipt review...");
+  try {
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/claim${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+    const data = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+    renderReceiptReview(data);
+    setMessage(inboxMessage, "Receipt claimed. Drafts autosave when you leave a field.", "success");
+  } catch (error) {
+    setMessage(inboxMessage, error.message, "error");
+  }
+}
+
+function reviewRowMarkup(row) {
+  return `<div class="receipt-item-row" data-review-row="${row.id}">
+    <label><span class="visually-hidden">Item name</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
+    <label><span class="visually-hidden">Size</span><input name="size_text" value="${escapeHtml(row.size_text || "")}" aria-label="Package size"></label>
+    <label><span class="visually-hidden">Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.price || "")}" aria-label="Price"></label>
+    <button class="quiet-button" type="button" data-remove-row="${row.id}">Remove</button>
+  </div>`;
+}
+
+function renderReceiptReview(data) {
+  const batch = data.batch || {};
+  const rows = batch.rows || [];
+  receiptReviewWorkspace.hidden = false;
+  receiptReviewWorkspace.innerHTML = `
+    <div class="admin-panel-heading"><div><h2>Review Receipt #${batch.id}</h2><p class="field-help">Look at the receipt, confirm each draft item, then approve or ask for help.</p></div><button class="quiet-button" type="button" data-focus-review>Focus Mode</button></div>
+    <div class="receipt-review-layout">
+      <section class="receipt-proof-panel">
+        <h3>Receipt</h3>
+        ${data.proof_url ? `<img class="receipt-proof-image" src="${escapeHtml(data.proof_url + adminQuery())}" alt="Submitted receipt for manual review">` : '<div class="warning">No receipt image is available.</div>'}
+        <div class="card-actions">${data.proof_url ? `<a class="secondary-button" href="${escapeHtml(data.proof_url + adminQuery())}" target="_blank" rel="noopener">Open full size</a><a class="quiet-button" href="${escapeHtml(data.proof_url + adminQuery())}" download>Download image</a>` : ""}</div>
+        <dl><div><dt>Store</dt><dd>${escapeHtml(batch.proof_store_name || batch.receipt_store_name || "Not selected")}</dd></div><div><dt>Submitted</dt><dd>${escapeHtml(formatDate(batch.created_at))}</dd></div><div><dt>Submitted by</dt><dd>${escapeHtml(batch.created_by_username || "Community member")}</dd></div></dl>
+      </section>
+      <section class="receipt-items-panel">
+        <h3>Items</h3>
+        <div id="receiptEditableRows">${rows.map(reviewRowMarkup).join("") || '<div class="empty-state">No draft items yet.</div>'}</div>
+        <details><summary>Paste AI Results</summary><p class="field-help">Paste pipe-delimited, CSV, or JSON results. These become drafts only.</p><textarea id="receiptAiPaste" rows="7" placeholder="Milk 2% | 1 gal | 3.49&#10;Large Eggs | 12 ct | 2.89"></textarea><button class="secondary-button" type="button" data-parse-ai>Turn Into Editable Items</button></details>
+        <div class="review-actions">
+          <button class="quiet-button" type="button" data-help-reason="Receipt image cannot be read">Can't Read</button>
+          <button class="quiet-button" type="button" data-help-reason="Possible duplicate receipt">Duplicate</button>
+          <button class="quiet-button" type="button" data-help-reason="Store does not match the receipt">Wrong Store</button>
+          <button class="secondary-button" type="button" data-help-reason="Manager review requested">Needs Manager Help</button>
+          <button class="danger-button" type="button" data-reject-receipt>Reject Receipt</button>
+          ${data.can_approve ? `<button class="primary-button" type="button" data-approve-rows>Approve ${rows.filter((row) => !["approved","rejected","removed"].includes(row.status)).length} Prices</button>` : '<span class="warning">Data Entry can save drafts but cannot publish prices.</span>'}
+          <button class="primary-button" type="button" data-save-next>Save &amp; Review Next</button>
+        </div>
+      </section>
+    </div>`;
+  receiptReviewWorkspace.scrollIntoView({ block: "start" });
+  for (const rowElement of receiptReviewWorkspace.querySelectorAll("[data-review-row]")) {
+    for (const input of rowElement.querySelectorAll("input")) input.addEventListener("change", () => saveReviewRow(rowElement));
+  }
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-remove-row]")) button.addEventListener("click", () => removeReviewRow(button.dataset.removeRow));
+  receiptReviewWorkspace.querySelector("[data-parse-ai]")?.addEventListener("click", () => parseAiResults(batch.id));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-help-reason]")) button.addEventListener("click", () => escalateReview(batch.id, button.dataset.helpReason));
+  receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
+  receiptReviewWorkspace.querySelector("[data-approve-rows]")?.addEventListener("click", () => approveReviewRows(batch));
+  receiptReviewWorkspace.querySelector("[data-save-next]")?.addEventListener("click", () => saveAndReviewNext(batch.id));
+  receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
+}
+
+async function saveReviewRow(rowElement) {
+  const rowId = rowElement.dataset.reviewRow;
+  const payload = Object.fromEntries([...rowElement.querySelectorAll("input")].map((input) => [input.name, input.value]));
+  try {
+    await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, pin: getPin(), status: "ready_for_review" }) });
+    setMessage(inboxMessage, "Draft saved.", "success");
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function removeReviewRow(rowId) {
+  if (!window.confirm("Remove this draft item from the receipt?")) return;
+  try {
+    await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "removed" }) });
+    document.querySelector(`[data-review-row="${rowId}"]`)?.remove();
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function parseAiResults(batchId) {
+  const sourceText = receiptReviewWorkspace.querySelector("#receiptAiPaste")?.value || "";
+  try {
+    const data = await fetchJson(`/api/admin/price-imports/${batchId}/parse-price-text${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), source_text: sourceText }) });
+    if (data.extraction_attempt?.skipped_lines?.length) {
+      setMessage(inboxMessage, `Drafts created. Check row ${data.extraction_attempt.skipped_lines[0].row || ""}: ${data.extraction_attempt.skipped_lines[0].reason}.`, "warning");
+    }
+    const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+    renderReceiptReview(review);
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function escalateReview(batchId, reason) {
+  try {
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/escalate${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason }) });
+    setMessage(inboxMessage, "A Manager has been asked to help.", "success");
+    receiptReviewWorkspace.hidden = true;
+    await loadAdminData();
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function rejectReceipt(batchId) {
+  if (!window.confirm("Reject this entire receipt? The user will be notified.")) return;
+  try {
+    await fetchJson(`/api/admin/proof-submissions/${batchId}/status${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "proof_rejected", admin_note: "Rejected during receipt review." }) });
+    await loadAdminData();
+    openAdminTab("inboxTab");
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function approveReviewRows(batch) {
+  const rowIds = (batch.rows || []).filter((row) => !["approved","rejected","removed"].includes(row.status)).map((row) => row.id);
+  if (!rowIds.length || !window.confirm(`Approve ${rowIds.length} verified price${rowIds.length === 1 ? "" : "s"} for public display?`)) return;
+  try {
+    await fetchJson(`/api/admin/price-import-rows/bulk${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), action: "approve", row_ids: rowIds }) });
+    await loadAdminData();
+    openAdminTab("inboxTab");
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function saveAndReviewNext(batchId) {
+  for (const row of receiptReviewWorkspace.querySelectorAll("[data-review-row]")) await saveReviewRow(row);
+  await fetchJson(`/api/admin/v2/reviews/${batchId}/release${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+  receiptReviewWorkspace.hidden = true;
+  await loadAdminData();
+  await startReviewNext();
+}
+
+function renderWorkers() {
+  if (!workersList) return;
+  const workers = adminV2WorkersData.workers || [];
+  workersList.innerHTML = workers.length ? workers.map((worker) => `<article class="worker-card"><div class="worker-summary"><strong>${escapeHtml(worker.username)}</strong><span>${escapeHtml(titleCase(worker.role))}</span><span>${worker.shift ? `Clocked in: ${escapeHtml(formatDate(worker.shift.clocked_in_at))}` : "Not clocked in"}</span><span>${worker.active_now ? "Active on Grocery Radar now" : "Not active now"}</span><span>${worker.current_batch_id ? `Reviewing receipt #${worker.current_batch_id}` : "No current task"} · Today: ${worker.reviews_today} reviews</span></div>${adminSession.staff_role === "owner" && worker.role !== "owner" ? `<label><span>Access</span><select data-worker-role="${worker.id}">${["manager","reviewer","data_entry","user"].map((role) => `<option value="${role}" ${worker.role === role ? "selected" : ""}>${titleCase(role)}</option>`).join("")}</select></label>` : ""}</article>`).join("") : '<div class="empty-state">No workers configured yet.</div>';
+  for (const select of workersList.querySelectorAll("[data-worker-role]")) select.addEventListener("change", () => changeWorkerRole(select.dataset.workerRole, select.value));
+  workerShiftControls.innerHTML = '<button class="secondary-button" type="button" data-shift="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift="take-break">Take Break</button><button class="quiet-button" type="button" data-shift="return">Return from Break</button><button class="secondary-button" type="button" data-shift="clock-out">Clock Out</button>';
+  for (const button of workerShiftControls.querySelectorAll("[data-shift]")) button.addEventListener("click", () => updateShift(button.dataset.shift));
+}
+
+async function changeWorkerRole(userId, role) {
+  if (!window.confirm(`Change this worker to ${titleCase(role)}?`)) { await loadAdminData(); return; }
+  try { await fetchJson(`/api/admin/v2/workers/${userId}/role`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) }); await loadAdminData(); }
+  catch (error) { setAdminMessage(error.message, "error"); }
+}
+
+async function updateShift(action) {
+  try { const data = await fetchJson(`/api/admin/v2/shifts/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); setAdminMessage(data.message, "success"); await loadAdminData(); }
+  catch (error) { setAdminMessage(error.message, "error"); }
+}
+
+function renderV2Feedback() {
+  if (!v2FeedbackList) return;
+  const rows = adminV2FeedbackData.feedback || [];
+  v2FeedbackList.innerHTML = rows.length ? rows.map((item) => `<button class="notification-list-button ${item.status === "open" ? "is-unread" : ""}" type="button" data-feedback-id="${item.id}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(titleCase(item.category))} · ${escapeHtml(titleCase(item.status))} · ${escapeHtml(formatDate(item.created_at))}</span></button>`).join("") : '<div class="empty-state">No feedback needs attention.</div>';
+}
+
+function renderV2Announcements() {
+  if (!v2AnnouncementsList) return;
+  const rows = adminV2AnnouncementsData.announcements || [];
+  v2AnnouncementsList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-card compact-card"><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.message)}</p><span class="plain-status">${escapeHtml(titleCase(item.status))}</span></article>`).join("") : '<div class="empty-state">No announcements yet. Owner publishing tools are available in Operations.</div>';
 }
 
 function setOperationsMessage(text, type = "info") {
@@ -725,6 +1072,7 @@ function orderedOperationWidgetIds() {
     "event_feed",
     "error_center",
     "announcements",
+    "homepage_service",
     "community_pulse",
     "security"
   ];
@@ -780,6 +1128,9 @@ function renderSystemHealth(data) {
       <div><dt>Server Uptime</dt><dd>${escapeHtml(health.server_uptime_label || "")}</dd></div>
       <div><dt>Render Environment</dt><dd>${health.render_environment?.is_render ? "Render" : "Local/dev"} ${escapeHtml(health.render_environment?.service_name || "")}</dd></div>
     </dl>
+    <div class="warning">Local backups are a same-disk safety layer, not disaster recovery. Off-site backups should be added later.</div>
+    <div class="card-actions"><button class="primary-button" type="button" data-create-backup>Create Backup</button><button class="quiet-button" type="button" data-list-backups>Backup History</button></div>
+    <div id="operationsBackupList" class="admin-list"></div>
   `;
 }
 
@@ -1075,6 +1426,96 @@ function renderAnnouncements(data) {
   `;
 }
 
+function textareaList(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => escapeHtml(item))
+    .join("\n");
+}
+
+function renderHomepageServiceWidget(data) {
+  const homepage = data.homepage_service || {};
+  const service = homepage.service || {};
+  const maintenance = service.maintenance || {};
+  const latestPatch = (homepage.patch_notes || [])[0] || {};
+  const latestIssue = (homepage.known_issues || [])[0] || {};
+  const counts = homepage.community_counts || {};
+
+  return `
+    <div class="warning">Only the Owner / Super Admin can publish homepage service updates. Keep this public-facing and avoid internal paths, stack traces, secrets, or private user details.</div>
+    <div class="notification-grid">
+      ${operationsMetricCards([
+        { label: "Status", value: titleCase(service.service_status || "online") },
+        { label: "Version", value: service.version_label || "Early Access" },
+        { label: "Verified prices", value: counts.verified_prices || 0 },
+        { label: "Products with prices", value: counts.products_with_active_prices || 0 },
+        { label: "Stores tracked", value: counts.janesville_stores_tracked || 0 },
+        { label: "Pending proof", value: counts.community_submissions_awaiting_review || 0 }
+      ])}
+    </div>
+    <form id="homepageServiceStatusForm" class="admin-control-grid">
+      <label><span>Current status</span><select name="service_status">
+        ${["online","maintenance","degraded","updating"].map((status) => `<option value="${status}" ${service.service_status === status ? "selected" : ""}>${titleCase(status)}</option>`).join("")}
+      </select></label>
+      <label><span>Version number</span><input name="version_label" type="text" maxlength="80" value="${escapeHtml(service.version_label || "")}" required></label>
+      <label class="span-full"><span>Current focus</span><input name="current_focus" type="text" maxlength="240" value="${escapeHtml(service.current_focus || "")}" required></label>
+      <label class="span-full"><span>Main homepage message</span><textarea name="main_message" rows="4" maxlength="1200" required>${escapeHtml(service.main_message || "")}</textarea></label>
+      <label><span>Community mission title</span><input name="community_mission_title" type="text" maxlength="120" value="${escapeHtml(service.community_mission_title || "")}" required></label>
+      <label><span>Homepage announcement</span><input name="homepage_announcement" type="text" maxlength="400" value="${escapeHtml(service.homepage_announcement || "")}"></label>
+      <label class="span-full"><span>Community mission body</span><textarea name="community_mission_body" rows="3" maxlength="700" required>${escapeHtml(service.community_mission_body || "")}</textarea></label>
+      <label class="checkbox-row"><input name="maintenance_enabled" type="checkbox" ${maintenance.enabled ? "checked" : ""}><span>Show maintenance notice</span></label>
+      <label><span>Maintenance status</span><select name="maintenance_status">
+        ${["scheduled","in_progress","monitoring","complete"].map((status) => `<option value="${status}" ${maintenance.status === status ? "selected" : ""}>${titleCase(status)}</option>`).join("")}
+      </select></label>
+      <label><span>Maintenance title</span><input name="maintenance_title" type="text" maxlength="160" value="${escapeHtml(maintenance.title || "")}"></label>
+      <label><span>Maintenance start</span><input name="maintenance_start_at" type="datetime-local" value="${dateTimeLocalValue(maintenance.start_at)}"></label>
+      <label><span>Expected end</span><input name="maintenance_end_at" type="datetime-local" value="${dateTimeLocalValue(maintenance.expected_end_at)}"></label>
+      <label class="span-full"><span>Maintenance explanation</span><textarea name="maintenance_message" rows="3" maxlength="700">${escapeHtml(maintenance.message || "")}</textarea></label>
+      <label class="span-full"><span>Expected impact</span><textarea name="maintenance_impact" rows="2" maxlength="500">${escapeHtml(maintenance.impact || "")}</textarea></label>
+      <button class="primary-button" type="submit">Publish homepage status</button>
+    </form>
+    <div class="operation-two-col">
+      <form id="homepagePatchNoteForm" class="admin-card compact-card">
+        <div class="card-topline">
+          <h4>Patch Notes</h4>
+          <span class="badge ${latestPatch.status === "published" ? "status-ready" : "status-warning"}">${escapeHtml(titleCase(latestPatch.status || "draft"))}</span>
+        </div>
+        <label><span>Version</span><input name="version_label" type="text" maxlength="80" value="${escapeHtml(latestPatch.version_label || service.version_label || "")}" required></label>
+        <label><span>Title</span><input name="title" type="text" maxlength="160" value="${escapeHtml(latestPatch.title || "")}" required></label>
+        <label><span>Status</span><select name="status"><option value="draft">Draft</option><option value="published" selected>Published</option><option value="archived">Archived</option></select></label>
+        <label><span>Summary</span><textarea name="summary" rows="3" maxlength="700" required>${escapeHtml(latestPatch.summary || "")}</textarea></label>
+        <label><span>Added</span><textarea name="added" rows="4" maxlength="1200">${textareaList(latestPatch.added)}</textarea></label>
+        <label><span>Changed</span><textarea name="changed" rows="4" maxlength="1200">${textareaList(latestPatch.changed)}</textarea></label>
+        <label><span>Fixed</span><textarea name="fixed" rows="4" maxlength="1200">${textareaList(latestPatch.fixed)}</textarea></label>
+        <label><span>Known issues</span><textarea name="known_issues" rows="4" maxlength="1200">${textareaList(latestPatch.known_issues)}</textarea></label>
+        <label><span>Next focus</span><textarea name="next_focus" rows="4" maxlength="1200">${textareaList(latestPatch.next_focus)}</textarea></label>
+        <button class="secondary-button" type="submit">Create patch note</button>
+      </form>
+      <form id="homepageKnownIssueForm" class="admin-card compact-card">
+        <div class="card-topline">
+          <h4>Known Issues</h4>
+          <span class="badge ${latestIssue.visibility_status === "published" ? "status-ready" : "status-warning"}">${escapeHtml(titleCase(latestIssue.visibility_status || "draft"))}</span>
+        </div>
+        <label><span>Title</span><input name="title" type="text" maxlength="160" value="${escapeHtml(latestIssue.title || "")}" required></label>
+        <label><span>Status</span><select name="issue_status">
+          ${["investigating","identified","fix_in_progress","monitoring","resolved"].map((status) => `<option value="${status}" ${latestIssue.status === status ? "selected" : ""}>${titleCase(status)}</option>`).join("")}
+        </select></label>
+        <label><span>Visibility</span><select name="visibility_status"><option value="draft">Draft</option><option value="published" selected>Published</option><option value="hidden">Hidden</option></select></label>
+        <label><span>Date opened</span><input name="opened_at" type="date" value="${dateInputValue(latestIssue.opened_at)}"></label>
+        <label><span>Last updated</span><input name="last_updated_at" type="date" value="${dateInputValue(latestIssue.last_updated_at)}"></label>
+        <label><span>Description</span><textarea name="description" rows="4" maxlength="900" required>${escapeHtml(latestIssue.description || "")}</textarea></label>
+        <label><span>Workaround</span><textarea name="workaround" rows="3" maxlength="500">${escapeHtml(latestIssue.workaround || "")}</textarea></label>
+        <button class="secondary-button" type="submit">Create known issue</button>
+      </form>
+    </div>
+    <div class="admin-list">
+      <h4>Published patch notes</h4>
+      ${compactList((homepage.patch_notes || []).map((patch) => ({ title: `${patch.version_label} — ${patch.title}`, detail: `${titleCase(patch.status)} · ${formatDate(patch.published_at || patch.updated_at)}` })), "No patch notes yet.")}
+      <h4>Known issues</h4>
+      ${compactList((homepage.known_issues || []).map((issue) => ({ title: issue.title, detail: `${titleCase(issue.status)} · ${formatDate(issue.last_updated_at)}` })), "No known issues yet.")}
+    </div>
+  `;
+}
+
 function renderSecurityWidget(data) {
   return `
     <div class="warning">Role changes, user deletion/deactivation, database tools, and announcement publishing require Super Admin access.</div>
@@ -1106,6 +1547,7 @@ function renderOperationsCenter() {
     event_feed: ["Real-Time Event Feed", renderEventFeed(operationsData)],
     error_center: ["Error Center", renderErrorCenter(operationsData)],
     announcements: ["Announcements", renderAnnouncements(operationsData)],
+    homepage_service: ["Homepage Service", renderHomepageServiceWidget(operationsData)],
     community_pulse: ["Community Pulse", compactList((operationsData.community_pulse || []).map((message) => ({ title: message })), "No insights yet.")],
     security: ["Security", renderSecurityWidget(operationsData)]
   };
@@ -1217,6 +1659,31 @@ function bindOperationsControls() {
   }
 
   operationsCenter.querySelector("#operationsAnnouncementForm")?.addEventListener("submit", createOperationAnnouncement);
+  operationsCenter.querySelector("#homepageServiceStatusForm")?.addEventListener("submit", updateHomepageServiceStatus);
+  operationsCenter.querySelector("#homepagePatchNoteForm")?.addEventListener("submit", createHomepagePatchNote);
+  operationsCenter.querySelector("#homepageKnownIssueForm")?.addEventListener("submit", createHomepageKnownIssue);
+  operationsCenter.querySelector("[data-create-backup]")?.addEventListener("click", createDatabaseBackup);
+  operationsCenter.querySelector("[data-list-backups]")?.addEventListener("click", loadDatabaseBackups);
+}
+
+async function loadDatabaseBackups() {
+  const list = operationsCenter.querySelector("#operationsBackupList");
+  if (!list) return;
+  try {
+    const data = await fetchJson("/api/admin/operations/backups");
+    list.innerHTML = data.backups?.length ? data.backups.map((backup) => `<div class="operation-list-row"><strong>${escapeHtml(backup.filename || "Backup")}</strong><span>${escapeHtml(formatDate(backup.created_at))} · ${escapeHtml(titleCase(backup.status))}</span>${backup.status === "success" ? `<a class="quiet-button" href="/api/admin/operations/backups/${backup.id}/download">Download</a>` : ""}</div>`).join("") : '<div class="empty-state">No backups recorded.</div>';
+  } catch (error) { list.innerHTML = `<div class="warning">${escapeHtml(error.message)}</div>`; }
+}
+
+async function createDatabaseBackup() {
+  if (!window.confirm("Create a verified local SQLite backup now?")) return;
+  try {
+    setOperationsMessage("Creating a consistent SQLite backup...");
+    const data = await fetchJson("/api/admin/operations/backups", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    setOperationsMessage(data.message, "success");
+    await loadDatabaseBackups();
+    await loadOperationsCenter();
+  } catch (error) { setOperationsMessage(error.message, "error"); }
 }
 
 async function saveOperationsWidgetLayout() {
@@ -1296,6 +1763,60 @@ async function createOperationAnnouncement(event) {
   const payload = Object.fromEntries(formData.entries());
   try {
     await fetchJson(`/api/admin/operations/announcements${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    event.currentTarget.reset();
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function updateHomepageServiceStatus(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(formData.entries());
+  payload.maintenance_enabled = formData.has("maintenance_enabled");
+
+  try {
+    await fetchJson(`/api/admin/operations/homepage-service/status${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function createHomepagePatchNote(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(formData.entries());
+
+  try {
+    await fetchJson(`/api/admin/operations/homepage-service/patch-notes${adminQuery()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    event.currentTarget.reset();
+    await loadOperationsCenter();
+  } catch (error) {
+    setOperationsMessage(error.message, "error");
+  }
+}
+
+async function createHomepageKnownIssue(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(formData.entries());
+
+  try {
+    await fetchJson(`/api/admin/operations/homepage-service/known-issues${adminQuery()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -4912,9 +5433,7 @@ async function boot() {
   updateManualPhotoRequirement();
   await loadStores();
 
-  if (pinInput.value) {
-    await loadAdminData();
-  }
+  await loadAdminData();
 
   applyAdminInitialRoute();
 }
@@ -4932,8 +5451,12 @@ function applyAdminInitialRoute() {
     userId: params.get("user") || "",
     storeRequestId: params.get("storeRequest") || "",
     suggestionId: params.get("suggestion") || "",
-    filter: params.get("filter") || ""
+    filter: params.get("filter") || "",
+    priceImportBatchId: params.get("batch") || ""
   });
+  if (tab === "inboxTab" && params.get("batch")) {
+    openReceiptReview(params.get("batch"));
+  }
 }
 
 pinForm.addEventListener("submit", (event) => {
@@ -4963,6 +5486,19 @@ priceImportRemoveSelected.addEventListener("click", () => bulkPriceImport("remov
 priceImportUndoBatch.addEventListener("click", undoSelectedImportBatch);
 operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
+reviewNextButton?.addEventListener("click", startReviewNext);
+for (const button of inboxFilters?.querySelectorAll("[data-inbox-filter]") || []) {
+  button.addEventListener("click", () => {
+    activeInboxFilter = button.dataset.inboxFilter;
+    for (const filter of inboxFilters.querySelectorAll("[data-inbox-filter]")) filter.classList.toggle("is-active", filter === button);
+    renderInbox();
+  });
+}
+adminNotificationBell?.addEventListener("click", () => {
+  if (!adminV2NotificationPanel) return;
+  adminV2NotificationPanel.hidden = !adminV2NotificationPanel.hidden;
+  adminNotificationBell.setAttribute("aria-expanded", String(!adminV2NotificationPanel.hidden));
+});
 
 priceImportProofInput.addEventListener("change", () => renderPriceImportUploadPreview(priceImportProofInput.files));
 priceImportDropZone.addEventListener("dragover", (event) => {

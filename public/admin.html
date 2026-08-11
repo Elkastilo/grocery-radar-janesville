@@ -13,26 +13,38 @@
         <h1>Grocery Radar Admin</h1>
         <div id="adminSessionStatus" class="admin-session-status" aria-live="polite"></div>
       </div>
-      <a class="admin-link" href="/">Back to app</a>
+      <div class="admin-header-actions">
+        <button id="adminNotificationBell" class="notification-bell" type="button" aria-label="Open notifications" aria-expanded="false">🔔<span id="adminBellCount" class="visually-hidden">0 unread</span></button>
+        <a class="admin-link" href="/">Back to app</a>
+      </div>
+      <div id="adminV2NotificationPanel" class="admin-notification-panel" hidden aria-label="Admin notifications"></div>
     </header>
 
     <main class="admin-shell">
       <aside class="admin-sidebar" aria-label="Admin sections">
-        <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Dashboard</button>
-        <button class="admin-tab" type="button" data-admin-tab="operationsTab">Operations Center</button>
-        <button class="admin-tab" type="button" data-admin-tab="betaReadinessTab">Beta Readiness</button>
-        <button class="admin-tab" type="button" data-admin-tab="analyticsTab">Analytics</button>
-        <button class="admin-tab" type="button" data-admin-tab="sponsorsTab">Sponsors</button>
-        <button class="admin-tab" type="button" data-admin-tab="reviewTab">Review Queue</button>
-        <button class="admin-tab" type="button" data-admin-tab="pricesTab">Prices</button>
-        <button class="admin-tab" type="button" data-admin-tab="priceImporterTab">Price Importer</button>
-        <button class="admin-tab" type="button" data-admin-tab="usersTab">Users</button>
-        <button class="admin-tab" type="button" data-admin-tab="storesTab">Stores</button>
-        <button class="admin-tab" type="button" data-admin-tab="suggestionsTab">Suggestions</button>
-        <button class="admin-tab" type="button" data-admin-tab="productToolsTab">Cart / Product Tools</button>
-        <button class="admin-tab" type="button" data-admin-tab="emailTab">Email / Diagnostics</button>
-        <button class="admin-tab" type="button" data-admin-tab="manualTab">Manual Entry</button>
-        <button class="admin-tab" type="button" data-admin-tab="settingsTab">Settings</button>
+        <div class="admin-nav-group"><span>Home</span>
+          <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Home</button>
+        </div>
+        <div class="admin-nav-group"><span>Work</span>
+          <button class="admin-tab" type="button" data-admin-tab="inboxTab">Inbox</button>
+          <button class="admin-tab" type="button" data-admin-tab="pricesTab">Prices</button>
+          <button class="admin-tab" type="button" data-admin-tab="productToolsTab" data-manager-only>Products</button>
+          <button class="admin-tab" type="button" data-admin-tab="storesTab" data-manager-only>Stores</button>
+        </div>
+        <div class="admin-nav-group" data-manager-only><span>People</span>
+          <button class="admin-tab" type="button" data-admin-tab="workersTab">Workers</button>
+          <button class="admin-tab" type="button" data-admin-tab="usersTab">Users</button>
+          <button class="admin-tab" type="button" data-admin-tab="feedbackTab">Feedback</button>
+        </div>
+        <div class="admin-nav-group" data-manager-only><span>Management</span>
+          <button class="admin-tab" type="button" data-admin-tab="reviewTab">Reports</button>
+          <button class="admin-tab" type="button" data-admin-tab="announcementsTab">Announcements</button>
+        </div>
+        <div class="admin-nav-group" data-owner-only><span>Owner only</span>
+          <button class="admin-tab" type="button" data-admin-tab="operationsTab">Operations</button>
+          <button class="admin-tab" type="button" data-admin-tab="emailTab">Email / Diagnostics</button>
+          <button class="admin-tab" type="button" data-admin-tab="settingsTab">Settings</button>
+        </div>
       </aside>
 
       <section class="admin-workspace">
@@ -54,6 +66,42 @@
             <h2>Dashboard</h2>
           </div>
           <div id="adminNotifications" class="notification-grid"></div>
+        </section>
+
+        <section id="inboxTab" class="admin-panel">
+          <div class="admin-panel-heading">
+            <div>
+              <h2>Inbox</h2>
+              <p class="field-help">Review the oldest work first, or ask a Manager for help.</p>
+            </div>
+            <button id="reviewNextButton" class="primary-button" type="button">Start Reviewing</button>
+          </div>
+          <div id="inboxFilters" class="segmented-tabs" role="tablist" aria-label="Inbox filters">
+            <button class="is-active" type="button" data-inbox-filter="all">All</button>
+            <button type="button" data-inbox-filter="receipt">Receipts</button>
+            <button type="button" data-inbox-filter="price_report">Price Reports</button>
+            <button type="button" data-inbox-filter="dispute">Disputes</button>
+            <button type="button" data-inbox-filter="needs_help">Needs Help</button>
+          </div>
+          <div id="inboxMessage" class="message" aria-live="polite"></div>
+          <div id="inboxList" class="admin-list"></div>
+          <section id="receiptReviewWorkspace" class="receipt-review-workspace" hidden aria-live="polite"></section>
+        </section>
+
+        <section id="workersTab" class="admin-panel">
+          <div class="admin-panel-heading"><div><h2>Workers</h2><p class="field-help">Roles, current work, and shifts. Active now is separate from clocked in.</p></div></div>
+          <div id="workerShiftControls" class="card-actions"></div>
+          <div id="workersList" class="admin-list"></div>
+        </section>
+
+        <section id="feedbackTab" class="admin-panel">
+          <div class="admin-panel-heading"><div><h2>Feedback</h2><p class="field-help">Questions, problems, and suggestions from the community.</p></div></div>
+          <div id="v2FeedbackList" class="admin-list"></div>
+        </section>
+
+        <section id="announcementsTab" class="admin-panel">
+          <div class="admin-panel-heading"><div><h2>Announcements</h2><p class="field-help">Publish clear updates without opening advanced system tools.</p></div></div>
+          <div id="v2AnnouncementsList" class="admin-list"></div>
         </section>
 
         <section id="operationsTab" class="admin-panel">

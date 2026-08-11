@@ -89,6 +89,16 @@ const notificationMessage = (notification) => {
   return notification?.message || ''
 }
 
+const visitorId = () => {
+  const key = 'groceryRadarVisitorId'
+  let value = window.localStorage.getItem(key)
+  if (!value) {
+    value = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    window.localStorage.setItem(key, value)
+  }
+  return value
+}
+
 const timeAgo = (value) => {
   if (!value) return 'No update time'
   const date = new Date(value)
@@ -521,13 +531,99 @@ function SummaryCard({ icon: Icon, label, value, note }) {
   )
 }
 
-function HomeScreen({ browse, stores, loading, error, searchTerm, setSearchTerm, openScreen, openProduct, addToCart }) {
+const fallbackHomepageService = {
+  service: {
+    location: { city: 'Janesville', region: 'Wisconsin' },
+    service_status: 'online',
+    version_label: 'Early Access',
+    current_focus: 'Adding and verifying Janesville grocery prices.',
+    main_message:
+      'Grocery Radar is live, but the radar is still filling up. We are actively adding and verifying grocery prices from Janesville stores using receipts, shelf tags, weekly ads, and community submissions.',
+    community_mission_title: 'Help fill the Janesville radar.',
+    community_mission_body: 'One receipt, shelf tag, weekly ad, or store link can help shoppers across Janesville.',
+    homepage_announcement: '',
+    maintenance: { enabled: false },
+    updated_at: '',
+  },
+  patch_notes: [],
+  known_issues: [],
+  community_counts: {
+    verified_prices: 0,
+    products_with_active_prices: 0,
+    janesville_stores_tracked: 0,
+    prices_updated_today: 0,
+    community_submissions_awaiting_review: 0,
+  },
+}
+
+const serviceStatusStyles = {
+  online: 'bg-emerald-100 text-emerald-900 ring-emerald-200',
+  maintenance: 'bg-amber-100 text-amber-900 ring-amber-200',
+  degraded: 'bg-rose-100 text-rose-900 ring-rose-200',
+  updating: 'bg-sky-100 text-sky-900 ring-sky-200',
+}
+
+function ServiceBadge({ status }) {
+  const safeStatus = status || 'online'
+  return (
+    <span className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-black ring-1 ${serviceStatusStyles[safeStatus] || serviceStatusStyles.online}`}>
+      <span className="h-2.5 w-2.5 rounded-full bg-current" />
+      {titleCase(safeStatus)}
+    </span>
+  )
+}
+
+function PatchList({ title, items = [] }) {
+  if (!items.length) return null
+
+  return (
+    <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-100">
+      <p className="text-sm font-black uppercase tracking-wide text-slate-500">{title}</p>
+      <ul className="mt-2 space-y-2">
+        {items.map((item) => (
+          <li key={item} className="flex gap-2 text-sm font-bold text-slate-700">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function MissionCount({ label, value }) {
+  return (
+    <div className="rounded-2xl bg-white p-4 text-left shadow-sm ring-1 ring-emerald-100">
+      <p className="text-3xl font-black text-emerald-800">{Number(value || 0).toLocaleString()}</p>
+      <p className="mt-1 text-sm font-black text-slate-600">{label}</p>
+    </div>
+  )
+}
+
+function HomeScreen({
+  browse,
+  stores,
+  loading,
+  error,
+  homepageService,
+  homepageServiceState,
+  searchTerm,
+  setSearchTerm,
+  openScreen,
+  openProduct,
+  addToCart,
+}) {
+  const live = homepageService || fallbackHomepageService
+  const service = live.service || fallbackHomepageService.service
+  const maintenance = service.maintenance || {}
+  const counts = live.community_counts || fallbackHomepageService.community_counts
+  const latestPatch = (live.patch_notes || [])[0]
+  const knownIssues = live.known_issues || []
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
   const products = (browse.products || []).filter(hasApprovedProductPrice)
   const dealReports = reports.filter(isDealReport)
   const bestCards = dealReports.slice(0, 4)
   const hasApprovedPrices = reports.length > 0 || products.length > 0
-  const approvedCount = reports.length || products.length
   const quickActions = [
     { label: 'Find the Cheapest Price', icon: Search, screen: 'search', tone: 'primary' },
     { label: "Browse This Week's Deals", icon: Tag, screen: 'deals' },
@@ -537,26 +633,65 @@ function HomeScreen({ browse, stores, loading, error, searchTerm, setSearchTerm,
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 pt-4 sm:px-6">
-      <section className="rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-emerald-100 sm:p-7">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="rounded-[2rem] bg-slate-950 p-5 text-white shadow-soft sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-2 text-sm font-black text-emerald-800">
+            <p className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-2 text-sm font-black text-emerald-100">
               <MapPin className="h-4 w-4" />
               Janesville, Wisconsin
             </p>
-            <h1 className="mt-5 max-w-2xl text-4xl font-black leading-tight text-slate-950 sm:text-5xl">
-              Find the cheapest groceries near you.
+            <h1 className="mt-5 max-w-2xl text-4xl font-black leading-tight sm:text-5xl">
+              GROCERY RADAR JANESVILLE
             </h1>
-            <p className="mt-3 text-xl font-bold text-slate-600">
-              Search local approved prices, compare stores, and build a smarter grocery list.
+            <p className="mt-3 max-w-3xl text-xl font-bold text-slate-200">
+              {service.main_message}
             </p>
+          </div>
+          <ServiceBadge status={service.service_status} />
+        </div>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
+            <p className="text-sm font-black text-slate-300">Current Version</p>
+            <p className="mt-1 text-2xl font-black">{service.version_label}</p>
+          </div>
+          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
+            <p className="text-sm font-black text-slate-300">Current Focus</p>
+            <p className="mt-1 text-base font-black">{service.current_focus}</p>
+          </div>
+          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
+            <p className="text-sm font-black text-slate-300">Last Updated</p>
+            <p className="mt-1 text-base font-black">{shortDate(service.updated_at || service.published_at) || 'Update pending'}</p>
           </div>
         </div>
 
-        <div className="mt-6">
-          <SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} />
-        </div>
+        {service.homepage_announcement ? (
+          <div className="mt-5 rounded-2xl bg-emerald-400/15 p-4 font-bold text-emerald-50 ring-1 ring-emerald-300/30">
+            {service.homepage_announcement}
+          </div>
+        ) : null}
 
+        {maintenance.enabled ? (
+          <div className="mt-5 rounded-2xl bg-amber-100 p-4 text-amber-950 ring-1 ring-amber-200">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-1 h-6 w-6 shrink-0" />
+              <div>
+                <p className="text-lg font-black">{maintenance.title || 'Maintenance Notice'}</p>
+                <p className="mt-1 font-bold">{maintenance.message || 'Grocery Radar maintenance is currently posted.'}</p>
+                {maintenance.impact ? <p className="mt-2 text-sm font-bold">{maintenance.impact}</p> : null}
+                <p className="mt-2 text-sm font-black">
+                  {titleCase(maintenance.status || 'monitoring')}
+                  {maintenance.expected_end_at ? ` | Expected end ${shortDate(maintenance.expected_end_at)}` : ''}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="mt-5 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-emerald-100 sm:p-7">
+        <SectionHeader title="Search Grocery Prices" />
+        <SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} />
         <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {quickActions.map((action) => {
             const Icon = action.icon
@@ -578,30 +713,132 @@ function HomeScreen({ browse, stores, loading, error, searchTerm, setSearchTerm,
             )
           })}
         </div>
+        {homepageServiceState?.error ? (
+          <p className="mt-4 rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+            Service notes are temporarily unavailable. Search and approved prices can still load below.
+          </p>
+        ) : null}
       </section>
 
       {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
 
-      <section className="mt-5 rounded-2xl bg-emerald-700 p-5 text-white shadow-lift">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-bold text-emerald-100">Approved price data</p>
-            <p className="mt-2 text-4xl font-black">{approvedCount}</p>
-            <p className="mt-1 text-base font-semibold text-emerald-50">
-              approved price{approvedCount === 1 ? '' : 's'} available now.
+      <section className="mt-7 rounded-[2rem] bg-emerald-50 p-5 shadow-soft ring-1 ring-emerald-100 sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-2xl">
+            <p className="text-sm font-black uppercase tracking-wide text-emerald-800">Current Community Mission</p>
+            <h2 className="mt-2 text-3xl font-black text-slate-950">{service.community_mission_title}</h2>
+            <p className="mt-2 text-lg font-bold text-slate-600">{service.community_mission_body}</p>
+          </div>
+          <div className="rounded-2xl bg-emerald-700 p-3 text-white">
+            <UsersRound className="h-8 w-8" />
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <MissionCount label="Verified prices" value={counts.verified_prices} />
+          <MissionCount label="Products with active prices" value={counts.products_with_active_prices} />
+          <MissionCount label="Janesville stores tracked" value={counts.janesville_stores_tracked} />
+          <MissionCount label="Prices updated today" value={counts.prices_updated_today} />
+          <MissionCount label="Submissions awaiting review" value={counts.community_submissions_awaiting_review} />
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <button type="button" onClick={() => openScreen('search')} className="rounded-2xl bg-emerald-700 px-4 py-4 font-black text-white">
+            Search Prices
+          </button>
+          <button type="button" onClick={() => openScreen('submit')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
+            Submit Proof
+          </button>
+          <button type="button" onClick={() => openScreen('profile')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
+            Report a Problem
+          </button>
+          <button type="button" onClick={() => openScreen('profile')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
+            Suggest an Idea
+          </button>
+        </div>
+      </section>
+
+      <section className="mt-7">
+        <SectionHeader title="Latest Patch Notes" />
+        {latestPatch ? (
+          <article className="rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100 sm:p-7">
+            <p className="text-sm font-black uppercase tracking-wide text-emerald-700">
+              {latestPatch.version_label} — {latestPatch.title}
+            </p>
+            <h2 className="mt-2 text-3xl font-black text-slate-950">{latestPatch.summary}</h2>
+            <p className="mt-2 text-sm font-bold text-slate-500">Published {shortDate(latestPatch.published_at || latestPatch.updated_at) || 'recently'}</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <PatchList title="Added" items={latestPatch.added} />
+              <PatchList title="Changed" items={latestPatch.changed} />
+              <PatchList title="Fixed" items={latestPatch.fixed} />
+              <PatchList title="Known Issues" items={latestPatch.known_issues} />
+              <PatchList title="Next Focus" items={latestPatch.next_focus} />
+            </div>
+          </article>
+        ) : (
+          <EmptyState title="Patch notes are being prepared" body="Service updates will appear here after the Owner publishes them." icon={FileCheck2} />
+        )}
+      </section>
+
+      <section className="mt-7">
+        <SectionHeader title="Known Issues" />
+        <div className="grid gap-3 sm:grid-cols-2">
+          {knownIssues.length ? knownIssues.map((issue) => (
+            <article key={issue.id} className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="text-lg font-black text-slate-950">{issue.title}</h3>
+                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-900">{titleCase(issue.status)}</span>
+              </div>
+              <p className="mt-2 font-bold text-slate-600">{issue.description}</p>
+              {issue.workaround ? <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-700">Workaround: {issue.workaround}</p> : null}
+              <p className="mt-3 text-sm font-black text-slate-500">
+                Opened {shortDate(issue.opened_at) || 'recently'} | Updated {shortDate(issue.last_updated_at) || 'recently'}
+              </p>
+            </article>
+          )) : (
+            <EmptyState title="No published known issues" body="If something looks wrong, send feedback from your account." icon={CheckCircle2} />
+          )}
+        </div>
+      </section>
+
+      <section className="mt-7 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100 sm:p-7">
+        <h2 className="text-2xl font-black text-slate-950">Why am I not seeing many prices yet?</h2>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {[
+            'Grocery Radar only shows approved prices.',
+            'Community submissions must be reviewed before becoming public.',
+            'Old, expired, or disputed prices may be hidden.',
+            'Some Janesville stores and categories are still being populated.',
+            'Prices are continuously updated to keep them useful and current.',
+            'We do not publish unverified bulk data simply to make the site look full.',
+          ].map((item) => (
+            <div key={item} className="flex gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-100">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
+              <p className="font-bold text-slate-700">{item}</p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-sm font-bold text-slate-500">
+          Prices can change at the store. Check size, promotion, membership rules, and availability before purchase.
+        </p>
+      </section>
+
+      <section className="mt-7 rounded-[2rem] bg-emerald-700 p-5 text-white shadow-lift sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-2xl">
+            <p className="text-sm font-black uppercase tracking-wide text-emerald-100">Help Build the Radar</p>
+            <h2 className="mt-2 text-3xl font-black">Built in Janesville. Powered by neighbors.</h2>
+            <p className="mt-2 text-lg font-bold text-emerald-50">
+              Upload a receipt, shelf tag, weekly ad, screenshot, or store link. We review it before any price becomes public.
             </p>
           </div>
-          <div className="rounded-2xl bg-white/15 p-3">
-            <CircleDollarSign className="h-8 w-8" />
-          </div>
+          <ReceiptText className="h-10 w-10 text-emerald-100" />
         </div>
         <button
           type="button"
-          onClick={() => openScreen('search')}
-          className="mt-4 inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 font-black text-emerald-800"
+          onClick={() => openScreen('submit')}
+          className="mt-5 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 font-black text-emerald-800"
         >
-          <Search className="h-5 w-5" />
-          Compare prices
+          <Upload className="h-5 w-5" />
+          Submit Proof
         </button>
       </section>
 
@@ -1776,6 +2013,7 @@ function proofIdFromNotification(notification) {
 function ProfileScreen({
   me,
   profileStats,
+  engagement,
   reports,
   verifications,
   rewards,
@@ -1907,6 +2145,14 @@ function ProfileScreen({
       setMessage(error.message)
     }
   }
+  const markAllNotificationsRead = async () => {
+    try {
+      await apiFetch('/api/notifications/read-all', { method: 'POST' })
+      await onNotificationsChanged()
+    } catch (error) {
+      setMessage(error.message)
+    }
+  }
   const openNotification = async (notification) => {
     if (!notification) return
     if (!notification.is_read) {
@@ -1960,6 +2206,13 @@ function ProfileScreen({
         <SummaryCard icon={BadgeCheck} label="Rank" value={profileStats?.rank || rankForPoints(points)} note="Contributor level" />
         <SummaryCard icon={CircleDollarSign} label="This week" value={Number(profileStats?.points_this_week || 0).toLocaleString()} note="Recent earning" />
         <SummaryCard icon={BellRing} label="Unread" value={unreadNotifications} note="Tap updates below" />
+      </section>
+
+      <section className="mt-5 rounded-2xl bg-emerald-50 p-5 shadow-soft ring-1 ring-emerald-100">
+        <p className="text-sm font-black uppercase tracking-wide text-emerald-800">Visit streak</p>
+        <p className="mt-2 text-3xl font-black text-slate-950">{engagement?.streak?.current || 0} day streak</p>
+        <p className="mt-2 font-bold text-slate-600">{engagement?.streak?.message || 'Welcome back. Start a new streak today.'}</p>
+        <p className="mt-3 text-sm font-bold text-slate-500">Longest streak: {engagement?.streak?.longest || 0} days · Approved prices: {engagement?.contributions?.approved_prices || 0} · Receipts submitted: {engagement?.contributions?.receipts_submitted || 0}</p>
       </section>
 
       <section className="mt-5 grid gap-4 sm:grid-cols-3">
@@ -2029,9 +2282,7 @@ function ProfileScreen({
         <div className="flex items-center justify-between gap-3">
           <SectionHeader title="Notifications" />
           {unreadNotifications ? (
-            <span className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-black text-emerald-800">
-              {unreadNotifications} unread
-            </span>
+            <div className="flex items-center gap-2"><span className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-black text-emerald-800">{unreadNotifications} unread</span><button type="button" onClick={markAllNotificationsRead} className="rounded-full bg-white px-3 py-2 text-sm font-black text-emerald-800 ring-1 ring-emerald-100">Mark all read</button></div>
           ) : null}
         </div>
         <div className="mt-3 space-y-3">
@@ -2343,6 +2594,8 @@ function App() {
   const [stores, setStores] = useState([])
   const [browse, setBrowse] = useState({ products: [], recently_approved_reports: [], needs_prices: [] })
   const [browseState, setBrowseState] = useState({ loading: true, error: '' })
+  const [homepageService, setHomepageService] = useState(fallbackHomepageService)
+  const [homepageServiceState, setHomepageServiceState] = useState({ loading: true, error: '' })
   const [searchData, setSearchData] = useState({ products: [], reports: [] })
   const [searchState, setSearchState] = useState({ loading: false, error: '' })
   const [selectedProductId, setSelectedProductId] = useState(null)
@@ -2356,6 +2609,7 @@ function App() {
   const [cartMode, setCartMode] = useState('cheapest_split')
   const [cartState, setCartState] = useState({ loading: false, error: '' })
   const [profileStats, setProfileStats] = useState(null)
+  const [engagement, setEngagement] = useState(null)
   const [profileReports, setProfileReports] = useState([])
   const [profileVerifications, setProfileVerifications] = useState([])
   const [profileNotifications, setProfileNotifications] = useState([])
@@ -2407,6 +2661,18 @@ function App() {
   const loadStores = useCallback(async () => {
     const data = await getJson('/api/stores')
     setStores(data.stores || [])
+  }, [])
+
+  const loadHomepageService = useCallback(async () => {
+    setHomepageServiceState({ loading: true, error: '' })
+    try {
+      const data = await getJson('/api/homepage-service')
+      setHomepageService(data)
+      setHomepageServiceState({ loading: false, error: '' })
+    } catch (error) {
+      setHomepageService(fallbackHomepageService)
+      setHomepageServiceState({ loading: false, error: error.message })
+    }
   }, [])
 
   const loadBrowse = useCallback(async () => {
@@ -2486,7 +2752,7 @@ function App() {
     setProfileState({ loading: true, error: '' })
     try {
       const user = me.user || me
-      const [reportsData, verificationsData, rewardsData, statsData, notificationsData, feedbackData, featureVotesData] = await Promise.all([
+      const [reportsData, verificationsData, rewardsData, statsData, notificationsData, feedbackData, featureVotesData, engagementData] = await Promise.all([
         getJson('/api/account/reports'),
         getJson('/api/account/verifications'),
         getJson('/api/rewards'),
@@ -2494,6 +2760,7 @@ function App() {
         getJson('/api/notifications'),
         getJson('/api/account/feedback'),
         getJson('/api/feature-votes'),
+        getJson('/api/account/engagement'),
       ])
       setProfileReports(reportsData.reports || [])
       setProfileVerifications(verificationsData.verifications || [])
@@ -2502,6 +2769,7 @@ function App() {
       setProfileNotifications(notificationsData.notifications || [])
       setProfileFeedback(feedbackData.tickets || [])
       setFeatureVotes(featureVotesData.options || [])
+      setEngagement(engagementData)
       setUnreadNotifications(notificationsData.unread_count || 0)
       setProfileState({ loading: false, error: '' })
     } catch (error) {
@@ -2523,13 +2791,42 @@ function App() {
   useEffect(() => {
     loadMe()
     loadStores().catch((error) => setBrowseState({ loading: false, error: error.message }))
+    loadHomepageService()
     getJson('/api/rewards').then(setRewards).catch(() => {})
     const params = new URLSearchParams(window.location.search)
     if (params.get('section') === 'proof' && params.get('proof')) {
       setSelectedProofId(params.get('proof'))
       setScreen('profile')
     }
-  }, [loadMe, loadStores])
+  }, [loadMe, loadStores, loadHomepageService])
+
+  useEffect(() => {
+    let cancelled = false
+    const sendHeartbeat = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return
+      try {
+        const data = await apiFetch('/api/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ visitor_id: visitorId() }),
+        })
+        if (data.streak && me.loggedIn) {
+          setEngagement((current) => current ? { ...current, streak: { ...current.streak, ...data.streak } } : current)
+        }
+      } catch {
+        // Presence is optional operational analytics and must never block the app.
+      }
+    }
+    sendHeartbeat()
+    const timer = window.setInterval(sendHeartbeat, 60_000)
+    const onVisibility = () => sendHeartbeat()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [me.loggedIn])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300)
@@ -2654,6 +2951,8 @@ function App() {
             stores={stores}
             loading={browseState.loading}
             error={browseState.error}
+            homepageService={homepageService}
+            homepageServiceState={homepageServiceState}
             searchTerm={searchTerm}
             setSearchTerm={setSearchTerm}
             openScreen={openScreen}
@@ -2728,6 +3027,7 @@ function App() {
           <ProfileScreen
             me={me}
             profileStats={profileStats}
+            engagement={engagement}
             reports={profileReports}
             verifications={profileVerifications}
             rewards={rewards}
