@@ -99,6 +99,8 @@ const {
   parsePriceText
 } = require("./src/priceIntake");
 const { analyzeProof, proofFingerprint, runtimeConfig: aiRuntimeConfig } = require("./src/aiProofEngine");
+const { APP_VERSION } = require("./src/version");
+const { closestStoreForAi, localProductNormalization, normalizedRetailerName, usefulDetectedStoreName } = require("./src/catalogIntelligence");
 
 const app = express();
 
@@ -471,6 +473,18 @@ function formatReport(row) {
     unit: row.unit,
     unit_price: Number(row.unit_price),
     unit_price_label: formatUnitPrice(row.unit_price, row.unit),
+    price_basis: row.price_basis || priceBasisForUnit(row.comparison_unit || row.unit),
+    comparison_price: row.comparison_price === null || row.comparison_price === undefined ? Number(row.unit_price || row.price) : Number(row.comparison_price),
+    comparison_unit: normalizePriceUnit(row.comparison_unit || row.unit),
+    primary_price_label: primaryPriceLabel(row.comparison_price ?? row.unit_price ?? row.price, row.comparison_unit || row.unit, row.size_text),
+    estimated_item_price: row.estimated_item_price === null || row.estimated_item_price === undefined ? null : Number(row.estimated_item_price),
+    estimated_item_price_label: row.estimated_item_price === null || row.estimated_item_price === undefined ? "" : `${primaryPriceLabel(row.estimated_item_price, "each")} estimated`,
+    approximate_item_weight: row.approximate_item_weight === null || row.approximate_item_weight === undefined ? null : Number(row.approximate_item_weight),
+    approximate_item_weight_unit: normalizePriceUnit(row.approximate_item_weight_unit || ""),
+    approximate_item_weight_label: row.approximate_item_weight === null || row.approximate_item_weight === undefined ? "" : `About ${Number(row.approximate_item_weight)} ${normalizePriceUnit(row.approximate_item_weight_unit || "lb")} each`,
+    package_price: row.package_price === null || row.package_price === undefined ? null : Number(row.package_price),
+    multibuy_quantity: row.multibuy_quantity === null || row.multibuy_quantity === undefined ? null : Number(row.multibuy_quantity),
+    multibuy_total_price: row.multibuy_total_price === null || row.multibuy_total_price === undefined ? null : Number(row.multibuy_total_price),
     proof_type: row.proof_type,
     photo_path: row.photo_path || "",
     photo_original_name: row.photo_original_name || "",
@@ -496,6 +510,8 @@ function formatReport(row) {
     review_started_at: row.review_started_at || "",
     review_completed_at: row.review_completed_at || row.reviewed_at || "",
     freshness_status: freshnessForPrice(row),
+    freshness_label: publicFreshnessLabel(row),
+    age_days: priceAgeDays(row),
     edited_by: row.edited_by || null,
     edited_at: row.edited_at || "",
     admin_edit_note: row.admin_edit_note || "",
@@ -985,6 +1001,8 @@ function cleanImportRowDraft(body = {}) {
   const regularPrice = parseImportNumber(body.regular_price);
   const memberCardPrice = parseImportNumber(body.member_card_price);
   const quantity = parseImportNumber(body.quantity);
+  const comparisonPrice = parseImportNumber(body.comparison_price ?? body.unit_price ?? body.price);
+  const comparisonUnit = normalizePriceUnit(body.comparison_unit || body.unit || "each");
   const categoryAliases = { "dairy & eggs": "dairy", beverages: "drinks", "meat & seafood": "meat", "health / personal care": "health / personal care", "prepared food": "prepared food" };
   const categoryInput = cleanText(body.category || "other", 40).toLowerCase();
   const category = categoryAliases[categoryInput] || categoryInput;
@@ -999,6 +1017,13 @@ function cleanImportRowDraft(body = {}) {
     variant: cleanText(body.variant, 80),
     category: CATEGORIES.includes(category) ? category : "other",
     price,
+    price_basis: cleanText(body.price_basis || priceBasisForUnit(comparisonUnit), 40),
+    comparison_price: comparisonPrice,
+    comparison_unit: comparisonUnit,
+    estimated_item_price: parseImportNumber(body.estimated_item_price),
+    approximate_item_weight: parseImportNumber(body.approximate_item_weight),
+    approximate_item_weight_unit: normalizePriceUnit(body.approximate_item_weight_unit || ""),
+    package_price: parseImportNumber(body.package_price),
     regular_price: regularPrice,
     sale_price: parseImportBoolean(body.sale_price) ? 1 : 0,
     member_card_price: memberCardPrice,
@@ -1061,12 +1086,12 @@ function importRowToReportBody(row) {
     item_name: row.item_name,
     brand: row.brand || "",
     category: row.category,
-    price: row.price,
+    price: row.comparison_price ?? row.price,
     regular_price: row.regular_price === null || row.regular_price === undefined ? "" : row.regular_price,
     sale_price: row.sale_price ? "on" : "",
     size_text: row.size_text || "",
     quantity: row.quantity,
-    unit: row.unit,
+    unit: row.comparison_unit || row.unit,
     proof_type: row.proof_type,
     notes: composeImportReportNotes(row),
     expires_at: dateInputValue(row.valid_end_at)
@@ -1085,6 +1110,60 @@ function freshnessForPrice(input = {}, now = new Date()) {
     if (Number.isFinite(end) && end < now.getTime()) return "expired";
   }
   return ageDays <= rules.current ? "current" : ageDays <= rules.aging ? "aging" : "expired";
+}
+
+function normalizePriceUnit(value = "") {
+  const normalized = cleanText(value, 30).toLowerCase();
+  const aliases = { pounds: "lb", pound: "lb", lbs: "lb", ounces: "oz", ounce: "oz", ozs: "oz", kilograms: "kg", kilogram: "kg", grams: "g", gram: "g", items: "each", item: "each", ea: "each", package: "package", pkg: "package" };
+  return aliases[normalized] || normalized;
+}
+
+function priceBasisForUnit(unit) {
+  const normalized = normalizePriceUnit(unit);
+  return ["lb", "oz", "kg", "g"].includes(normalized) ? `per_${normalized}` : normalized === "each" ? "each" : normalized === "package" ? "package" : normalized ? `per_${normalized}` : "package";
+}
+
+function primaryPriceLabel(price, unit, sizeText = "") {
+  const amount = Number(price);
+  if (!Number.isFinite(amount) || amount <= 0) return "Price needed";
+  const normalized = normalizePriceUnit(unit);
+  if (["lb", "oz", "kg", "g"].includes(normalized)) return `$${amount.toFixed(2)}/${normalized}`;
+  if (normalized === "each") return `$${amount.toFixed(2)} each`;
+  if (normalized && normalized !== "package") return `$${amount.toFixed(2)}/${normalized}`;
+  return sizeText ? `$${amount.toFixed(2)} · ${cleanText(sizeText, 80)}` : `$${amount.toFixed(2)}`;
+}
+
+function priceSourceTimestamp(input = {}) {
+  return input.source_date || input.observed_at || input.source_checked_at || input.reviewed_at || input.submitted_at || "";
+}
+
+function priceAgeDays(input = {}, now = new Date()) {
+  const timestamp = new Date(priceSourceTimestamp(input)).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.floor((now.getTime() - timestamp) / 86400000));
+}
+
+function publicFreshnessLabel(input = {}, now = new Date()) {
+  const freshness = freshnessForPrice(input, now);
+  if (freshness === "disputed") return "Disputed";
+  if (freshness === "expired") return "Expired / needs update";
+  if (freshness === "aging") return "Aging";
+  const ageDays = priceAgeDays(input, now);
+  if (ageDays === 0) return "Verified today";
+  if (ageDays === 1) return "Verified yesterday";
+  return ageDays === null ? "Recently verified" : `${ageDays} days old`;
+}
+
+function publicPriceEligibilitySql(alias = "pr") {
+  const receiptDays = PRICE_FRESHNESS_DAYS.receipt_photo.aging;
+  const shelfDays = PRICE_FRESHNESS_DAYS.shelf_tag_photo.aging;
+  const adDays = PRICE_FRESHNESS_DAYS.weekly_ad.aging;
+  const defaultDays = PRICE_FRESHNESS_DAYS.no_photo.aging;
+  return `
+    ${alias}.status = 'approved'
+    AND (${alias}.expires_at IS NULL OR ${alias}.expires_at = '' OR datetime(${alias}.expires_at) >= datetime('now'))
+    AND datetime(COALESCE(NULLIF(${alias}.source_date, ''), NULLIF(${alias}.source_checked_at, ''), NULLIF(${alias}.reviewed_at, ''), ${alias}.submitted_at)) >= datetime('now', CASE ${alias}.proof_type WHEN 'receipt_photo' THEN '-${receiptDays} days' WHEN 'shelf_tag_photo' THEN '-${shelfDays} days' WHEN 'weekly_ad' THEN '-${adDays} days' ELSE '-${defaultDays} days' END)
+  `;
 }
 
 async function recordPriceEvent(input = {}) {
@@ -1106,6 +1185,16 @@ function formatPriceImportRow(row) {
     category: row.category || "other",
     price: row.price === null || row.price === undefined ? null : Number(row.price),
     price_label: row.price === null || row.price === undefined ? "" : `$${Number(row.price).toFixed(2)}`,
+    price_basis: row.price_basis || priceBasisForUnit(row.comparison_unit || row.unit),
+    comparison_price: row.comparison_price == null ? (row.price == null ? null : Number(row.price)) : Number(row.comparison_price),
+    comparison_unit: normalizePriceUnit(row.comparison_unit || row.unit),
+    primary_price_label: primaryPriceLabel(row.comparison_price ?? row.price, row.comparison_unit || row.unit, row.size_text),
+    estimated_item_price: row.estimated_item_price == null ? null : Number(row.estimated_item_price),
+    estimated_item_price_label: row.estimated_item_price == null ? "" : `${primaryPriceLabel(row.estimated_item_price, "each")} estimated`,
+    approximate_item_weight: row.approximate_item_weight == null ? null : Number(row.approximate_item_weight),
+    approximate_item_weight_unit: normalizePriceUnit(row.approximate_item_weight_unit || ""),
+    approximate_item_weight_label: row.approximate_item_weight == null ? "" : `About ${Number(row.approximate_item_weight)} ${normalizePriceUnit(row.approximate_item_weight_unit || "lb")} each`,
+    package_price: row.package_price == null ? null : Number(row.package_price),
     regular_price: row.regular_price === null || row.regular_price === undefined ? null : Number(row.regular_price),
     sale_price: Boolean(row.sale_price),
     member_card_price: row.member_card_price === null || row.member_card_price === undefined ? null : Number(row.member_card_price),
@@ -1392,6 +1481,7 @@ function formatProduct(row) {
       ? null
       : Number(row.default_quantity),
     default_unit: row.default_unit || "",
+    default_storage_condition: row.default_storage_condition || "",
     brand_optional: Boolean(row.brand_optional),
     preferred_brand: row.preferred_brand || "",
     variant: row.variant || "",
@@ -1415,8 +1505,13 @@ function formatProduct(row) {
     pending_report_count: row.pending_report_count || 0,
     unlinked_report_count: row.unlinked_report_count || 0,
     best_price: row.best_price === null || row.best_price === undefined ? null : Number(row.best_price),
-    best_price_label: row.best_price === null || row.best_price === undefined ? "" : `$${Number(row.best_price).toFixed(2)}`,
+    best_price_unit: normalizePriceUnit(row.best_price_unit || ""),
+    best_price_label: row.best_price === null || row.best_price === undefined ? "Price needed" : primaryPriceLabel(row.best_price, row.best_price_unit, row.best_price_size_text),
     best_store_name: row.best_store_name || "",
+    best_store_id: row.best_store_id || null,
+    best_report_id: row.best_report_id || null,
+    best_price_freshness: row.best_price === null || row.best_price === undefined ? "" : publicFreshnessLabel({ source_date: row.best_source_date, submitted_at: row.best_reported_at, proof_type: row.best_proof_type, expires_at: row.best_expires_at }),
+    other_store_price_count: Number(row.other_store_price_count || 0),
     image_id: row.image_id || null,
     image_url: row.image_id ? `/api/product-images/${row.image_id}/file` : "",
     image_alt_text: row.image_alt_text || "",
@@ -1447,6 +1542,11 @@ function formatPublicProduct(row) {
 }
 
 function productSelectColumns(alias = "products") {
+  const eligible = `${publicPriceEligibilitySql("price_reports")}
+    AND (NULLIF(${alias}.default_unit, '') IS NULL OR lower(COALESCE(NULLIF(price_reports.comparison_unit, ''), price_reports.unit)) = lower(${alias}.default_unit))
+    AND (lower(COALESCE(NULLIF(price_reports.comparison_unit, ''), price_reports.unit)) NOT IN ('each', 'package') OR NULLIF(${alias}.default_size_text, '') IS NULL OR NULLIF(price_reports.size_text, '') IS NULL OR lower(price_reports.size_text) = lower(${alias}.default_size_text))`;
+  const activeUser = "COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')";
+  const order = `COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price) ASC, price_reports.submitted_at DESC`;
   return `
     ${alias}.*,
     (
@@ -1460,10 +1560,10 @@ function productSelectColumns(alias = "products") {
       ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
     ) AS image_alt_text,
     (
-      SELECT COUNT(*)
+      SELECT COUNT(DISTINCT price_reports.store_id)
       FROM price_reports
       WHERE price_reports.product_id = ${alias}.id
-        AND price_reports.status = 'approved'
+        AND ${eligible}
     ) AS approved_price_count,
     (
       SELECT COUNT(*)
@@ -1478,33 +1578,78 @@ function productSelectColumns(alias = "products") {
         AND lower(price_reports.item_name) = ${alias}.canonical_name
     ) AS unlinked_report_count,
     (
-      SELECT price_reports.price
+      SELECT COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price)
       FROM price_reports
       JOIN users ON users.id = price_reports.user_id
       WHERE price_reports.product_id = ${alias}.id
-        AND price_reports.status = 'approved'
-        AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
-      ORDER BY price_reports.unit_price ASC, price_reports.price ASC, price_reports.submitted_at DESC
+        AND ${eligible}
+        AND ${activeUser}
+      ORDER BY ${order}
       LIMIT 1
     ) AS best_price,
+    (
+      SELECT COALESCE(NULLIF(price_reports.comparison_unit, ''), price_reports.unit)
+      FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_price_unit,
+    (
+      SELECT price_reports.size_text FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_price_size_text,
     (
       SELECT stores.name
       FROM price_reports
       JOIN stores ON stores.id = price_reports.store_id
       JOIN users ON users.id = price_reports.user_id
       WHERE price_reports.product_id = ${alias}.id
-        AND price_reports.status = 'approved'
-        AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
-      ORDER BY price_reports.unit_price ASC, price_reports.price ASC, price_reports.submitted_at DESC
+        AND ${eligible}
+        AND ${activeUser}
+      ORDER BY ${order}
       LIMIT 1
     ) AS best_store_name,
+    (
+      SELECT price_reports.store_id FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_store_id,
+    (
+      SELECT price_reports.id FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_report_id,
+    (
+      SELECT price_reports.source_date FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_source_date,
+    (
+      SELECT price_reports.proof_type FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_proof_type,
+    (
+      SELECT price_reports.expires_at FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_expires_at,
+    (
+      SELECT price_reports.submitted_at FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_reported_at,
+    (
+      SELECT MAX(0, COUNT(DISTINCT price_reports.store_id) - 1) FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+    ) AS other_store_price_count,
     (
       SELECT MAX(price_reports.submitted_at)
       FROM price_reports
       JOIN users ON users.id = price_reports.user_id
       WHERE price_reports.product_id = ${alias}.id
-        AND price_reports.status = 'approved'
-        AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
+        AND ${eligible}
+        AND ${activeUser}
     ) AS last_reported_at
   `;
 }
@@ -1798,7 +1943,7 @@ function reportSelectWithProduct() {
 
 function baseApprovedReportFilters(item, storeId = null, options = {}) {
   const filters = [
-    "pr.status = 'approved'",
+    publicPriceEligibilitySql("pr"),
     "COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')"
   ];
   const params = [];
@@ -5731,15 +5876,18 @@ function cleanHomepageServiceStatusPayload(body = {}, adminUserId = null, existi
 function formatHomepagePatchNote(row = {}, includeAdminFields = false) {
   const formatted = {
     id: row.id,
+    version: row.version_label || "",
     version_label: row.version_label || "",
     title: row.title || "",
     summary: row.summary || "",
     added: parseJsonList(row.added_json),
     changed: parseJsonList(row.changed_json),
+    improved: parseJsonList(row.changed_json),
     fixed: parseJsonList(row.fixed_json),
     known_issues: parseJsonList(row.known_issues_json),
     next_focus: parseJsonList(row.next_focus_json),
     status: row.status || "draft",
+    release_date: row.release_date || "",
     published_at: row.published_at || "",
     updated_at: row.updated_at || row.created_at || ""
   };
@@ -5749,6 +5897,7 @@ function formatHomepagePatchNote(row = {}, includeAdminFields = false) {
     formatted.updated_by = row.updated_by || null;
     formatted.published_by = row.published_by || null;
     formatted.created_at = row.created_at || "";
+    formatted.internal_commit_hash = row.internal_commit_hash || "";
   }
 
   return formatted;
@@ -5760,14 +5909,16 @@ function cleanHomepagePatchNotePayload(body = {}, adminUserId = null, existing =
   const publishedAt = status === "published" ? (existing.published_at || now) : existing.published_at || null;
 
   return {
-    version_label: cleanText(body.version_label ?? existing.version_label, 80),
+    version_label: cleanText(body.version ?? body.version_label ?? existing.version_label, 80),
     title: cleanText(body.title ?? existing.title, 160),
     summary: cleanText(body.summary ?? existing.summary, 700),
     added_json: JSON.stringify(cleanTextList(body.added ?? existing.added_json)),
-    changed_json: JSON.stringify(cleanTextList(body.changed ?? existing.changed_json)),
+    changed_json: JSON.stringify(cleanTextList(body.improved ?? body.changed ?? existing.changed_json)),
     fixed_json: JSON.stringify(cleanTextList(body.fixed ?? existing.fixed_json)),
     known_issues_json: JSON.stringify(cleanTextList(body.known_issues ?? existing.known_issues_json)),
     next_focus_json: JSON.stringify(cleanTextList(body.next_focus ?? existing.next_focus_json)),
+    release_date: normalizeImportDate(body.release_date ?? existing.release_date ?? "", false) || (status === "published" ? now.slice(0, 10) : ""),
+    internal_commit_hash: cleanText(body.internal_commit_hash ?? existing.internal_commit_hash, 80),
     status,
     published_at: publishedAt,
     published_by: status === "published" ? (existing.published_by || adminUserId) : existing.published_by || null,
@@ -5872,9 +6023,7 @@ async function homepageServiceData({ includeAdminFields = false } = {}) {
         SELECT *
         FROM homepage_patch_notes
         ${includeAdminFields ? "" : "WHERE status = 'published'"}
-        ORDER BY
-          CASE status WHEN 'published' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
-          COALESCE(published_at, updated_at, created_at) DESC
+        ORDER BY ${includeAdminFields ? "CASE status WHEN 'draft' THEN 1 WHEN 'published' THEN 2 ELSE 3 END, COALESCE(updated_at, created_at) DESC" : "COALESCE(published_at, release_date, updated_at) DESC"}
         LIMIT ?
       `,
       [includeAdminFields ? 100 : 5]
@@ -5902,6 +6051,7 @@ async function homepageServiceData({ includeAdminFields = false } = {}) {
   ]);
 
   return {
+    application_version: APP_VERSION,
     generated_at: new Date().toISOString(),
     service: formatHomepageServiceStatus(statusRow || {}, includeAdminFields),
     patch_notes: patchRows.map((row) => formatHomepagePatchNote(row, includeAdminFields)),
@@ -6999,6 +7149,7 @@ app.get("/health", asyncRoute(async (request, response) => {
   response.status(databaseReachable ? 200 : 503).json({
     ok: databaseReachable,
     app: "Grocery Radar Janesville",
+    version: APP_VERSION,
     domain: APP_DOMAIN,
     environment: process.env.NODE_ENV || "development",
     database_reachable: databaseReachable,
@@ -7030,14 +7181,35 @@ app.get("/api/admin/uploads/:filename", requireAdminAccess, asyncRoute(sendAdmin
 app.get("/api/stores", asyncRoute(async (request, response) => {
   const stores = await all(
     `
-      SELECT id, name, address, city, state, store_type, active
+      SELECT stores.id, stores.name, stores.address, stores.city, stores.state, stores.store_type, stores.active,
+        COUNT(DISTINCT CASE WHEN ${publicPriceEligibilitySql("pr")} AND COALESCE(users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated') THEN pr.id END) AS current_price_count
       FROM stores
-      WHERE active = 1
-      ORDER BY id
+      LEFT JOIN price_reports pr ON pr.store_id = stores.id
+      LEFT JOIN users ON users.id = pr.user_id
+      WHERE stores.active = 1
+      GROUP BY stores.id
+      ORDER BY stores.name
     `
   );
 
   response.json({ stores });
+}));
+
+app.get("/api/stores/:id", asyncRoute(async (request, response) => {
+  const storeId = Number.parseInt(request.params.id, 10);
+  const store = await get("SELECT id, name, address, city, state, store_type FROM stores WHERE id = ? AND active = 1", [storeId]);
+  if (!store) { response.status(404).json({ error: "Store was not found." }); return; }
+  const rows = await all(`SELECT ${productSelectColumns("products")} FROM products WHERE products.status = 'active' AND EXISTS (SELECT 1 FROM price_reports pr JOIN users store_price_users ON store_price_users.id = pr.user_id WHERE pr.product_id = products.id AND pr.store_id = ? AND ${publicPriceEligibilitySql("pr")} AND COALESCE(store_price_users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated')) ORDER BY products.category, products.display_name`, [storeId]);
+  const reports = await all(`${reportSelectWithProduct()} WHERE pr.store_id = ? AND ${publicPriceEligibilitySql("pr")} AND COALESCE(users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated') ORDER BY pr.category, COALESCE(pr.comparison_price, pr.unit_price, pr.price), pr.submitted_at DESC`, [storeId]);
+  const publicReports = reports.map(formatPublicReport);
+  const categoryCounts = {};
+  for (const report of reports) categoryCounts[report.category || "other"] = (categoryCounts[report.category || "other"] || 0) + 1;
+  const products = rows.map((row) => {
+    const product = formatPublicProduct(row);
+    const bestHere = publicReports.filter((report) => Number(report.product_id) === Number(product.id)).sort((left, right) => Number(left.comparison_price ?? left.unit_price ?? left.price) - Number(right.comparison_price ?? right.unit_price ?? right.price))[0];
+    return bestHere ? { ...product, best_price: bestHere.comparison_price ?? bestHere.unit_price ?? bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.primary_price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label } : product;
+  });
+  response.json({ store: { ...store, current_price_count: reports.length }, products, reports: publicReports, category_counts: categoryCounts });
 }));
 
 app.post("/api/analytics/event", asyncRoute(async (request, response) => {
@@ -7993,6 +8165,22 @@ app.get("/api/homepage-service", asyncRoute(async (request, response) => {
   response.json(await homepageServiceData());
 }));
 
+app.get("/api/releases", asyncRoute(async (request, response) => {
+  const releases = await all("SELECT * FROM homepage_patch_notes WHERE status = 'published' ORDER BY COALESCE(release_date, published_at, updated_at) DESC, id DESC LIMIT 50");
+  const userId = Number(request.session?.userId || 0);
+  const readIds = userId ? new Set((await all("SELECT patch_note_id FROM user_release_reads WHERE user_id = ?", [userId])).map((row) => Number(row.patch_note_id))) : new Set();
+  response.json({ application_version: APP_VERSION, releases: releases.map((row) => ({ ...formatHomepagePatchNote(row), is_read: userId ? readIds.has(Number(row.id)) : null })), newest_release_id: releases[0]?.id || null, has_unread: userId ? Boolean(releases[0] && !readIds.has(Number(releases[0].id))) : null });
+}));
+
+app.post("/api/releases/:id/read", requireLogin, asyncRoute(async (request, response) => {
+  const patchId = Number.parseInt(request.params.id, 10);
+  const release = await get("SELECT id FROM homepage_patch_notes WHERE id = ? AND status = 'published'", [patchId]);
+  if (!release) { response.status(404).json({ error: "Published update was not found." }); return; }
+  const now = new Date().toISOString();
+  await run("INSERT INTO user_release_reads (user_id, patch_note_id, read_at) VALUES (?, ?, ?) ON CONFLICT(user_id, patch_note_id) DO UPDATE SET read_at = excluded.read_at", [request.currentUser.id, patchId, now]);
+  response.json({ ok: true, read_at: now });
+}));
+
 app.get("/api/announcements", asyncRoute(async (request, response) => {
   const now = new Date().toISOString();
   const rows = await all(
@@ -8306,7 +8494,7 @@ app.get("/api/browse", asyncRoute(async (request, response) => {
     all(
       `
         ${reportSelectWithProduct()}
-        WHERE pr.status = 'approved'
+        WHERE ${publicPriceEligibilitySql("pr")}
           AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
           ${reportCategoryWhere}
         ORDER BY pr.reviewed_at DESC, pr.submitted_at DESC
@@ -8361,7 +8549,7 @@ app.get("/api/search", asyncRoute(async (request, response) => {
   const category = cleanText(request.query.category, 30).toLowerCase();
   const sort = cleanText(request.query.sort, 40) || "cheapest_unit_price";
   const filters = [
-    "pr.status = 'approved'",
+    publicPriceEligibilitySql("pr"),
     "COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')",
     "(pr.product_id IS NULL OR COALESCE(products.status, 'active') NOT IN ('hidden', 'merged'))"
   ];
@@ -8648,7 +8836,9 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     `
       ${reportSelectWithProduct()}
       WHERE pr.product_id = ?
-        AND pr.status = 'approved'
+        AND ${publicPriceEligibilitySql("pr")}
+        AND (NULLIF(products.default_unit, '') IS NULL OR lower(COALESCE(NULLIF(pr.comparison_unit, ''), pr.unit)) = lower(products.default_unit))
+        AND (lower(COALESCE(NULLIF(pr.comparison_unit, ''), pr.unit)) NOT IN ('each','package') OR NULLIF(products.default_size_text, '') IS NULL OR NULLIF(pr.size_text, '') IS NULL OR lower(pr.size_text) = lower(products.default_size_text))
         AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
       ORDER BY
         stores.name ASC,
@@ -9696,13 +9886,19 @@ async function aiProcessingSettings() {
 async function aiStateForProof(proofId) {
   const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
   const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [proofId]);
+  const stores = analysis ? await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name") : [];
+  const retailer = normalizedRetailerName(analysis?.detected_store_name);
+  const storeCandidates = retailer ? stores.filter((store) => normalizedRetailerName(store.name) === retailer) : [];
   return {
     job: job ? { ...job, last_error: job.last_error || "" } : null,
     analysis: analysis ? {
       ...analysis,
       warnings: parseMetadataJson(analysis.warnings_json),
       structured: parseMetadataJson(analysis.structured_json),
-      store_mismatch: Boolean(analysis.detected_store_name && (!analysis.detected_store_id || !analysis.submitted_store_id || Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))),
+      detected_retailer: retailer,
+      detected_store_name: usefulDetectedStoreName(analysis.detected_store_name),
+      store_candidates: storeCandidates,
+      store_mismatch: Boolean(retailer && (!analysis.detected_store_id || !analysis.submitted_store_id || Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))),
       exact_store_match_found: Boolean(analysis.detected_store_id),
       store_needs_resolution: !analysis.resolved_store_id
     } : null
@@ -9736,33 +9932,47 @@ async function aiUsageAllowed(settings) {
   return Number(hour?.count || 0) < settings.max_analyses_per_hour && Number(day?.count || 0) < settings.max_analyses_per_day;
 }
 
-function closestStoreForAi(name, stores) {
-  const needle = compactIntakeSearchText(name);
-  if (!needle) return null;
-  return stores.find((store) => compactIntakeSearchText(store.name) === needle) || stores.find((store) => needle.includes(compactIntakeSearchText(store.name)) || compactIntakeSearchText(store.name).includes(needle)) || null;
+async function learnApprovedProductNormalization(row, reportId, productId, reviewerId) {
+  if (!productId) return;
+  const alias = normalizeProductName(row.item_name);
+  if (!alias) return;
+  const now = new Date().toISOString();
+  await run(`INSERT INTO product_normalization_rules (normalized_alias, display_alias, product_id, category, storage_condition, brand, variant, size_text, confirmation_count, last_approved_report_id, last_approved_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(normalized_alias) DO UPDATE SET display_alias = excluded.display_alias, product_id = excluded.product_id, category = excluded.category, storage_condition = excluded.storage_condition, brand = excluded.brand, variant = excluded.variant, size_text = excluded.size_text, confirmation_count = product_normalization_rules.confirmation_count + 1, last_approved_report_id = excluded.last_approved_report_id, last_approved_by = excluded.last_approved_by, updated_at = excluded.updated_at`, [alias, row.item_name, productId, row.category, row.storage_condition, row.brand || "", row.variant || "", row.size_text || "", reportId, reviewerId, now, now]);
+  await run("UPDATE products SET default_storage_condition = COALESCE(NULLIF(default_storage_condition, ''), ?), default_size_text = COALESCE(NULLIF(default_size_text, ''), ?), preferred_brand = COALESCE(NULLIF(preferred_brand, ''), ?), variant = COALESCE(NULLIF(variant, ''), ?), updated_at = ? WHERE id = ?", [row.storage_condition || null, row.size_text || null, row.brand || null, row.variant || null, now, productId]);
 }
 
 async function upsertAiDrafts(proof, analysisId, result, stores, products, now) {
   const validProductIds = new Set(products.map((product) => Number(product.id)));
+  const learnedRules = new Map((await all("SELECT * FROM product_normalization_rules")).map((rule) => [rule.normalized_alias, rule]));
   const detectedStore = closestStoreForAi(result.detected_store, stores);
   const initialStoreId = detectedStore && Number(detectedStore.id) === Number(proof.default_store_id) ? Number(proof.default_store_id) : null;
   for (const item of result.items) {
-    const requestedProductId = validProductIds.has(Number(item.existing_product_match_id)) && item.existing_product_match_confidence === "high" ? Number(item.existing_product_match_id) : null;
+    const learned = learnedRules.get(normalizeProductName(item.normalized_name));
+    const requestedProductId = validProductIds.has(Number(learned?.product_id)) ? Number(learned.product_id) : validProductIds.has(Number(item.existing_product_match_id)) && item.existing_product_match_confidence === "high" ? Number(item.existing_product_match_id) : null;
+    const knownProduct = requestedProductId ? products.find((product) => Number(product.id) === requestedProductId) : null;
+    const localDefaults = localProductNormalization(item.normalized_name);
     const draft = cleanImportRowDraft({
       product_id: requestedProductId,
       store_id: initialStoreId,
       item_name: item.normalized_name || "Unknown item",
       brand: item.brand,
       variant: item.variant,
-      category: item.category,
+      category: learned?.category || knownProduct?.category || localDefaults?.category || item.category,
       price: item.price,
+      price_basis: item.price_basis,
+      comparison_price: item.comparison_price ?? item.unit_price ?? item.price,
+      comparison_unit: item.comparison_unit || "each",
+      estimated_item_price: item.estimated_item_price,
+      approximate_item_weight: item.approximate_item_weight,
+      approximate_item_weight_unit: item.approximate_item_weight_unit,
+      package_price: item.package_price,
       size_text: item.package_size,
       quantity: item.quantity || 1,
-      unit: "each",
+      unit: item.comparison_unit || "each",
       proof_type: proof.proof_type,
       observed_at: result.source_date,
       source_date: result.source_date,
-      storage_condition: item.storage_type,
+      storage_condition: learned?.storage_condition || knownProduct?.default_storage_condition || localDefaults?.storage_condition || item.storage_type,
       price_type: item.price_type,
       multibuy_quantity: item.multi_buy_quantity,
       multibuy_total_price: item.multi_buy_total,
@@ -9775,7 +9985,7 @@ async function upsertAiDrafts(proof, analysisId, result, stores, products, now) 
     const existing = await get("SELECT id, status FROM price_import_rows WHERE ai_analysis_id = ? AND ai_item_index = ?", [analysisId, item.item_index]);
     let rowId = existing?.id;
     if (!existing) rowId = await insertPriceImportRowDraft(proof.id, draft, null, now);
-    else if (!['approved', 'rejected'].includes(existing.status)) await run(`UPDATE price_import_rows SET product_id = ?, store_id = ?, item_name = ?, brand = ?, variant = ?, category = ?, price = ?, size_text = ?, quantity = ?, proof_type = ?, observed_at = ?, source_date = ?, storage_condition = ?, price_type = ?, multibuy_quantity = ?, multibuy_total_price = ?, raw_receipt_line = ?, extraction_confidence = ?, extraction_notes = ?, notes = ?, status = ?, updated_at = ? WHERE id = ? AND batch_id = ?`, [draft.product_id, draft.store_id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.size_text, draft.quantity, draft.proof_type, draft.observed_at, draft.source_date, draft.storage_condition, draft.price_type, draft.multibuy_quantity, draft.multibuy_total_price, draft.raw_receipt_line, draft.extraction_confidence, draft.extraction_notes, draft.notes, draft.status, now, rowId, proof.id]);
+    else if (!['approved', 'rejected'].includes(existing.status)) await run(`UPDATE price_import_rows SET product_id = ?, store_id = ?, item_name = ?, brand = ?, variant = ?, category = ?, price = ?, price_basis = ?, comparison_price = ?, comparison_unit = ?, estimated_item_price = ?, approximate_item_weight = ?, approximate_item_weight_unit = ?, package_price = ?, size_text = ?, quantity = ?, unit = ?, proof_type = ?, observed_at = ?, source_date = ?, storage_condition = ?, price_type = ?, multibuy_quantity = ?, multibuy_total_price = ?, raw_receipt_line = ?, extraction_confidence = ?, extraction_notes = ?, notes = ?, status = ?, updated_at = ? WHERE id = ? AND batch_id = ?`, [draft.product_id, draft.store_id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.price_basis, draft.comparison_price, draft.comparison_unit, draft.estimated_item_price, draft.approximate_item_weight, draft.approximate_item_weight_unit, draft.package_price, draft.size_text, draft.quantity, draft.unit, draft.proof_type, draft.observed_at, draft.source_date, draft.storage_condition, draft.price_type, draft.multibuy_quantity, draft.multibuy_total_price, draft.raw_receipt_line, draft.extraction_confidence, draft.extraction_notes, draft.notes, draft.status, now, rowId, proof.id]);
     await run("UPDATE price_import_rows SET ai_analysis_id = ?, ai_item_index = ?, ai_confidence = ?, ai_field_confidences_json = ?, ai_warnings_json = ?, research_notes = ?, research_sources_json = ?, suggested_new_product = ?, updated_at = ? WHERE id = ? AND batch_id = ?", [analysisId, item.item_index, item.confidence, JSON.stringify(item.field_confidences), JSON.stringify(item.warnings), item.research_notes, JSON.stringify(item.research_sources), item.suggested_new_product ? 1 : 0, now, rowId, proof.id]);
   }
   await run("UPDATE price_import_rows SET status = 'removed', updated_at = ? WHERE ai_analysis_id = ? AND ai_item_index >= ? AND status NOT IN ('approved','rejected')", [now, analysisId, result.items.length]);
@@ -9803,9 +10013,16 @@ async function processAiProofJob(proofId) {
     const proof = await priceImportBatchById(proofId);
     const fullPath = uploadPathFromPhotoPath(proof.photo_path);
     if (!fullPath) throw new Error("Original proof image could not be found.");
-    const [stores, products] = await Promise.all([all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"), all("SELECT id, display_name, category, preferred_brand, common_aliases, variant, upc FROM products WHERE status = 'active' ORDER BY (SELECT COUNT(*) FROM price_reports WHERE price_reports.product_id = products.id AND price_reports.status = 'approved') DESC, display_name LIMIT 500")]);
+    const [stores, products] = await Promise.all([all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"), all("SELECT id, display_name, category, default_storage_condition, preferred_brand, common_aliases, variant, upc FROM products WHERE status = 'active' ORDER BY (SELECT COUNT(*) FROM price_reports WHERE price_reports.product_id = products.id AND price_reports.status = 'approved') DESC, display_name LIMIT 500")]);
     const submittedStore = stores.find((store) => Number(store.id) === Number(proof.default_store_id));
     const result = await analyzeProof({ proof, imageBuffer: await fs.promises.readFile(fullPath), mimeType: proof.photo_mime_type || "image/jpeg", submittedStore: submittedStore?.name || "", stores, products, env: { ...process.env, AI_MODEL: settings.model, AI_PRIMARY_MODEL: settings.model } });
+    if (!normalizedRetailerName(result.detected_store)) {
+      const retailerSignal = normalizedRetailerName([proof.source_domain, proof.source_title, proof.source_url, result.detected_store].filter(Boolean).join(" "));
+      if (retailerSignal) {
+        result.detected_store = retailerSignal;
+        result.detected_store_confidence = result.detected_store_confidence === "unknown" ? "check" : result.detected_store_confidence;
+      }
+    }
     const detectedStore = closestStoreForAi(result.detected_store, stores);
     const completedAt = new Date().toISOString();
     await run(`INSERT INTO ai_proof_analyses (job_id, proof_id, proof_type, detected_store_name, detected_store_id, detected_store_confidence, submitted_store_id, source_date, source_date_confidence, overall_confidence, warnings_json, structured_json, item_count, ready_count, check_count, unknown_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET job_id = excluded.job_id, proof_type = excluded.proof_type, detected_store_name = excluded.detected_store_name, detected_store_id = excluded.detected_store_id, detected_store_confidence = excluded.detected_store_confidence, submitted_store_id = excluded.submitted_store_id, source_date = excluded.source_date, source_date_confidence = excluded.source_date_confidence, overall_confidence = excluded.overall_confidence, warnings_json = excluded.warnings_json, structured_json = excluded.structured_json, item_count = excluded.item_count, ready_count = excluded.ready_count, check_count = excluded.check_count, unknown_count = excluded.unknown_count, updated_at = excluded.updated_at`, [job.id, proofId, result.proof_type, result.detected_store, detectedStore?.id || null, result.detected_store_confidence, proof.default_store_id || null, result.source_date, result.source_date_confidence, result.overall_confidence, JSON.stringify(result.warnings), JSON.stringify(result), result.items.length, result.counts.high, result.counts.check, result.counts.unknown, completedAt, completedAt]);
@@ -10945,6 +11162,13 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         variant,
         category,
         price,
+        price_basis,
+        comparison_price,
+        comparison_unit,
+        estimated_item_price,
+        approximate_item_weight,
+        approximate_item_weight_unit,
+        package_price,
         regular_price,
         sale_price,
         member_card_price,
@@ -10984,7 +11208,7 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         updated_by,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       batchId,
@@ -10995,6 +11219,13 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
       draft.variant,
       draft.category,
       draft.price,
+      draft.price_basis,
+      draft.comparison_price,
+      draft.comparison_unit,
+      draft.estimated_item_price,
+      draft.approximate_item_weight,
+      draft.approximate_item_weight_unit,
+      draft.package_price,
       draft.regular_price,
       draft.sale_price,
       draft.member_card_price,
@@ -11449,6 +11680,15 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         quantity,
         unit,
         unit_price,
+        price_basis,
+        comparison_price,
+        comparison_unit,
+        estimated_item_price,
+        approximate_item_weight,
+        approximate_item_weight_unit,
+        package_price,
+        multibuy_quantity,
+        multibuy_total_price,
         proof_type,
         source_date,
         storage_condition,
@@ -11476,7 +11716,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         submitted_at,
         expires_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       submitterUserId,
@@ -11495,6 +11735,15 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       cleanReport.quantity,
       unitPrice.unit,
       unitPrice.unitPrice,
+      row.price_basis || priceBasisForUnit(row.comparison_unit || unitPrice.unit),
+      row.comparison_price ?? unitPrice.unitPrice,
+      normalizePriceUnit(row.comparison_unit || unitPrice.unit),
+      row.estimated_item_price,
+      row.approximate_item_weight,
+      normalizePriceUnit(row.approximate_item_weight_unit || ""),
+      row.package_price,
+      row.multibuy_quantity,
+      row.multibuy_total_price,
       cleanReport.proof_type,
       row.source_date || dateInputValue(row.observed_at) || dateInputValue(importBatch?.receipt_purchase_date) || dateInputValue(importBatch?.observed_at),
       row.storage_condition || "unknown",
@@ -11528,9 +11777,10 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   );
 
   await organizeApprovedReportProduct(updatedReport, adminUser.id);
+  await learnApprovedProductNormalization(row, result.lastID, productId, adminUser.id);
   await notifyCartUsersForApprovedReport(updatedReport);
   await updateUserAccuracy(submitterUserId);
-  await recordPriceEvent({ reportId: result.lastID, batchId: row.batch_id, rowId: row.id, eventType: "APPROVED", actorUserId: adminUser.id, submitterUserId, reason: "Human reviewer approved draft price.", metadata: { product_id: productId, store_id: cleanReport.store_id, price: cleanReport.price } });
+  await recordPriceEvent({ reportId: result.lastID, batchId: row.batch_id, rowId: row.id, eventType: "APPROVED", actorUserId: adminUser.id, submitterUserId, reason: "Human reviewer approved draft price.", metadata: { product_id: productId, store_id: cleanReport.store_id, price: cleanReport.price, unit: cleanReport.unit, ai_analysis_id: row.ai_analysis_id || null, original_ai: row.ai_analysis_id ? { item_name: row.extracted_item_name || row.raw_receipt_line || "", price: row.extracted_price, quantity: row.extracted_quantity, unit: row.extracted_unit, field_confidences: parseMetadataJson(row.ai_field_confidences_json) } : null, human_approved: { item_name: row.item_name, category: row.category, storage_condition: row.storage_condition, size_text: row.size_text } } });
 
   await run(
     `
@@ -12955,6 +13205,8 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
   const draft = cleanImportRowDraft({
     ...existing,
     ...request.body,
+    comparison_price: request.body.comparison_price ?? request.body.price ?? existing.comparison_price,
+    comparison_unit: request.body.comparison_unit ?? request.body.unit ?? existing.comparison_unit,
     status: request.body.status || existing.status
   });
   const now = new Date().toISOString();
@@ -12970,6 +13222,13 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           variant = ?,
           category = ?,
           price = ?,
+          price_basis = ?,
+          comparison_price = ?,
+          comparison_unit = ?,
+          estimated_item_price = ?,
+          approximate_item_weight = ?,
+          approximate_item_weight_unit = ?,
+          package_price = ?,
           regular_price = ?,
           sale_price = ?,
           member_card_price = ?,
@@ -13014,6 +13273,13 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.variant,
       draft.category,
       draft.price,
+      draft.price_basis,
+      draft.comparison_price,
+      draft.comparison_unit,
+      draft.estimated_item_price,
+      draft.approximate_item_weight,
+      draft.approximate_item_weight_unit,
+      draft.package_price,
       draft.regular_price,
       draft.sale_price,
       draft.member_card_price,
@@ -13568,6 +13834,11 @@ app.get("/api/admin/v2/feedback", requireAdminAccess, requireLoggedInAdminAction
 app.get("/api/admin/v2/announcements", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const rows = await all("SELECT id, announcement_type, title, body AS message, status, published_at, updated_at FROM announcements ORDER BY updated_at DESC LIMIT 50");
   response.json({ announcements: rows });
+}));
+
+app.get("/api/admin/v2/release-notes", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const rows = await all("SELECT * FROM homepage_patch_notes ORDER BY COALESCE(release_date, published_at, updated_at) DESC, id DESC LIMIT 100");
+  response.json({ application_version: APP_VERSION, releases: rows.map((row) => formatHomepagePatchNote(row, true)) });
 }));
 
 app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
@@ -14212,6 +14483,8 @@ app.post("/api/admin/operations/homepage-service/patch-notes", requireSuperAdmin
         fixed_json,
         known_issues_json,
         next_focus_json,
+        release_date,
+        internal_commit_hash,
         status,
         published_at,
         published_by,
@@ -14220,7 +14493,7 @@ app.post("/api/admin/operations/homepage-service/patch-notes", requireSuperAdmin
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       patch.version_label,
@@ -14231,6 +14504,8 @@ app.post("/api/admin/operations/homepage-service/patch-notes", requireSuperAdmin
       patch.fixed_json,
       patch.known_issues_json,
       patch.next_focus_json,
+      patch.release_date,
+      patch.internal_commit_hash,
       patch.status,
       patch.published_at,
       patch.published_by,
@@ -14274,6 +14549,8 @@ app.post("/api/admin/operations/homepage-service/patch-notes/:id", requireSuperA
           fixed_json = ?,
           known_issues_json = ?,
           next_focus_json = ?,
+          release_date = ?,
+          internal_commit_hash = ?,
           status = ?,
           published_at = ?,
           published_by = ?,
@@ -14290,6 +14567,8 @@ app.post("/api/admin/operations/homepage-service/patch-notes/:id", requireSuperA
       patch.fixed_json,
       patch.known_issues_json,
       patch.next_focus_json,
+      patch.release_date,
+      patch.internal_commit_hash,
       patch.status,
       patch.published_at,
       patch.published_by,

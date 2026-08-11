@@ -28,6 +28,7 @@ function normalizeAiResult(raw = {}, proof = {}) {
   const items = (Array.isArray(raw.items) ? raw.items : []).slice(0, 250).map((item, index) => {
     const normalizedName = clean(item.normalized_name || item.item_name, 160);
     const price = numberOrNull(item.price);
+    const comparisonPrice = numberOrNull(item.comparison_price ?? item.primary_comparison_price ?? item.unit_price ?? item.price);
     const itemConfidence = confidence(item.confidence || item.overall_confidence);
     const warnings = stringArray(item.warnings, 12);
     if (!normalizedName) warnings.push("Could not confidently identify this item.");
@@ -42,6 +43,13 @@ function normalizeAiResult(raw = {}, proof = {}) {
       package_size: clean(item.package_size || item.size_text, 100),
       price,
       unit_price: numberOrNull(item.unit_price),
+      price_basis: clean(item.price_basis, 40),
+      comparison_price: comparisonPrice,
+      comparison_unit: clean(item.comparison_unit || item.unit_basis || "each", 30).toLowerCase(),
+      estimated_item_price: numberOrNull(item.estimated_item_price),
+      approximate_item_weight: numberOrNull(item.approximate_item_weight),
+      approximate_item_weight_unit: clean(item.approximate_item_weight_unit, 20).toLowerCase(),
+      package_price: numberOrNull(item.package_price),
       multi_buy_quantity: numberOrNull(item.multi_buy_quantity),
       multi_buy_total: numberOrNull(item.multi_buy_total),
       category: clean(item.category || "Other", 60),
@@ -93,10 +101,12 @@ function responseSchema() {
         warnings: { type: "array", items: { type: "string" } },
         items: { type: "array", items: {
           type: "object", additionalProperties: false,
-          required: ["raw_text", "normalized_name", "brand", "variant", "quantity", "package_size", "price", "unit_price", "multi_buy_quantity", "multi_buy_total", "category", "storage_type", "price_type", "existing_product_match_id", "existing_product_match_confidence", "suggested_new_product", "confidence", "field_confidences", "warnings", "research_notes", "research_sources"],
+          required: ["raw_text", "normalized_name", "brand", "variant", "quantity", "package_size", "price", "unit_price", "price_basis", "comparison_price", "comparison_unit", "estimated_item_price", "approximate_item_weight", "approximate_item_weight_unit", "package_price", "multi_buy_quantity", "multi_buy_total", "category", "storage_type", "price_type", "existing_product_match_id", "existing_product_match_confidence", "suggested_new_product", "confidence", "field_confidences", "warnings", "research_notes", "research_sources"],
           properties: {
             raw_text: { type: "string" }, normalized_name: { type: "string" }, brand: { type: "string" }, variant: { type: "string" },
             quantity: { type: ["number", "null"] }, package_size: { type: "string" }, price: { type: ["number", "null"] }, unit_price: { type: ["number", "null"] },
+            price_basis: { type: "string" }, comparison_price: { type: ["number", "null"] }, comparison_unit: { type: "string" },
+            estimated_item_price: { type: ["number", "null"] }, approximate_item_weight: { type: ["number", "null"] }, approximate_item_weight_unit: { type: "string" }, package_price: { type: ["number", "null"] },
             multi_buy_quantity: { type: ["number", "null"] }, multi_buy_total: { type: ["number", "null"] }, category: { type: "string" }, storage_type: { type: "string" }, price_type: { type: "string" },
             existing_product_match_id: { type: ["integer", "null"] }, existing_product_match_confidence: { type: "string", enum: CONFIDENCE_VALUES }, suggested_new_product: { type: "boolean" }, confidence: { type: "string", enum: CONFIDENCE_VALUES },
             field_confidences: {
@@ -129,7 +139,7 @@ async function analyzeProof({ proof, imageBuffer, mimeType, submittedStore, stor
   if (config.testResponse) return normalizeAiResult(JSON.parse(config.testResponse), proof);
   if (!config.apiKey) throw new Error("AI API credentials are not configured.");
   if (!imageBuffer?.length) throw new Error("The original proof image is unavailable.");
-  const prompt = `Analyze only Grocery Radar proof #${proof.id}. Never use information from another proof. The submitted store claim is ${submittedStore || "unknown"}; do not treat it as image evidence. Read the original proof, preserve uncertainty, and return every readable grocery line. Match Grocery Radar's existing catalog before suggesting enrichment or a new product. External enrichment is secondary and must not block extraction. Proof price evidence must never be replaced by researched prices. Known Janesville stores: ${stores.map((store) => `${store.id}:${store.name}`).join(", ")}. Candidate catalog products: ${products.map((product) => `${product.id}:${product.display_name}${product.preferred_brand ? ` | brand ${product.preferred_brand}` : ""}${product.variant ? ` | variant ${product.variant}` : ""}${product.upc ? ` | UPC ${product.upc}` : ""}${product.common_aliases ? ` | aliases ${product.common_aliases}` : ""}`).join(", ")}.`;
+  const prompt = `Analyze only Grocery Radar proof #${proof.id}. Never use information from another proof. The submitted store claim is ${submittedStore || "unknown"}; do not treat it as image evidence. Determine the retailer from visible logo, branding, webpage/domain, receipt header, store number, address, and city. If only the chain is visible, return the chain without inventing an exact location. Read every grocery line and preserve uncertainty. Match Grocery Radar's existing catalog before suggesting enrichment or a new product. External enrichment is secondary and must not block extraction. Proof price evidence must never be replaced by researched prices. Keep comparison price separate from secondary estimates: for bananas shown as $0.49/lb, $0.16 each estimated, about 0.33 lb each, return comparison_price 0.49, comparison_unit lb, estimated_item_price 0.16, and approximate_item_weight 0.33 with unit lb. Known Janesville stores: ${stores.map((store) => `${store.id}:${store.name}`).join(", ")}. Candidate catalog products: ${products.map((product) => `${product.id}:${product.display_name}${product.preferred_brand ? ` | brand ${product.preferred_brand}` : ""}${product.variant ? ` | variant ${product.variant}` : ""}${product.upc ? ` | UPC ${product.upc}` : ""}${product.common_aliases ? ` | aliases ${product.common_aliases}` : ""}`).join(", ")}.`;
   const body = {
     model: config.model,
     messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBuffer.toString("base64")}` } }] }],

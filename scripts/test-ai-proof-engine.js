@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { normalizeAiResult, responseSchema, runtimeConfig } = require("../src/aiProofEngine");
+const { closestStoreForAi, localProductNormalization, normalizedRetailerName, usefulDetectedStoreName } = require("../src/catalogIntelligence");
 
 const difficult = normalizeAiResult({
   proof_id: 777,
@@ -34,15 +35,36 @@ assert.equal(prepared.items[0].storage_type, "Fresh produce");
 assert.equal(prepared.items[1].category, "Dairy & Eggs");
 assert.equal(prepared.counts.high, 2);
 
+const aldiBananas = normalizeAiResult({
+  detected_store: "ALDI",
+  detected_store_confidence: "high",
+  items: [{ raw_text: "$0.49/lb · $0.16 each estimated · about 0.33 lb each", normalized_name: "Bananas", price: 0.49, comparison_price: 0.49, comparison_unit: "lb", estimated_item_price: 0.16, approximate_item_weight: 0.33, approximate_item_weight_unit: "lb", category: "Produce", storage_type: "Fresh produce", confidence: "high" }]
+}, { id: 10, proof_type: "weekly_ad" });
+assert.equal(aldiBananas.detected_store, "ALDI");
+assert.equal(aldiBananas.items[0].comparison_price, 0.49);
+assert.equal(aldiBananas.items[0].comparison_unit, "lb");
+assert.equal(aldiBananas.items[0].estimated_item_price, 0.16);
+assert.equal(aldiBananas.items[0].approximate_item_weight, 0.33);
+
 const schema = responseSchema();
 assert.equal(schema.strict, true);
 assert.equal(schema.schema.additionalProperties, false);
 assert.equal(schema.schema.properties.items.items.additionalProperties, false);
 assert.equal(schema.schema.properties.items.items.properties.field_confidences.additionalProperties, false);
 assert.ok(schema.schema.properties.items.items.properties.field_confidences.required.includes("price"));
+assert.ok(schema.schema.properties.items.items.required.includes("comparison_price"));
 
 const routing = runtimeConfig({ AI_MODEL: "legacy-model", AI_PRIMARY_MODEL: "primary-model", AI_FALLBACK_MODEL: "fallback-model" });
 assert.equal(routing.model, "primary-model");
 assert.equal(routing.fallbackModel, "fallback-model");
+
+const janesvilleStores = [{ id: 1, name: "Woodman's Janesville" }, { id: 2, name: "ALDI Janesville East" }, { id: 3, name: "ALDI Janesville West" }];
+assert.equal(normalizedRetailerName("ALDI fresh-produce webpage"), "ALDI");
+assert.equal(closestStoreForAi("ALDI", janesvilleStores), null, "A chain-only signal must not invent an exact location.");
+assert.equal(closestStoreForAi("unknown", janesvilleStores), null, "Unknown must never become a selectable store.");
+assert.equal(usefulDetectedStoreName("unknown"), "");
+assert.equal(localProductNormalization("Bananas").category, "produce");
+assert.equal(localProductNormalization("Bananas").storage_condition, "fresh produce");
+assert.equal(localProductNormalization("Whole Milk").storage_condition, "refrigerated");
 
 console.log("AI proof engine tests passed.");

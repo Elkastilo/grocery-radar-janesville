@@ -879,7 +879,9 @@ function renderReceiptReview(data) {
   const readyCount = Number(summary.ready || 0);
   const approvableReady = Number(summary.approvable_ready || 0);
   const submittedStore = batch.proof_store_name || batch.receipt_store_name || "Not selected";
-  const detectedStore = analysis.detected_store_name || "Could not determine";
+  const detectedStore = analysis.detected_retailer || analysis.detected_store_name || "Not determined";
+  const candidateIds = new Set((analysis.store_candidates || []).map((store) => Number(store.id)));
+  const storeOptions = [...(data.stores || [])].sort((left, right) => Number(candidateIds.has(Number(right.id))) - Number(candidateIds.has(Number(left.id))) || left.name.localeCompare(right.name));
   const resolvedStore = (data.stores || []).find((store) => Number(store.id) === Number(analysis.resolved_store_id));
   receiptReviewWorkspace.hidden = false;
   receiptReviewWorkspace.innerHTML = `
@@ -893,7 +895,7 @@ function renderReceiptReview(data) {
       </section>
       <section class="receipt-items-panel">
         <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong>${escapeHtml(aiJobLabel(jobStatus))}</strong></div><button class="quiet-button" type="button" data-rerun-ai>${ai.job ? "Re-run AI" : "Run AI"}</button></div>
-        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>AI detected chain:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${escapeHtml(detectedStore)} detected. Exact location not confirmed.</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${(data.stores || []).map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div></section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
+        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div></section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
         <div class="items-summary"><div><h3>${rows.length} item${rows.length === 1 ? "" : "s"} found</h3><span>${readyCount} ready · ${flaggedCount} need review</span></div><div class="card-actions">${flaggedCount ? `<button class="secondary-button" type="button" data-toggle-ready>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>` : ""}${data.can_approve && approvableReady ? `<button class="primary-button" type="button" data-approve-ready>Approve All ${approvableReady} Ready</button>` : ""}</div></div>
         <div id="receiptEditableRows">${rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve)).join("") || '<div class="empty-state">No draft items yet.</div>'}</div>
         <details><summary>Manual fallbacks</summary><p class="field-help">If AI cannot finish, paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
@@ -1619,20 +1621,22 @@ function renderHomepageServiceWidget(data) {
     </form>
     <div class="operation-two-col">
       <form id="homepagePatchNoteForm" class="admin-card compact-card">
+        <input name="patch_id" type="hidden" value="${escapeHtml(latestPatch.id || "")}">
         <div class="card-topline">
-          <h4>Patch Notes</h4>
+          <h4>Release Notes</h4>
           <span class="badge ${latestPatch.status === "published" ? "status-ready" : "status-warning"}">${escapeHtml(titleCase(latestPatch.status || "draft"))}</span>
         </div>
         <label><span>Version</span><input name="version_label" type="text" maxlength="80" value="${escapeHtml(latestPatch.version_label || service.version_label || "")}" required></label>
         <label><span>Title</span><input name="title" type="text" maxlength="160" value="${escapeHtml(latestPatch.title || "")}" required></label>
-        <label><span>Status</span><select name="status"><option value="draft">Draft</option><option value="published" selected>Published</option><option value="archived">Archived</option></select></label>
+        <label><span>Status</span><select name="status"><option value="draft" selected>Draft</option><option value="published">Published</option><option value="archived">Archived</option></select></label>
+        <label><span>Release date</span><input name="release_date" type="date" value="${dateInputValue(latestPatch.release_date)}"></label>
         <label><span>Summary</span><textarea name="summary" rows="3" maxlength="700" required>${escapeHtml(latestPatch.summary || "")}</textarea></label>
         <label><span>Added</span><textarea name="added" rows="4" maxlength="1200">${textareaList(latestPatch.added)}</textarea></label>
-        <label><span>Changed</span><textarea name="changed" rows="4" maxlength="1200">${textareaList(latestPatch.changed)}</textarea></label>
+        <label><span>Improved</span><textarea name="improved" rows="4" maxlength="1200">${textareaList(latestPatch.improved || latestPatch.changed)}</textarea></label>
         <label><span>Fixed</span><textarea name="fixed" rows="4" maxlength="1200">${textareaList(latestPatch.fixed)}</textarea></label>
         <label><span>Known issues</span><textarea name="known_issues" rows="4" maxlength="1200">${textareaList(latestPatch.known_issues)}</textarea></label>
         <label><span>Next focus</span><textarea name="next_focus" rows="4" maxlength="1200">${textareaList(latestPatch.next_focus)}</textarea></label>
-        <button class="secondary-button" type="submit">Create patch note</button>
+        <div class="inline-actions"><button class="secondary-button" type="submit" name="release_action" value="draft">Save draft</button><button class="primary-button" type="submit" name="release_action" value="published">Publish update</button></div>
       </form>
       <form id="homepageKnownIssueForm" class="admin-card compact-card">
         <div class="card-topline">
@@ -1940,9 +1944,13 @@ async function createHomepagePatchNote(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
   const payload = Object.fromEntries(formData.entries());
+  const patchId = payload.patch_id;
+  delete payload.patch_id;
+  payload.status = event.submitter?.value === "published" ? "published" : "draft";
+  if (payload.status === "published" && !window.confirm("Publish this update publicly now? Publish only after production verification.")) return;
 
   try {
-    await fetchJson(`/api/admin/operations/homepage-service/patch-notes${adminQuery()}`, {
+    await fetchJson(`/api/admin/operations/homepage-service/patch-notes${patchId ? `/${encodeURIComponent(patchId)}` : ""}${adminQuery()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)

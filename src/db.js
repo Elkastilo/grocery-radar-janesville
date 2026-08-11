@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
+const { APP_VERSION } = require("./version");
 
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
@@ -234,6 +235,7 @@ async function initDb() {
       default_size_text TEXT,
       default_quantity REAL,
       default_unit TEXT,
+      default_storage_condition TEXT,
       brand_optional INTEGER NOT NULL DEFAULT 1,
       preferred_brand TEXT,
       common_aliases TEXT,
@@ -354,6 +356,15 @@ async function initDb() {
       quantity REAL NOT NULL,
       unit TEXT NOT NULL,
       unit_price REAL NOT NULL,
+      price_basis TEXT,
+      comparison_price REAL,
+      comparison_unit TEXT,
+      estimated_item_price REAL,
+      approximate_item_weight REAL,
+      approximate_item_weight_unit TEXT,
+      package_price REAL,
+      multibuy_quantity REAL,
+      multibuy_total_price REAL,
       proof_type TEXT NOT NULL,
       photo_path TEXT,
       photo_original_name TEXT,
@@ -391,6 +402,28 @@ async function initDb() {
   `);
 
   await migratePriceReportsTable();
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_normalization_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      normalized_alias TEXT NOT NULL UNIQUE,
+      display_alias TEXT NOT NULL,
+      product_id INTEGER NOT NULL,
+      category TEXT,
+      storage_condition TEXT,
+      brand TEXT,
+      variant TEXT,
+      size_text TEXT,
+      confirmation_count INTEGER NOT NULL DEFAULT 1,
+      last_approved_report_id INTEGER,
+      last_approved_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (last_approved_report_id) REFERENCES price_reports(id) ON DELETE SET NULL,
+      FOREIGN KEY (last_approved_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
 
   await run(`
     CREATE TABLE IF NOT EXISTS price_provenance_events (
@@ -688,6 +721,13 @@ async function initDb() {
       size_text TEXT,
       quantity REAL,
       unit TEXT,
+      price_basis TEXT,
+      comparison_price REAL,
+      comparison_unit TEXT,
+      estimated_item_price REAL,
+      approximate_item_weight REAL,
+      approximate_item_weight_unit TEXT,
+      package_price REAL,
       proof_type TEXT NOT NULL DEFAULT 'weekly_ad',
       observed_at TEXT,
       valid_start_at TEXT,
@@ -1036,6 +1076,8 @@ async function initDb() {
       fixed_json TEXT NOT NULL DEFAULT '[]',
       known_issues_json TEXT NOT NULL DEFAULT '[]',
       next_focus_json TEXT NOT NULL DEFAULT '[]',
+      release_date TEXT,
+      internal_commit_hash TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
       published_at TEXT,
       published_by INTEGER,
@@ -1046,6 +1088,19 @@ async function initDb() {
       FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL,
       FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
       FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await migrateHomepagePatchNotesTable();
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_release_reads (
+      user_id INTEGER NOT NULL,
+      patch_note_id INTEGER NOT NULL,
+      read_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, patch_note_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (patch_note_id) REFERENCES homepage_patch_notes(id) ON DELETE CASCADE
     )
   `);
 
@@ -1275,6 +1330,45 @@ async function initDb() {
   await run(
     `
       INSERT INTO homepage_patch_notes (
+        version_label, title, summary, added_json, changed_json, fixed_json,
+        known_issues_json, next_focus_json, release_date, internal_commit_hash,
+        status, published_at, created_at, updated_at
+      )
+      SELECT ?, 'Prices + AI Accuracy',
+        'Prices are easier to find, AI store handling is more accurate, and Grocery Radar now has permanent public release notes.',
+        ?, ?, ?, ?, '[]', NULL, '', 'draft', NULL, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = ?)
+    `,
+    [
+      `v${APP_VERSION}`,
+      JSON.stringify([
+        "Public product prices are easier to see throughout Grocery Radar.",
+        "New What's New / release-note system."
+      ]),
+      JSON.stringify([
+        "Receipt review store detection.",
+        "Price normalization for unit and estimated prices.",
+        "Product category/storage suggestions.",
+        "Public product and store browsing."
+      ]),
+      JSON.stringify([
+        "Unknown retailer suggestions can no longer be selected as a real store.",
+        "Improved handling of grocery prices such as per-pound versus estimated-each pricing."
+      ]),
+      JSON.stringify([
+        "AI may still need human help identifying exact store locations.",
+        "Some older products may not yet have images or current prices.",
+        "Product catalog coverage is still growing."
+      ]),
+      now,
+      now,
+      `v${APP_VERSION}`
+    ]
+  );
+
+  await run(
+    `
+      INSERT INTO homepage_patch_notes (
         version_label,
         title,
         summary,
@@ -1289,7 +1383,7 @@ async function initDb() {
         updated_at
       )
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?
-      WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes)
+      WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = ?)
     `,
     [
       "Early Access 0.2.0",
@@ -1302,7 +1396,8 @@ async function initDb() {
       JSON.stringify(["Importing the first large set of verified Janesville prices"]),
       now,
       now,
-      now
+      now,
+      "Early Access 0.2.0"
     ]
   );
 
@@ -1349,6 +1444,9 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_users_email_verification_token ON users(email_verification_token)");
   await run("CREATE INDEX IF NOT EXISTS idx_users_account_status ON users(account_status)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_status ON price_reports(status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_reports_public_product ON price_reports(product_id, status, proof_type, source_date, submitted_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_reports_public_store ON price_reports(store_id, status, product_id, submitted_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_normalization_alias ON product_normalization_rules(normalized_alias, product_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_store_requests_status ON store_requests(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_cart_items_user ON cart_items(user_id)");
@@ -1388,6 +1486,7 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_feature_votes_user ON feature_votes(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_announcements_status_scope ON announcements(status, scope, starts_at, ends_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_homepage_patch_notes_public ON homepage_patch_notes(status, published_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_user_release_reads_user ON user_release_reads(user_id, read_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_homepage_known_issues_public ON homepage_known_issues(visibility_status, last_updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin_time ON admin_audit_log(admin_user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action_time ON admin_audit_log(action, created_at)");
@@ -1520,6 +1619,15 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "review_started_at", "TEXT");
   await addColumnIfMissing("price_reports", "review_completed_at", "TEXT");
   await addColumnIfMissing("price_reports", "freshness_status", "TEXT NOT NULL DEFAULT 'current'");
+  await addColumnIfMissing("price_reports", "price_basis", "TEXT");
+  await addColumnIfMissing("price_reports", "comparison_price", "REAL");
+  await addColumnIfMissing("price_reports", "comparison_unit", "TEXT");
+  await addColumnIfMissing("price_reports", "estimated_item_price", "REAL");
+  await addColumnIfMissing("price_reports", "approximate_item_weight", "REAL");
+  await addColumnIfMissing("price_reports", "approximate_item_weight_unit", "TEXT");
+  await addColumnIfMissing("price_reports", "package_price", "REAL");
+  await addColumnIfMissing("price_reports", "multibuy_quantity", "REAL");
+  await addColumnIfMissing("price_reports", "multibuy_total_price", "REAL");
   await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 
@@ -1550,6 +1658,7 @@ async function migrateProductsTable() {
   await addColumnIfMissing("products", "default_size_text", "TEXT");
   await addColumnIfMissing("products", "default_quantity", "REAL");
   await addColumnIfMissing("products", "default_unit", "TEXT");
+  await addColumnIfMissing("products", "default_storage_condition", "TEXT");
   await addColumnIfMissing("products", "brand_optional", "INTEGER NOT NULL DEFAULT 1");
   await addColumnIfMissing("products", "preferred_brand", "TEXT");
   await addColumnIfMissing("products", "common_aliases", "TEXT");
@@ -1652,6 +1761,13 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "multibuy_details", "TEXT");
   await addColumnIfMissing("price_import_rows", "multibuy_quantity", "REAL");
   await addColumnIfMissing("price_import_rows", "multibuy_total_price", "REAL");
+  await addColumnIfMissing("price_import_rows", "price_basis", "TEXT");
+  await addColumnIfMissing("price_import_rows", "comparison_price", "REAL");
+  await addColumnIfMissing("price_import_rows", "comparison_unit", "TEXT");
+  await addColumnIfMissing("price_import_rows", "estimated_item_price", "REAL");
+  await addColumnIfMissing("price_import_rows", "approximate_item_weight", "REAL");
+  await addColumnIfMissing("price_import_rows", "approximate_item_weight_unit", "TEXT");
+  await addColumnIfMissing("price_import_rows", "package_price", "REAL");
   await addColumnIfMissing("price_import_rows", "storage_condition", "TEXT");
   await addColumnIfMissing("price_import_rows", "price_type", "TEXT");
   await addColumnIfMissing("price_import_rows", "source_date", "TEXT");
@@ -1700,6 +1816,11 @@ async function migrateAiProcessingSettingsTable() {
 
 async function migrateAiProofJobsTable() {
   await addColumnIfMissing("ai_proof_jobs", "manual_requested", "INTEGER NOT NULL DEFAULT 0");
+}
+
+async function migrateHomepagePatchNotesTable() {
+  await addColumnIfMissing("homepage_patch_notes", "release_date", "TEXT");
+  await addColumnIfMissing("homepage_patch_notes", "internal_commit_hash", "TEXT");
 }
 
 async function updateUserAccuracy(userId) {

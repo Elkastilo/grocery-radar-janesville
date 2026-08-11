@@ -587,6 +587,25 @@ async function main() {
     assert.equal(publicReport.has_private_receipt_proof, true);
     assert.equal(Object.prototype.hasOwnProperty.call(publicReport, "photo_path"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(publicReport, "reviewed_by"), false);
+    assert.ok(publicReport.primary_price_label);
+    assert.ok(publicReport.freshness_label);
+
+    const noPriceProduct = await updateTempUser(app.dataDir, "INSERT INTO products (canonical_name, display_name, category, status, created_at, updated_at) VALUES ('price needed test item', 'Price Needed Test Item', 'pantry', 'active', ?, ?)", [new Date().toISOString(), new Date().toISOString()]);
+    const noPriceSearch = await normal.get("/api/products?q=Price%20Needed%20Test%20Item");
+    assert.equal(noPriceSearch.body.products[0].id, noPriceProduct.lastID);
+    assert.equal(noPriceSearch.body.products[0].best_price, null);
+    assert.equal(noPriceSearch.body.products[0].best_price_label, "Price needed");
+
+    const nowPrice = new Date().toISOString();
+    await updateTempUser(app.dataDir, `INSERT INTO price_reports (user_id, submitted_by_user_id, store_id, product_id, item_name, category, price, quantity, unit, unit_price, comparison_price, comparison_unit, proof_type, confidence, status, source_date, expires_at, submitted_at) SELECT ?, ?, id, ?, 'Milk 2%', 'dairy', 0.55, 1, ?, 0.55, 0.55, ?, 'receipt_photo', 'high', 'approved', ?, '2099-01-01', ? FROM stores WHERE active = 1 ORDER BY id LIMIT 1`, [normalRegistration.user.id, normalRegistration.user.id, approvedResult.product_id, provenance.unit, provenance.unit, nowPrice.slice(0, 10), nowPrice]);
+    await updateTempUser(app.dataDir, `INSERT INTO price_reports (user_id, submitted_by_user_id, store_id, product_id, item_name, category, price, quantity, unit, unit_price, comparison_price, comparison_unit, proof_type, confidence, status, source_date, expires_at, submitted_at) SELECT ?, ?, id, ?, 'Milk 2%', 'dairy', 0.10, 1, 'each', 0.10, 0.10, 'each', 'weekly_ad', 'high', 'expired', '2020-01-01', '2020-01-02', ? FROM stores WHERE active = 1 ORDER BY id DESC LIMIT 1`, [normalRegistration.user.id, normalRegistration.user.id, approvedResult.product_id, nowPrice]);
+    const publicProducts = await normal.get(`/api/products?q=${encodeURIComponent(productDetail.body.product.display_name)}`);
+    const pricedProduct = publicProducts.body.products.find((item) => item.id === approvedResult.product_id);
+    assert.equal(pricedProduct.best_price, 0.55, "Expired prices must not become best current prices.");
+    assert.equal(pricedProduct.best_price_label, provenance.unit === "each" ? "$0.55 each" : `$0.55/${provenance.unit}`);
+    const publicStore = await normal.get(`/api/stores/${provenance.store_id}`);
+    assert.equal(publicStore.response.status, 200);
+    assert.ok(publicStore.body.products.some((item) => item.id === approvedResult.product_id && item.best_price_label !== "Price needed"));
 
     const correctedPrice = await owner.post(`/api/admin/reports/${approvedResult.report_id}/edit`, { price: "3.59", admin_edit_note: "Corrected test price while preserving original history." });
     assert.equal(correctedPrice.response.status, 200, JSON.stringify(correctedPrice.body));
@@ -781,6 +800,10 @@ async function main() {
     assert.ok(Array.isArray(initialHomepageService.body.known_issues));
     assert.equal(JSON.stringify(initialHomepageService.body).includes(OWNER_EMAIL), false);
     assert.equal(JSON.stringify(initialHomepageService.body).includes("password"), false);
+    assert.equal(initialHomepageService.body.application_version, "0.9.3");
+    const initialReleases = await normal.get("/api/releases");
+    assert.equal(initialReleases.response.status, 200);
+    assert.equal(initialReleases.body.releases.some((release) => release.version_label === "v0.9.3"), false, "The seeded v0.9.3 draft must not be public.");
 
     const blockedHomepageStatus = await normal.post("/api/admin/operations/homepage-service/status", {
       service_status: "maintenance",
@@ -845,6 +868,23 @@ async function main() {
       status: "draft"
     });
     assert.equal(hiddenPatch.response.status, 201, JSON.stringify(hiddenPatch.body));
+    const ownerReleaseNotes = await owner.get("/api/admin/v2/release-notes");
+    assert.equal(ownerReleaseNotes.response.status, 200);
+    const seededReleaseDraft = ownerReleaseNotes.body.releases.find((release) => release.version_label === "v0.9.3" && release.status === "draft");
+    assert.ok(seededReleaseDraft);
+    assert.equal((await reviewer.get("/api/admin/v2/release-notes")).response.status, 403);
+    assert.equal((await reviewer.post(`/api/admin/operations/homepage-service/patch-notes/${seededReleaseDraft.id}`, { ...seededReleaseDraft, status: "published" })).response.status, 403);
+    const publishSeededRelease = await owner.post(`/api/admin/operations/homepage-service/patch-notes/${seededReleaseDraft.id}`, { ...seededReleaseDraft, status: "published", release_date: "2026-08-11" });
+    assert.equal(publishSeededRelease.response.status, 200, JSON.stringify(publishSeededRelease.body));
+    const releasesAfterPublish = await normal.get("/api/releases");
+    assert.ok(releasesAfterPublish.body.releases.some((release) => release.version_label === "v0.9.3"));
+    const publishedRelease = releasesAfterPublish.body.releases.find((release) => release.id === publicPatch.body.patch_note.id);
+    assert.ok(publishedRelease);
+    assert.deepEqual(publishedRelease.improved, ["Clearer Janesville early-access messaging"]);
+    const readRelease = await normal.post(`/api/releases/${publishedRelease.id}/read`, {});
+    assert.equal(readRelease.response.status, 200);
+    const releasesAfterRead = await normal.get("/api/releases");
+    assert.equal(releasesAfterRead.body.releases.find((release) => release.id === publishedRelease.id).is_read, true);
 
     const publicIssue = await owner.post("/api/admin/operations/homepage-service/known-issues", {
       title: "Published Homepage Test Issue",

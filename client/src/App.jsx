@@ -137,7 +137,7 @@ const isDealReport = (report) => Boolean(report?.sale_price || report?.proof_typ
 const productPrice = (product) => hasApprovedProductPrice(product)
   ? product?.best_price_label || money(product.best_price)
   : ''
-const reportSortPrice = (report) => numericPrice(report?.unit_price) ?? numericPrice(report?.price) ?? Number.POSITIVE_INFINITY
+const reportSortPrice = (report) => numericPrice(report?.comparison_price) ?? numericPrice(report?.unit_price) ?? numericPrice(report?.price) ?? Number.POSITIVE_INFINITY
 const compareCountLabel = (count = 0) => {
   const number = Number(count || 0)
   if (!number) return 'No stores compared yet'
@@ -360,9 +360,9 @@ function ApiError({ message, onRetry }) {
   )
 }
 
-function StoreCard({ store }) {
+function StoreCard({ store, onOpen }) {
   return (
-    <article className="min-w-0 overflow-hidden rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100">
+    <button type="button" onClick={() => onOpen?.(store.id)} className="min-w-0 overflow-hidden rounded-2xl bg-white p-4 text-left shadow-soft ring-1 ring-slate-100">
       <div className="flex items-center gap-3">
         <StoreLogo store={store} />
         <div className="min-w-0">
@@ -374,7 +374,8 @@ function StoreCard({ store }) {
         <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
         <span className="min-w-0 break-words">{store.address || `${store.city || 'Janesville'}, ${store.state || 'WI'}`}</span>
       </div>
-    </article>
+      {store.current_price_count != null ? <p className="mt-2 text-sm font-black text-slate-600">{Number(store.current_price_count)} current prices</p> : null}
+    </button>
   )
 }
 
@@ -928,13 +929,15 @@ function CatalogTile({ product, reports, openProduct }) {
       </div>
       <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
       <p className="mt-1 text-2xl font-black text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
-      <p className="mt-1 line-clamp-2 text-sm font-bold text-slate-500">{storeName ? `Best current price: ${storeName}` : titleCase(product.category)}</p>
+      <p className="mt-1 line-clamp-2 text-sm font-bold text-slate-600">{storeName || titleCase(product.category)}</p>
+      {hasApprovedProductPrice(product) ? <p className="mt-1 text-sm font-bold text-emerald-700">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-1 text-sm font-bold text-amber-800">Submit Price</p>}
+      {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
     </button>
   )
 }
 
 function HomeScreen(props) {
-  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct } = props
+  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore } = props
   const service = homepageService?.service || fallbackHomepageService.service
   const products = browse.products || []
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
@@ -964,7 +967,7 @@ function HomeScreen(props) {
 
       <section className="mt-9 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100">
         <SectionHeader title="Janesville Stores" />
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} />)}</div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
         <button type="button" onClick={() => openScreen('stores')} className="mt-4 min-h-12 rounded-2xl bg-emerald-50 px-5 font-black text-emerald-800">View all stores</button>
       </section>
 
@@ -976,13 +979,13 @@ function HomeScreen(props) {
   )
 }
 
-function StoresScreen({ stores }) {
+function StoresScreen({ stores, openStore }) {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
       <p className="text-sm font-black uppercase tracking-wide text-emerald-700">Janesville</p>
       <h1 className="mt-2 text-4xl font-black text-slate-950">Stores</h1>
       <p className="mt-2 text-lg font-bold text-slate-600">Local stores currently tracked by Grocery Radar.</p>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{stores.map((store) => <StoreCard key={store.id} store={store} />)}</div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{stores.map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
     </div>
   )
 }
@@ -1007,7 +1010,7 @@ function SearchScreen({
   const reports = (activeFilter === 'deals'
     ? approvedReports.filter(isDealReport)
     : approvedReports).filter(filterFood)
-  const products = (searchData.products || []).filter(hasApprovedProductPrice).filter(filterFood)
+  const products = (searchData.products || []).filter(filterFood)
   const productSectionTitle = activeFilter === 'cheapest' ? 'Lowest approved prices' : 'Approved product matches'
 
   return (
@@ -1154,8 +1157,11 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <p className="text-sm font-bold text-emerald-100">Cheapest approved price</p>
-                    <p className="mt-1 text-5xl font-black">{cheapest.price_label || money(cheapest.price)}</p>
+                    <p className="mt-1 text-5xl font-black">{cheapest.primary_price_label || cheapest.price_label || money(cheapest.price)}</p>
                     <p className="mt-2 text-lg font-bold">{cheapest.store_name}</p>
+                    <p className="mt-1 font-bold text-emerald-100">{cheapest.freshness_label || 'Recently verified'}</p>
+                    {cheapest.estimated_item_price_label ? <p className="mt-2 text-sm font-bold text-emerald-100">{cheapest.estimated_item_price_label}</p> : null}
+                    {cheapest.approximate_item_weight_label ? <p className="text-sm font-bold text-emerald-100">{cheapest.approximate_item_weight_label}</p> : null}
                   </div>
                   <StoreLogo store={{ name: cheapest.store_name }} size="lg" />
                 </div>
@@ -2657,7 +2663,34 @@ function ActivityList({ title, items, type }) {
   )
 }
 
-function DataBanner({ openScreen, unreadNotifications = 0 }) {
+function StoreDetailScreen({ detail, loading, error, openProduct, openScreen }) {
+  const store = detail?.store
+  const grouped = Object.entries((detail?.products || []).reduce((result, product) => {
+    const key = product.category || 'other'; (result[key] ||= []).push(product); return result
+  }, {}))
+  return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
+    <button type="button" onClick={() => openScreen('stores')} className="mb-4 rounded-full bg-white px-4 py-2 font-black ring-1 ring-slate-200">Back to stores</button>
+    {loading ? <LoadingCard label="Loading current store prices..." /> : null}
+    {error ? <ApiError message={error} /> : null}
+    {store ? <><ScreenTitle eyebrow="Janesville store" title={store.name} subtitle={`${Number(store.current_price_count || 0)} current approved prices · Inventory is not live.`} />
+      {grouped.map(([category, products]) => <section key={category} className="mt-7"><SectionHeader title={titleCase(category)} /><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{products.map((product) => <CatalogTile key={product.id} product={product} reports={detail.reports || []} openProduct={openProduct} />)}</div></section>)}
+      {!grouped.length ? <EmptyState title="Prices needed" body="This store has no current approved product prices yet." icon={Store} /> : null}</> : null}
+  </div>
+}
+
+function UpdatesScreen({ releases, version, markRead }) {
+  return <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
+    <ScreenTitle eyebrow="Grocery Radar" title="What's New" subtitle={version ? `Grocery Radar v${version}` : 'Published Grocery Radar updates'} />
+    <div className="space-y-4">{releases.map((release) => <article key={release.id} className="rounded-3xl bg-white p-5 shadow-soft ring-1 ring-slate-100" onFocus={() => markRead(release)}>
+      <p className="text-sm font-black text-emerald-700">{release.version_label}</p><h2 className="mt-1 text-2xl font-black">{release.title}</h2><p className="mt-2 font-semibold text-slate-600">{release.summary}</p>
+      {[['New', release.added], ['Improved', release.improved || release.changed], ['Fixed', release.fixed], ['Known issues', release.known_issues]].map(([label, items]) => items?.length ? <section key={label} className="mt-4"><h3 className="font-black">{label}</h3><ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">{items.map((item) => <li key={item}>{item}</li>)}</ul></section> : null)}
+      <button type="button" onClick={() => markRead(release)} className="mt-4 min-h-11 rounded-xl bg-emerald-50 px-4 font-black text-emerald-800">Mark as read</button>
+    </article>)}</div>
+    {!releases.length ? <EmptyState title="No published updates yet" body="Release notes appear here after the Owner verifies and publishes them." icon={FileCheck2} /> : null}
+  </div>
+}
+
+function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false }) {
   return (
     <div className="sticky top-0 z-30 border-b border-emerald-100 bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
@@ -2669,6 +2702,7 @@ function DataBanner({ openScreen, unreadNotifications = 0 }) {
           </span>
         </button>
         <div className="flex gap-2">
+          <button type="button" onClick={openUpdates} className="relative min-h-12 rounded-2xl bg-white px-3 text-sm font-black text-emerald-800 ring-1 ring-emerald-100">What's New{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600" aria-label="New update available" /> : null}</button>
           <button type="button" onClick={() => openScreen('profile')} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open notifications">
             <BellRing className="h-6 w-6" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
@@ -2723,6 +2757,10 @@ function App() {
   const [activeFilter, setActiveFilter] = useState('cheapest')
   const [activeCategory, setActiveCategory] = useState('')
   const [stores, setStores] = useState([])
+  const [selectedStoreId, setSelectedStoreId] = useState(null)
+  const [storeDetail, setStoreDetail] = useState(null)
+  const [storeState, setStoreState] = useState({ loading: false, error: '' })
+  const [releaseData, setReleaseData] = useState({ application_version: '', releases: [], has_unread: false })
   const [browse, setBrowse] = useState({ products: [], recently_approved_reports: [], needs_prices: [] })
   const [browseState, setBrowseState] = useState({ loading: true, error: '' })
   const [homepageService, setHomepageService] = useState(fallbackHomepageService)
@@ -2793,6 +2831,21 @@ function App() {
     const data = await getJson('/api/stores')
     setStores(data.stores || [])
   }, [])
+
+  const loadReleases = useCallback(async () => {
+    try {
+      const data = await getJson('/api/releases')
+      const seenId = Number(window.localStorage.getItem('groceryRadarSeenReleaseId') || 0)
+      setReleaseData({ ...data, has_unread: data.has_unread ?? Boolean(data.newest_release_id && Number(data.newest_release_id) !== seenId) })
+    } catch { setReleaseData((current) => ({ ...current, releases: [] })) }
+  }, [])
+
+  const loadStoreDetail = useCallback(async () => {
+    if (!selectedStoreId) return
+    setStoreState({ loading: true, error: '' })
+    try { setStoreDetail(await getJson(`/api/stores/${selectedStoreId}`)); setStoreState({ loading: false, error: '' }) }
+    catch (error) { setStoreState({ loading: false, error: error.message }) }
+  }, [selectedStoreId])
 
   const loadHomepageService = useCallback(async () => {
     setHomepageServiceState({ loading: true, error: '' })
@@ -2923,6 +2976,7 @@ function App() {
     loadMe()
     loadStores().catch((error) => setBrowseState({ loading: false, error: error.message }))
     loadHomepageService()
+    loadReleases()
     getJson('/api/rewards').then(setRewards).catch(() => {})
     const params = new URLSearchParams(window.location.search)
     if (params.get('product')) {
@@ -2933,7 +2987,7 @@ function App() {
       setSelectedProofId(params.get('proof'))
       setScreen('profile')
     }
-  }, [loadMe, loadStores, loadHomepageService])
+  }, [loadMe, loadStores, loadHomepageService, loadReleases])
 
   useEffect(() => {
     let cancelled = false
@@ -2980,6 +3034,8 @@ function App() {
     if (screen === 'product') loadProductDetail()
   }, [screen, loadProductDetail])
 
+  useEffect(() => { if (screen === 'store') loadStoreDetail() }, [screen, loadStoreDetail])
+
   useEffect(() => {
     if (screen === 'deals') loadDeals()
   }, [screen, loadDeals])
@@ -2999,6 +3055,18 @@ function App() {
   const openProduct = (productId) => {
     setSelectedProductId(productId)
     openScreen('product')
+  }
+
+  const openStore = (storeId) => { setSelectedStoreId(storeId); openScreen('store') }
+  const markReleaseRead = async (release) => {
+    window.localStorage.setItem('groceryRadarSeenReleaseId', String(release.id))
+    if (me.loggedIn) { try { await postJson(`/api/releases/${release.id}/read`, {}) } catch { /* local seen-state remains available */ } }
+    setReleaseData((current) => ({ ...current, has_unread: false, releases: current.releases.map((item) => item.id === release.id ? { ...item, is_read: true } : item) }))
+  }
+  const openUpdates = () => {
+    const newest = releaseData.releases?.[0]
+    if (newest) markReleaseRead(newest)
+    openScreen('updates')
   }
 
   const addToCart = async (item) => {
@@ -3060,6 +3128,7 @@ function App() {
 
   const activeNav = useMemo(() => {
     if (['home', 'search', 'deals', 'stores', 'cart', 'submit', 'profile'].includes(screen)) return screen
+    if (screen === 'store') return 'stores'
     if (screen === 'leaderboard') return 'profile'
     if (screen === 'product') return 'search'
     return ''
@@ -3069,7 +3138,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-white text-slate-950">
-      <DataBanner openScreen={openScreen} unreadNotifications={unreadNotifications} />
+      <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} />
       {toast ? (
         <button
           type="button"
@@ -3092,6 +3161,7 @@ function App() {
             setSearchTerm={setSearchTerm}
             openScreen={openScreen}
             openProduct={openProduct}
+            openStore={openStore}
             addToCart={addToCart}
           />
         ) : null}
@@ -3111,7 +3181,9 @@ function App() {
             reload={loadSearch}
           />
         ) : null}
-        {screen === 'stores' ? <StoresScreen stores={stores} /> : null}
+        {screen === 'stores' ? <StoresScreen stores={stores} openStore={openStore} /> : null}
+        {screen === 'store' ? <StoreDetailScreen detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} openScreen={openScreen} /> : null}
+        {screen === 'updates' ? <UpdatesScreen releases={releaseData.releases || []} version={releaseData.application_version || homepageService.application_version} markRead={markReleaseRead} /> : null}
         {screen === 'product' ? (
           <ProductDetailScreen
             detail={productDetail}
@@ -3193,6 +3265,7 @@ function App() {
           />
         ) : null}
       </main>
+      <footer className="pb-28 pt-10 text-center text-sm font-bold text-slate-500">Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</footer>
       <BottomNav active={activeNav} openScreen={openScreen} unreadNotifications={unreadNotifications} />
     </div>
   )

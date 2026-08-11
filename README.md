@@ -1,5 +1,9 @@
 # Grocery Radar Janesville
 
+## Release-note workflow
+
+Every user-visible release must create or update a **draft** release note with plain-language Added, Improved, Fixed, and Known Issues sections. A commit or push never publishes the note. After deployment and production verification, the Owner may publish it from Advanced → Operations → Announcements / Updates. Public notes must not reveal credentials, security internals, private data, or sensitive infrastructure details.
+
 Grocery Radar Janesville is a local crowdsourced grocery price app for Janesville, Wisconsin. It starts empty and only shows grocery price reports after admin approval.
 
 The production public app is the React/Vite/Tailwind build served by Express from `public-tailwind-dist`. The existing Express app remains the backend API, SQLite database, auth/session layer, uploads system, email system, rewards system, and private admin portal.
