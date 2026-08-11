@@ -355,24 +355,29 @@ function structuredDraft(input = {}, defaults = {}) {
   const size = extractSize(`${itemName} ${sizeText}`);
   return {
     product_id: "",
-    store_id: defaults.store_id || "",
+    store_id: input.store_id || defaults.store_id || "",
     item_name: itemName,
     brand: cleanText(input.brand || "", 80),
-    variant: "",
-    category: defaults.category || "other",
+    variant: cleanText(input.variant || "", 80),
+    category: cleanText(input.category || defaults.category || "other", 40).toLowerCase(),
     price: priceString(price),
     regular_price: "",
-    sale_price: false,
+    sale_price: /^(sale|clearance|member|loyalty|coupon|multi)/i.test(cleanText(input.price_type || "", 40)),
     coupon_required: false,
     deal_limit: "",
     size_text: sizeText || size.size_text,
     quantity: Number(input.quantity) > 0 ? Number(input.quantity) : 1,
     unit: cleanText(input.unit || size.package_unit || "each", 30).toLowerCase(),
     member_card_price: "",
-    multibuy_details: "",
+    multibuy_details: cleanText(input.multibuy_details || "", 120),
+    multibuy_quantity: Number(input.multibuy_quantity) > 0 ? Number(input.multibuy_quantity) : null,
+    multibuy_total_price: moneyValue(input.multibuy_total_price),
+    storage_condition: cleanText(input.storage_condition || input.storage || "Unknown", 40),
+    price_type: cleanText(input.price_type || "Regular", 40),
     promotion_text: "",
     proof_type: defaults.proof_type || "receipt_photo",
-    observed_at: defaults.observed_at || "",
+    observed_at: cleanText(input.source_date || input.purchased_date || defaults.observed_at || "", 40),
+    source_date: cleanText(input.source_date || input.purchased_date || defaults.observed_at || "", 40),
     valid_start_at: defaults.valid_start_at || "",
     valid_end_at: defaults.valid_end_at || "",
     source_url: defaults.source_url || "",
@@ -391,6 +396,45 @@ function structuredDraft(input = {}, defaults = {}) {
   };
 }
 
+const NAVIGATION_GARBAGE = /^(?:back|forward|reload|home|menu|search|address bar|new tab|bookmarks?|history|downloads?|extensions?|settings|sign in|log in|privacy|terms|cookie|javascript|http\b|www\.|file\b|view source)/i;
+
+function csvParts(line) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && line[index + 1] === '"' && quoted) {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+
+function headerKey(value) {
+  return cleanText(value, 40).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+function structuredObject(parts, headers, defaults, line) {
+  const object = { raw: line };
+  headers.forEach((header, index) => { object[header] = parts[index] || ""; });
+  object.item_name = object.item_name || object.item || object.product || object.name;
+  object.size_text = object.size_text || object.size || object.package_size;
+  object.quantity = object.quantity || object.qty;
+  object.storage_condition = object.storage_condition || object.storage;
+  object.source_date = object.source_date || object.date || defaults.observed_at;
+  return object;
+}
+
 function parseStructuredInput(sourceText, defaults = {}) {
   const text = String(sourceText || "").trim();
   if (!text) return null;
@@ -403,17 +447,40 @@ function parseStructuredInput(sourceText, defaults = {}) {
       return [{ row: null, line: "JSON", index: 1, reason: "JSON is not valid" }];
     }
   }
-  const lines = splitIntakeLines(text);
+  const lines = String(sourceText || "").replace(/\r\n?/g, "\n").split("\n").map((line) => cleanText(line, 1000)).filter(Boolean);
   if (!lines.some((line) => line.includes("|") || line.split(",").length >= 3)) return null;
+  let headers = null;
+  const enrichedDefaults = { ...defaults };
   return lines.map((line, index) => {
+    const storeMatch = line.match(/^STORE\s*:\s*(.+)$/i);
+    const dateMatch = line.match(/^DATE\s*:\s*(\d{4}-\d{2}-\d{2})/i);
+    if (storeMatch) {
+      enrichedDefaults.store_name = cleanText(storeMatch[1], 120);
+      return { row: null, line, index: index + 1, reason: "store heading", informational: true };
+    }
+    if (dateMatch) {
+      enrichedDefaults.observed_at = dateMatch[1];
+      return { row: null, line, index: index + 1, reason: "purchase date heading", informational: true };
+    }
     const delimiter = line.includes("|") ? "|" : ",";
-    const parts = line.split(delimiter).map((part) => part.trim().replace(/^"|"$/g, ""));
-    const header = /^(item|product|name)$/i.test(parts[0] || "");
+    const parts = delimiter === "|" ? line.split("|").map((part) => part.trim()) : csvParts(line);
+    const isHeader = /^(item|item name|product|name)$/i.test(parts[0] || "") && parts.some((part) => /price/i.test(part));
+    if (isHeader) headers = parts.map(headerKey);
+    let input;
+    if (headers) {
+      input = structuredObject(parts, headers, enrichedDefaults, line);
+    } else if (parts.length >= 8) {
+      input = structuredObject(parts, ["item_name", "store_name", "size_text", "quantity", "price", "category", "storage_condition", "price_type"], enrichedDefaults, line);
+    } else {
+      input = structuredObject(parts, ["item_name", "size_text", "price", "brand"], enrichedDefaults, line);
+    }
+    const looksLikeGarbage = NAVIGATION_GARBAGE.test(input.item_name || "") || /(?:browser|navigation|toolbar|omnibox)/i.test(line);
     return {
-      row: header ? null : structuredDraft({ item_name: parts[0], size_text: parts[1], price: parts[2], brand: parts[3], raw: line }, defaults),
+      row: isHeader || looksLikeGarbage ? null : structuredDraft(input, enrichedDefaults),
       line,
       index: index + 1,
-      reason: header ? "header row" : "expected Item | Size | Price"
+      reason: isHeader ? "header row" : looksLikeGarbage ? "browser or navigation text is not a grocery item" : "expected a grocery item and a positive price",
+      informational: isHeader
     };
   });
 }
@@ -430,6 +497,7 @@ function parsePriceText(sourceText, defaults = {}) {
     const row = structured ? entry.row : createDraftFromLine(line, defaults);
 
     if (!row) {
+      if (entry.informational) continue;
       skipped_lines.push({
         line,
         row: entry.index || null,

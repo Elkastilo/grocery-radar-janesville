@@ -312,6 +312,86 @@ async function initDb() {
   await migratePriceReportsTable();
 
   await run(`
+    CREATE TABLE IF NOT EXISTS price_provenance_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      price_report_id INTEGER,
+      import_batch_id INTEGER,
+      import_row_id INTEGER,
+      event_type TEXT NOT NULL,
+      actor_user_id INTEGER,
+      submitter_user_id INTEGER,
+      reason TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (price_report_id) REFERENCES price_reports(id) ON DELETE SET NULL,
+      FOREIGN KEY (import_batch_id) REFERENCES price_import_batches(id) ON DELETE SET NULL,
+      FOREIGN KEY (import_row_id) REFERENCES price_import_rows(id) ON DELETE SET NULL,
+      FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (submitter_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS quality_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      store_id INTEGER NOT NULL,
+      price_report_id INTEGER,
+      import_batch_id INTEGER,
+      rating INTEGER NOT NULL,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      comment TEXT,
+      purchase_date TEXT,
+      review_date TEXT NOT NULL,
+      verified_purchase INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'visible',
+      moderation_note TEXT,
+      moderated_by INTEGER,
+      moderated_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
+      FOREIGN KEY (price_report_id) REFERENCES price_reports(id) ON DELETE SET NULL,
+      FOREIGN KEY (import_batch_id) REFERENCES price_import_batches(id) ON DELETE SET NULL,
+      FOREIGN KEY (moderated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS quality_review_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      quality_review_id INTEGER NOT NULL,
+      reporter_user_id INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      details TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolved_by INTEGER,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (quality_review_id) REFERENCES quality_reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE(quality_review_id, reporter_user_id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS quality_review_helpful_votes (
+      quality_review_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (quality_review_id, user_id),
+      FOREIGN KEY (quality_review_id) REFERENCES quality_reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  await run("CREATE INDEX IF NOT EXISTS idx_quality_reviews_product_store_date ON quality_reviews(product_id, store_id, review_date DESC)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_provenance_report ON price_provenance_events(price_report_id, created_at)");
+
+  await run(`
     CREATE TABLE IF NOT EXISTS verifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       price_report_id INTEGER NOT NULL,
@@ -1244,6 +1324,16 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "ingredient_info_url", "TEXT");
   await addColumnIfMissing("price_reports", "allergen_note", "TEXT");
   await addColumnIfMissing("price_reports", "admin_safety_note", "TEXT");
+  await addColumnIfMissing("price_reports", "submitted_by_user_id", "INTEGER");
+  await addColumnIfMissing("price_reports", "source_import_batch_id", "INTEGER");
+  await addColumnIfMissing("price_reports", "source_import_row_id", "INTEGER");
+  await addColumnIfMissing("price_reports", "source_date", "TEXT");
+  await addColumnIfMissing("price_reports", "storage_condition", "TEXT");
+  await addColumnIfMissing("price_reports", "price_type", "TEXT");
+  await addColumnIfMissing("price_reports", "review_started_at", "TEXT");
+  await addColumnIfMissing("price_reports", "review_completed_at", "TEXT");
+  await addColumnIfMissing("price_reports", "freshness_status", "TEXT NOT NULL DEFAULT 'current'");
+  await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 
 async function migratePointEventsTable() {
@@ -1350,6 +1440,11 @@ async function migratePriceImportBatchesTable() {
   await addColumnIfMissing("price_import_batches", "review_escalated_at", "TEXT");
   await addColumnIfMissing("price_import_batches", "review_escalation_reason", "TEXT");
   await addColumnIfMissing("price_import_batches", "review_status", "TEXT NOT NULL DEFAULT 'waiting'");
+  await addColumnIfMissing("price_import_batches", "review_completed_at", "TEXT");
+  await addColumnIfMissing("price_import_batches", "review_decision", "TEXT");
+  await addColumnIfMissing("price_import_batches", "approved_item_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("price_import_batches", "rejected_item_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("price_import_batches", "escalated_item_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_batches", "updated_at", "TEXT");
   await run("UPDATE price_import_batches SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }
@@ -1365,6 +1460,11 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "coupon_required", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_rows", "deal_limit", "TEXT");
   await addColumnIfMissing("price_import_rows", "multibuy_details", "TEXT");
+  await addColumnIfMissing("price_import_rows", "multibuy_quantity", "REAL");
+  await addColumnIfMissing("price_import_rows", "multibuy_total_price", "REAL");
+  await addColumnIfMissing("price_import_rows", "storage_condition", "TEXT");
+  await addColumnIfMissing("price_import_rows", "price_type", "TEXT");
+  await addColumnIfMissing("price_import_rows", "source_date", "TEXT");
   await addColumnIfMissing("price_import_rows", "promotion_text", "TEXT");
   await addColumnIfMissing("price_import_rows", "observed_at", "TEXT");
   await addColumnIfMissing("price_import_rows", "valid_start_at", "TEXT");

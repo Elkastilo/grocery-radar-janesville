@@ -832,10 +832,20 @@ async function openReceiptReview(batchId) {
 }
 
 function reviewRowMarkup(row) {
+  const categories = ["produce","meat","dairy","frozen","bakery","pantry","snacks","drinks","prepared food","household","health / personal care","baby","pet","other"];
+  const storage = ["shelf stable","refrigerated","frozen","fresh produce","hot prepared food","cold prepared food","not applicable","unknown"];
+  const priceTypes = ["regular","sale","clearance","member / loyalty","coupon-dependent","multi-buy","unknown"];
   return `<div class="receipt-item-row" data-review-row="${row.id}">
     <label><span class="visually-hidden">Item name</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
+    <label><span class="visually-hidden">Brand</span><input name="brand" value="${escapeHtml(row.brand || "")}" aria-label="Brand" placeholder="Brand"></label>
+    <label><span class="visually-hidden">Variant</span><input name="variant" value="${escapeHtml(row.variant || "")}" aria-label="Variant" placeholder="Variant"></label>
     <label><span class="visually-hidden">Size</span><input name="size_text" value="${escapeHtml(row.size_text || "")}" aria-label="Package size"></label>
+    <label><span class="visually-hidden">Quantity</span><input name="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(row.quantity || 1)}" aria-label="Quantity"></label>
     <label><span class="visually-hidden">Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.price || "")}" aria-label="Price"></label>
+    <label><span class="visually-hidden">Category</span><select name="category" aria-label="Category">${categories.map((value) => `<option value="${value}" ${row.category === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+    <label><span class="visually-hidden">Storage</span><select name="storage_condition" aria-label="Storage or condition">${storage.map((value) => `<option value="${value}" ${row.storage_condition === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+    <label><span class="visually-hidden">Price type</span><select name="price_type" aria-label="Price type">${priceTypes.map((value) => `<option value="${value}" ${row.price_type === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+    <label><span class="visually-hidden">Source date</span><input name="source_date" type="date" value="${escapeHtml(row.source_date || "")}" aria-label="Purchased or source date"></label>
     <button class="quiet-button" type="button" data-remove-row="${row.id}">Remove</button>
   </div>`;
 }
@@ -856,7 +866,7 @@ function renderReceiptReview(data) {
       <section class="receipt-items-panel">
         <h3>Items</h3>
         <div id="receiptEditableRows">${rows.map(reviewRowMarkup).join("") || '<div class="empty-state">No draft items yet.</div>'}</div>
-        <details><summary>Paste AI Results</summary><p class="field-help">Paste pipe-delimited, CSV, or JSON results. These become drafts only.</p><textarea id="receiptAiPaste" rows="7" placeholder="Milk 2% | 1 gal | 3.49&#10;Large Eggs | 12 ct | 2.89"></textarea><button class="secondary-button" type="button" data-parse-ai>Turn Into Editable Items</button></details>
+        <details open><summary>Paste AI Results</summary><p class="field-help">Paste pipe-delimited, CSV, or JSON results. Grocery fields and header-style STORE/DATE blocks are supported. Every result remains a draft until a person approves it.</p><textarea id="receiptAiPaste" rows="7" placeholder="Milk 2% | Kwik Trip | 1 gal | 1 | 3.49 | Dairy &amp; Eggs | Refrigerated | Regular"></textarea><button class="secondary-button" type="button" data-parse-ai>Turn Into Editable Items</button></details>
         <div class="review-actions">
           <button class="quiet-button" type="button" data-help-reason="Receipt image cannot be read">Can't Read</button>
           <button class="quiet-button" type="button" data-help-reason="Possible duplicate receipt">Duplicate</button>
@@ -870,7 +880,7 @@ function renderReceiptReview(data) {
     </div>`;
   receiptReviewWorkspace.scrollIntoView({ block: "start" });
   for (const rowElement of receiptReviewWorkspace.querySelectorAll("[data-review-row]")) {
-    for (const input of rowElement.querySelectorAll("input")) input.addEventListener("change", () => saveReviewRow(rowElement));
+    for (const input of rowElement.querySelectorAll("input, select, textarea")) input.addEventListener("change", () => saveReviewRow(rowElement));
   }
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-remove-row]")) button.addEventListener("click", () => removeReviewRow(button.dataset.removeRow));
   receiptReviewWorkspace.querySelector("[data-parse-ai]")?.addEventListener("click", () => parseAiResults(batch.id));
@@ -883,7 +893,7 @@ function renderReceiptReview(data) {
 
 async function saveReviewRow(rowElement) {
   const rowId = rowElement.dataset.reviewRow;
-  const payload = Object.fromEntries([...rowElement.querySelectorAll("input")].map((input) => [input.name, input.value]));
+  const payload = Object.fromEntries([...rowElement.querySelectorAll("input, select, textarea")].map((input) => [input.name, input.value]));
   try {
     await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, pin: getPin(), status: "ready_for_review" }) });
     setMessage(inboxMessage, "Draft saved.", "success");
@@ -932,7 +942,15 @@ async function approveReviewRows(batch) {
   const rowIds = (batch.rows || []).filter((row) => !["approved","rejected","removed"].includes(row.status)).map((row) => row.id);
   if (!rowIds.length || !window.confirm(`Approve ${rowIds.length} verified price${rowIds.length === 1 ? "" : "s"} for public display?`)) return;
   try {
-    await fetchJson(`/api/admin/price-import-rows/bulk${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), action: "approve", row_ids: rowIds }) });
+    const payload = { pin: getPin(), action: "approve", row_ids: rowIds };
+    try {
+      await fetchJson(`/api/admin/price-import-rows/bulk${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    } catch (error) {
+      if (!/Owner confirmation is required/i.test(error.message) || !window.confirm("You submitted this proof yourself. Use the Owner operational override and create an audit record?")) throw error;
+      payload.owner_self_approval_override = true;
+      payload.override_reason = "Owner confirmed operational self-approval in Receipt Review.";
+      await fetchJson(`/api/admin/price-import-rows/bulk${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    }
     await loadAdminData();
     openAdminTab("inboxTab");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
@@ -4121,7 +4139,7 @@ function renderProofInbox() {
           <div><dt>Rows</dt><dd>${escapeHtml(rowSummary)}</dd></div>
         </dl>
         ${batch.proof_user_notes ? `<p class="inline-help">${escapeHtml(batch.proof_user_notes)}</p>` : ""}
-        ${!batch.source_url ? '<p class="source-link-warning">No source link saved — ask for one if the photo is not enough.</p>' : ""}
+        ${!batch.source_url && !batch.photo_path ? '<p class="source-link-warning">This source-link-only submission needs a valid URL before approval.</p>' : ""}
         ${flags.length ? `<p class="inline-help">Flags: ${escapeHtml(flags.join(", "))}</p>` : ""}
         ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof image</a>` : '<p class="inline-help">No image uploaded. Use the source link before creating rows.</p>'}
         ${ocrText}
@@ -4413,7 +4431,7 @@ function renderPriceImportProofList() {
             <span>${escapeHtml(rows.length)} row${rows.length === 1 ? "" : "s"} · ${pending} pending · ${approved} approved · ${rejected} rejected</span>
           </span>
         </button>
-        ${batch.source_url ? "" : '<p class="source-link-warning">No source link saved — add one before approval.</p>'}
+        ${batch.source_url || batch.photo_path ? "" : '<p class="source-link-warning">This source-link-only submission needs a valid URL before approval.</p>'}
         <div class="proof-card-actions">
           ${pending > 0 ? `<button class="secondary-button" type="button" data-import-review-rows="${batch.id}">Review pending rows</button>` : ""}
           ${batch.source_text ? `<button class="quiet-button" type="button" data-import-retry-parse="${batch.id}">Retry parsing</button>` : ""}

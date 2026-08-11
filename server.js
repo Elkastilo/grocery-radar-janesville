@@ -162,6 +162,9 @@ const STAFF_ROLES = ["owner", "manager", "reviewer", "data_entry", "user"];
 const ACTIVE_USAGE_WINDOW_MINUTES = Math.max(2, Number.parseInt(process.env.ACTIVE_USAGE_WINDOW_MINUTES || "10", 10) || 10);
 const REVIEW_CLAIM_MINUTES = Math.max(10, Number.parseInt(process.env.REVIEW_CLAIM_MINUTES || "30", 10) || 30);
 const APP_TIME_ZONE = "America/Chicago";
+const PRICE_FRESHNESS_DAYS = Object.freeze({ receipt_photo: { current: 14, aging: 30 }, shelf_tag_photo: { current: 10, aging: 21 }, weekly_ad: { current: 7, aging: 14 }, no_photo: { current: 7, aging: 14 } });
+const STORAGE_CONDITIONS = ["shelf stable", "refrigerated", "frozen", "fresh produce", "hot prepared food", "cold prepared food", "not applicable", "unknown"];
+const PRICE_TYPES = ["regular", "sale", "clearance", "member / loyalty", "coupon-dependent", "multi-buy", "unknown"];
 const OPERATIONS_WIDGET_IDS = [
   "system_health",
   "live_activity",
@@ -473,6 +476,15 @@ function formatReport(row) {
     admin_rejection_note: row.admin_rejection_note || "",
     reviewed_at: row.reviewed_at || "",
     reviewed_by: row.reviewed_by || null,
+    submitted_by_user_id: row.submitted_by_user_id || row.user_id,
+    source_import_batch_id: row.source_import_batch_id || null,
+    source_import_row_id: row.source_import_row_id || null,
+    source_date: row.source_date || "",
+    storage_condition: row.storage_condition || "unknown",
+    price_type: row.price_type || (row.sale_price ? "sale" : "regular"),
+    review_started_at: row.review_started_at || "",
+    review_completed_at: row.review_completed_at || row.reviewed_at || "",
+    freshness_status: freshnessForPrice(row),
     edited_by: row.edited_by || null,
     edited_at: row.edited_at || "",
     admin_edit_note: row.admin_edit_note || "",
@@ -495,6 +507,7 @@ function formatReport(row) {
 function formatPublicReport(row) {
   const report = formatReport(row);
   const isReceiptProof = report.proof_type === "receipt_photo";
+  const submitterUsername = report.username || "Community member";
 
   delete report.user_id;
   delete report.username;
@@ -506,6 +519,10 @@ function formatPublicReport(row) {
   delete report.admin_rejection_reason;
   delete report.admin_rejection_note;
   delete report.reviewed_by;
+  delete report.submitted_by_user_id;
+  delete report.source_import_batch_id;
+  delete report.source_import_row_id;
+  delete report.review_started_at;
   delete report.edited_by;
   delete report.admin_edit_note;
   delete report.edited_at;
@@ -524,8 +541,12 @@ function formatPublicReport(row) {
   return {
     ...report,
     has_private_receipt_proof: isReceiptProof && Boolean(row.photo_path),
-    public_proof_label: isReceiptProof ? "Receipt proof" : report.proof_type,
-    trust_label: report.status === "approved" ? "Verified by admin" : ""
+    public_proof_label: isReceiptProof ? "Receipt-backed price" : report.proof_type === "shelf_tag_photo" ? "Shelf-tag-backed price" : report.proof_type === "weekly_ad" ? "Weekly-ad-backed price" : "Source-backed price",
+    submitted_by_username: submitterUsername,
+    purchased_at: isReceiptProof ? report.source_date : "",
+    verified_at: report.review_completed_at || report.reviewed_at,
+    trust_label: report.status === "approved" ? "Verified by Grocery Radar" : "",
+    trust_explanation: "A human reviewer checked the submitted proof. Personal receipt details and reviewer identity remain private."
   };
 }
 
@@ -941,7 +962,9 @@ function cleanImportRowDraft(body = {}) {
   const regularPrice = parseImportNumber(body.regular_price);
   const memberCardPrice = parseImportNumber(body.member_card_price);
   const quantity = parseImportNumber(body.quantity);
-  const category = cleanText(body.category || "other", 30).toLowerCase();
+  const categoryAliases = { "dairy & eggs": "dairy", beverages: "drinks", "meat & seafood": "meat", "health / personal care": "health / personal care", "prepared food": "prepared food" };
+  const categoryInput = cleanText(body.category || "other", 40).toLowerCase();
+  const category = categoryAliases[categoryInput] || categoryInput;
   const source = cleanSourceMetadata(body);
   const extractionConfidence = cleanText(body.extraction_confidence || "low", 20).toLowerCase();
 
@@ -959,12 +982,17 @@ function cleanImportRowDraft(body = {}) {
     coupon_required: parseImportBoolean(body.coupon_required) ? 1 : 0,
     deal_limit: cleanText(body.deal_limit || body.limit, 80),
     multibuy_details: cleanText(body.multibuy_details, 120),
+    multibuy_quantity: parseImportNumber(body.multibuy_quantity),
+    multibuy_total_price: parseImportNumber(body.multibuy_total_price),
+    storage_condition: cleanEnum(cleanText(body.storage_condition || "unknown", 40).toLowerCase(), STORAGE_CONDITIONS, "unknown"),
+    price_type: cleanEnum(cleanText(body.price_type || (body.sale_price ? "sale" : "regular"), 40).toLowerCase(), PRICE_TYPES, "unknown"),
     promotion_text: cleanText(body.promotion_text, 240),
     size_text: cleanText(body.size_text, 80),
     quantity,
     unit: cleanText(body.unit || "each", 30).toLowerCase(),
     proof_type: validateImportProofType(body.proof_type),
     observed_at: normalizeOptionalTimestamp(body.observed_at || body.observed_date),
+    source_date: normalizeImportDate(body.source_date || body.purchased_date || body.observed_at || body.observed_date, false),
     valid_start_at: normalizeImportDate(body.valid_start_at || body.valid_start_date, false),
     valid_end_at: normalizeImportDate(body.valid_end_at || body.valid_end_date || body.expires_at, true),
     ...source,
@@ -1022,6 +1050,24 @@ function importRowToReportBody(row) {
   };
 }
 
+function freshnessForPrice(input = {}, now = new Date()) {
+  if (input.status === "disputed" || Number(input.dispute_count || 0) > 0) return "disputed";
+  const sourceDate = input.source_date || input.observed_at || input.source_checked_at || input.submitted_at;
+  const timestamp = sourceDate ? new Date(sourceDate).getTime() : NaN;
+  if (!Number.isFinite(timestamp)) return "aging";
+  const ageDays = Math.max(0, (now.getTime() - timestamp) / 86400000);
+  const rules = PRICE_FRESHNESS_DAYS[input.proof_type] || PRICE_FRESHNESS_DAYS.no_photo;
+  if (input.valid_end_at || input.expires_at) {
+    const end = new Date(input.valid_end_at || input.expires_at).getTime();
+    if (Number.isFinite(end) && end < now.getTime()) return "expired";
+  }
+  return ageDays <= rules.current ? "current" : ageDays <= rules.aging ? "aging" : "expired";
+}
+
+async function recordPriceEvent(input = {}) {
+  await run(`INSERT INTO price_provenance_events (price_report_id, import_batch_id, import_row_id, event_type, actor_user_id, submitter_user_id, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [input.reportId || null, input.batchId || null, input.rowId || null, cleanText(input.eventType, 40).toUpperCase(), input.actorUserId || null, input.submitterUserId || null, cleanText(input.reason || "", 300), metadataJson(input.metadata || {}), input.createdAt || new Date().toISOString()]);
+}
+
 function formatPriceImportRow(row) {
   return {
     id: row.id,
@@ -1044,12 +1090,17 @@ function formatPriceImportRow(row) {
     coupon_required: Boolean(row.coupon_required),
     deal_limit: row.deal_limit || "",
     multibuy_details: row.multibuy_details || "",
+    multibuy_quantity: row.multibuy_quantity == null ? null : Number(row.multibuy_quantity),
+    multibuy_total_price: row.multibuy_total_price == null ? null : Number(row.multibuy_total_price),
+    storage_condition: row.storage_condition || "unknown",
+    price_type: row.price_type || (row.sale_price ? "sale" : "regular"),
     promotion_text: row.promotion_text || "",
     size_text: row.size_text || "",
     quantity: row.quantity === null || row.quantity === undefined ? null : Number(row.quantity),
     unit: row.unit || "",
     proof_type: row.proof_type || "weekly_ad",
     observed_at: row.observed_at || "",
+    source_date: row.source_date || dateInputValue(row.observed_at),
     observed_date: dateInputValue(row.observed_at),
     valid_start_at: row.valid_start_at || "",
     valid_start_date: dateInputValue(row.valid_start_at),
@@ -8115,7 +8166,7 @@ app.get("/api/account/verifications", requireLogin, asyncRoute(async (request, r
 }));
 
 app.get("/api/account/engagement", requireLogin, asyncRoute(async (request, response) => {
-  const [engagement, contributionStats, proofStats, recentEvents] = await Promise.all([
+  const [engagement, contributionStats, proofStats, recentEvents, impactByStore] = await Promise.all([
     get("SELECT * FROM user_engagement WHERE user_id = ?", [request.currentUser.id]),
     get(
       `SELECT COUNT(CASE WHEN status = 'approved' THEN 1 END) AS approved_prices, COUNT(*) AS reports FROM price_reports WHERE user_id = ?`,
@@ -8126,9 +8177,10 @@ app.get("/api/account/engagement", requireLogin, asyncRoute(async (request, resp
       [request.currentUser.id, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
     ),
     all(
-      `SELECT action, points, price_report_id, related_import_batch_id, created_at FROM point_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`,
+      `SELECT events.action, events.points, events.price_report_id, events.related_import_batch_id, events.created_at, reports.item_name, reports.price, reports.product_id, stores.name AS store_name FROM point_events events LEFT JOIN price_reports reports ON reports.id = events.price_report_id LEFT JOIN stores ON stores.id = reports.store_id WHERE events.user_id = ? ORDER BY events.created_at DESC LIMIT 20`,
       [request.currentUser.id]
-    )
+    ),
+    all(`SELECT stores.id AS store_id, stores.name AS store_name, COUNT(*) AS approved_prices FROM price_reports reports JOIN stores ON stores.id = reports.store_id WHERE COALESCE(reports.submitted_by_user_id, reports.user_id) = ? AND reports.status = 'approved' GROUP BY stores.id, stores.name ORDER BY approved_prices DESC, stores.name`, [request.currentUser.id])
   ]);
   response.json({
     streak: {
@@ -8148,9 +8200,15 @@ app.get("/api/account/engagement", requireLogin, asyncRoute(async (request, resp
       type: event.action,
       points: event.points || 0,
       report_id: event.price_report_id || null,
+      product_id: event.product_id || null,
       proof_id: event.related_import_batch_id || null,
+      item_name: event.item_name || "",
+      store_name: event.store_name || "",
+      price_label: event.price == null ? "" : `$${Number(event.price).toFixed(2)}`,
+      target_url: event.product_id ? `/?tab=productView&product=${event.product_id}&report=${event.price_report_id}` : event.related_import_batch_id ? `/?tab=accountView&section=proof&proof=${event.related_import_batch_id}` : "",
       created_at: event.created_at
-    }))
+    })),
+    impact_by_store: impactByStore
   });
 }));
 
@@ -8441,8 +8499,142 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     product: formatPublicProduct(product),
     reports: reports.map(formatPublicReport),
     store_groups: storeGroups,
+    quality: await publicQualitySummary(productId, null, request.session?.userId || null),
     allergy_warning: "Always check the package label before buying or eating."
   });
+}));
+
+const QUALITY_TAGS = new Set(["fresh", "good quality", "overripe", "underripe", "bruised / damaged", "mold/spoilage observed", "near expiration", "short shelf life", "great shelf life", "hot when purchased", "cold when purchased", "dry", "overcooked", "undercooked concern", "stale", "packaging damaged", "seal issue", "good condition"]);
+const QUALITY_REPORT_REASONS = ["spam", "harassment", "offensive", "not about this product", "misleading", "safety concern", "other"];
+
+function parsedJsonArray(value) {
+  try { const parsed = JSON.parse(value || "[]"); return Array.isArray(parsed) ? parsed : []; } catch (error) { return []; }
+}
+
+function formatQualityReview(row, currentUserId = null) {
+  return {
+    id: row.id,
+    product_id: row.product_id,
+    store_id: row.store_id,
+    store_name: row.store_name,
+    username: row.username,
+    rating: Number(row.rating),
+    rating_label: `${Number(row.rating)} out of 5`,
+    tags: parsedJsonArray(row.tags_json),
+    comment: row.comment || "",
+    purchase_date: row.purchase_date || "",
+    review_date: row.review_date,
+    verified_purchase: Boolean(row.verified_purchase),
+    helpful_count: Number(row.helpful_count || 0),
+    is_owner: Number(currentUserId) === Number(row.user_id),
+    status: row.status,
+    created_at: row.created_at,
+    disclaimer: "Quality comments are community observations and may vary by purchase."
+  };
+}
+
+async function publicQualitySummary(productId, storeId = null, currentUserId = null) {
+  const params = [productId];
+  const storeFilter = storeId ? "AND qr.store_id = ?" : "";
+  if (storeId) params.push(storeId);
+  const reviews = await all(`
+    SELECT qr.*, users.username, stores.name AS store_name,
+      (SELECT COUNT(*) FROM quality_review_helpful_votes votes WHERE votes.quality_review_id = qr.id) AS helpful_count
+    FROM quality_reviews qr
+    JOIN users ON users.id = qr.user_id
+    JOIN stores ON stores.id = qr.store_id
+    WHERE qr.product_id = ? ${storeFilter}
+      AND qr.status = 'visible'
+      AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
+    ORDER BY qr.review_date DESC, qr.id DESC LIMIT 100
+  `, params);
+  const now = Date.now();
+  const recent = reviews.filter((row) => now - new Date(row.review_date).getTime() <= 30 * 86400000);
+  const average = (rows) => rows.length ? Number((rows.reduce((sum, row) => sum + Number(row.rating), 0) / rows.length).toFixed(1)) : null;
+  return {
+    recent_rating: average(recent),
+    recent_count: recent.length,
+    all_time_rating: average(reviews),
+    all_time_count: reviews.length,
+    reviews: reviews.map((row) => formatQualityReview(row, currentUserId)),
+    disclaimer: "Quality comments are community observations and may vary by purchase."
+  };
+}
+
+app.get("/api/products/:id/quality", asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.params.id, 10);
+  const storeId = Number.parseInt(request.query.store_id, 10);
+  response.json(await publicQualitySummary(productId, Number.isInteger(storeId) ? storeId : null, request.session?.userId || null));
+}));
+
+app.post("/api/quality-reviews", requireLogin, asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.body.product_id, 10);
+  const storeId = Number.parseInt(request.body.store_id, 10);
+  const rating = Number.parseInt(request.body.rating, 10);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error("Choose a quality rating from 1 to 5.");
+  const [product, store] = await Promise.all([get("SELECT id FROM products WHERE id = ? AND status = 'active'", [productId]), get("SELECT id FROM stores WHERE id = ? AND active = 1", [storeId])]);
+  if (!product || !store) { response.status(404).json({ error: "Product or store was not found." }); return; }
+  const requestedReportId = Number.parseInt(request.body.price_report_id, 10);
+  const linkedReport = Number.isInteger(requestedReportId) ? await get(`SELECT id, source_import_batch_id, source_date FROM price_reports WHERE id = ? AND product_id = ? AND store_id = ? AND status = 'approved' AND COALESCE(submitted_by_user_id, user_id) = ?`, [requestedReportId, productId, storeId, request.currentUser.id]) : null;
+  const tags = (Array.isArray(request.body.tags) ? request.body.tags : []).map((tag) => cleanText(tag, 40).toLowerCase()).filter((tag) => QUALITY_TAGS.has(tag)).slice(0, 8);
+  const now = new Date().toISOString();
+  const result = await run(`INSERT INTO quality_reviews (user_id, product_id, store_id, price_report_id, import_batch_id, rating, tags_json, comment, purchase_date, review_date, verified_purchase, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?)`, [request.currentUser.id, productId, storeId, linkedReport?.id || null, linkedReport?.source_import_batch_id || null, rating, JSON.stringify(tags), cleanText(request.body.comment, 400), linkedReport?.source_date || normalizeImportDate(request.body.purchase_date, false), dateInputValue(now), linkedReport ? 1 : 0, now, now]);
+  const review = await get(`SELECT qr.*, users.username, stores.name AS store_name, 0 AS helpful_count FROM quality_reviews qr JOIN users ON users.id = qr.user_id JOIN stores ON stores.id = qr.store_id WHERE qr.id = ?`, [result.lastID]);
+  response.status(201).json({ message: linkedReport ? "Quality review posted with verified purchase." : "Quality review posted.", review: formatQualityReview(review, request.currentUser.id) });
+}));
+
+app.patch("/api/quality-reviews/:id", requireLogin, asyncRoute(async (request, response) => {
+  const id = Number.parseInt(request.params.id, 10);
+  const existing = await get("SELECT * FROM quality_reviews WHERE id = ? AND user_id = ? AND status != 'removed'", [id, request.currentUser.id]);
+  if (!existing) { response.status(404).json({ error: "Review was not found." }); return; }
+  const rating = Number.parseInt(request.body.rating ?? existing.rating, 10);
+  if (rating < 1 || rating > 5) throw new Error("Choose a quality rating from 1 to 5.");
+  const tags = (Array.isArray(request.body.tags) ? request.body.tags : parsedJsonArray(existing.tags_json)).map((tag) => cleanText(tag, 40).toLowerCase()).filter((tag) => QUALITY_TAGS.has(tag)).slice(0, 8);
+  await run("UPDATE quality_reviews SET rating = ?, tags_json = ?, comment = ?, updated_at = ? WHERE id = ?", [rating, JSON.stringify(tags), cleanText(request.body.comment ?? existing.comment, 400), new Date().toISOString(), id]);
+  response.json({ message: "Review updated." });
+}));
+
+app.delete("/api/quality-reviews/:id", requireLogin, asyncRoute(async (request, response) => {
+  const result = await run("UPDATE quality_reviews SET status = 'removed', updated_at = ? WHERE id = ? AND user_id = ?", [new Date().toISOString(), Number.parseInt(request.params.id, 10), request.currentUser.id]);
+  if (!result.changes) { response.status(404).json({ error: "Review was not found." }); return; }
+  response.json({ message: "Review removed." });
+}));
+
+app.post("/api/quality-reviews/:id/report", requireLogin, asyncRoute(async (request, response) => {
+  const reviewId = Number.parseInt(request.params.id, 10);
+  const reason = cleanText(request.body.reason, 40).toLowerCase();
+  if (!QUALITY_REPORT_REASONS.includes(reason)) throw new Error("Choose a valid report reason.");
+  const review = await get("SELECT id, user_id FROM quality_reviews WHERE id = ? AND status = 'visible'", [reviewId]);
+  if (!review || Number(review.user_id) === Number(request.currentUser.id)) { response.status(400).json({ error: "That review cannot be reported." }); return; }
+  await run("INSERT OR IGNORE INTO quality_review_reports (quality_review_id, reporter_user_id, reason, details, created_at) VALUES (?, ?, ?, ?, ?)", [reviewId, request.currentUser.id, reason, cleanText(request.body.details, 300), new Date().toISOString()]);
+  response.status(201).json({ message: "Review reported for moderation." });
+}));
+
+app.post("/api/quality-reviews/:id/helpful", requireLogin, asyncRoute(async (request, response) => {
+  const reviewId = Number.parseInt(request.params.id, 10);
+  const review = await get("SELECT id, user_id, product_id FROM quality_reviews WHERE id = ? AND status = 'visible'", [reviewId]);
+  if (!review || Number(review.user_id) === Number(request.currentUser.id)) { response.status(400).json({ error: "You cannot mark this review helpful." }); return; }
+  const result = await run("INSERT OR IGNORE INTO quality_review_helpful_votes (quality_review_id, user_id, created_at) VALUES (?, ?, ?)", [reviewId, request.currentUser.id, new Date().toISOString()]);
+  if (result.changes) await createUserNotification(review.user_id, "quality_review_helpful", "Someone found your review helpful", "A shopper found your quality observation helpful.", { related_type: "quality_review", related_id: reviewId, target_tab: "productView", target_url: `/?tab=productView&product=${review.product_id}&review=${reviewId}` });
+  response.json({ message: "Marked helpful." });
+}));
+
+app.get("/api/admin/quality-reviews/reports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const reports = await all(`SELECT reports.*, reviews.product_id, reviews.store_id, reviews.rating, reviews.comment, reviews.status AS review_status, reporter.username AS reporter_username, author.username AS author_username FROM quality_review_reports reports JOIN quality_reviews reviews ON reviews.id = reports.quality_review_id JOIN users reporter ON reporter.id = reports.reporter_user_id JOIN users author ON author.id = reviews.user_id ORDER BY CASE reports.status WHEN 'open' THEN 0 ELSE 1 END, reports.created_at DESC LIMIT 100`);
+  response.json({ reports });
+}));
+
+app.post("/api/admin/quality-reviews/:id/moderate", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const id = Number.parseInt(request.params.id, 10);
+  const status = cleanEnum(request.body.status, ["visible", "hidden", "removed"], "hidden");
+  const now = new Date().toISOString();
+  const review = await get("SELECT * FROM quality_reviews WHERE id = ?", [id]);
+  if (!review) { response.status(404).json({ error: "Review was not found." }); return; }
+  const result = await run("UPDATE quality_reviews SET status = ?, moderation_note = ?, moderated_by = ?, moderated_at = ?, updated_at = ? WHERE id = ?", [status, cleanText(request.body.reason, 300), request.adminUser.id, now, now, id]);
+  if (!result.changes) { response.status(404).json({ error: "Review was not found." }); return; }
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: `QUALITY_REVIEW_${status.toUpperCase()}`, affectedType: "quality_review", affectedId: id, metadata: { reason: cleanText(request.body.reason, 300) } });
+  if (status !== "visible") await createUserNotification(review.user_id, "quality_review_moderated", "Your quality review was moderated", cleanText(request.body.reason, 300) || `Your quality review was ${status}.`, { related_type: "quality_review", related_id: id, target_tab: "productView", target_url: `/?tab=productView&product=${review.product_id}&review=${id}` });
+  response.json({ message: `Review ${status}.` });
 }));
 
 app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), asyncRoute(async (request, response) => {
@@ -10441,12 +10633,17 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         coupon_required,
         deal_limit,
         multibuy_details,
+        multibuy_quantity,
+        multibuy_total_price,
+        storage_condition,
+        price_type,
         promotion_text,
         size_text,
         quantity,
         unit,
         proof_type,
         observed_at,
+        source_date,
         valid_start_at,
         valid_end_at,
         source_url,
@@ -10469,7 +10666,7 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
         updated_by,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       batchId,
@@ -10486,12 +10683,17 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
       draft.coupon_required,
       draft.deal_limit,
       draft.multibuy_details,
+      draft.multibuy_quantity,
+      draft.multibuy_total_price,
+      draft.storage_condition,
+      draft.price_type,
       draft.promotion_text,
       draft.size_text,
       draft.quantity,
       draft.unit,
       draft.proof_type,
       draft.observed_at,
+      draft.source_date,
       draft.valid_start_at,
       draft.valid_end_at,
       draft.source_url,
@@ -10778,7 +10980,7 @@ async function approvedReceiptCleanupReport() {
   };
 }
 
-async function approvePriceImportRow(rowId, adminUser) {
+async function approvePriceImportRow(rowId, adminUser, options = {}) {
   if (!adminUser) {
     const error = new Error("Approving imported prices requires a logged-in admin account.");
     error.statusCode = 403;
@@ -10814,6 +11016,23 @@ async function approvePriceImportRow(rowId, adminUser) {
   }
 
   const importBatch = await priceImportBatchById(row.batch_id);
+  const submitterUserId = Number(importBatch?.created_by || row.created_by || adminUser.id);
+  const isSelfApproval = submitterUserId === Number(adminUser.id) && isProofSubmissionBatch(importBatch);
+  if (isSelfApproval && staffRoleForUser(adminUser) !== "owner") {
+    const error = new Error("You cannot approve your own community proof. Ask another reviewer or a Manager to take it.");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (isSelfApproval && staffRoleForUser(adminUser) === "owner" && !options.ownerSelfApprovalOverride) {
+    const error = new Error("Owner confirmation is required to approve your own proof. Confirm the self-approval override to continue.");
+    error.statusCode = 409;
+    error.code = "OWNER_SELF_APPROVAL_CONFIRMATION_REQUIRED";
+    throw error;
+  }
+  if (isSelfApproval) {
+    await recordPriceEvent({ batchId: row.batch_id, rowId, eventType: "OWNER_SELF_APPROVAL_OVERRIDE", actorUserId: adminUser.id, submitterUserId, reason: options.overrideReason || "Owner operational override confirmed." });
+    await recordAdminAudit({ adminUserId: adminUser.id, action: "OWNER_SELF_APPROVAL_OVERRIDE", affectedType: "price_import_row", affectedId: rowId, metadata: { batch_id: row.batch_id } });
+  }
   const validStoreIds = await getActiveStoreIds();
   const cleanReport = validateReport(importRowToReportBody(row), validStoreIds);
   const unitPrice = calculateUnitPrice(cleanReport.price, cleanReport.quantity, cleanReport.unit);
@@ -10892,6 +11111,9 @@ async function approvePriceImportRow(rowId, adminUser) {
     `
       INSERT INTO price_reports (
         user_id,
+        submitted_by_user_id,
+        source_import_batch_id,
+        source_import_row_id,
         store_id,
         product_id,
         item_name,
@@ -10905,6 +11127,9 @@ async function approvePriceImportRow(rowId, adminUser) {
         unit,
         unit_price,
         proof_type,
+        source_date,
+        storage_condition,
+        price_type,
         photo_path,
         photo_original_name,
         photo_mime_type,
@@ -10922,13 +11147,19 @@ async function approvePriceImportRow(rowId, adminUser) {
         admin_rejection_note,
         reviewed_at,
         reviewed_by,
+        review_started_at,
+        review_completed_at,
+        freshness_status,
         submitted_at,
         expires_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
-      adminUser.id,
+      submitterUserId,
+      submitterUserId,
+      row.batch_id,
+      row.id,
       cleanReport.store_id,
       productId,
       cleanReport.item_name,
@@ -10942,6 +11173,9 @@ async function approvePriceImportRow(rowId, adminUser) {
       unitPrice.unit,
       unitPrice.unitPrice,
       cleanReport.proof_type,
+      row.source_date || dateInputValue(row.observed_at) || dateInputValue(importBatch?.receipt_purchase_date) || dateInputValue(importBatch?.observed_at),
+      row.storage_condition || "unknown",
+      row.price_type || (row.sale_price ? "sale" : "regular"),
       row.photo_path,
       row.photo_original_name,
       row.photo_mime_type,
@@ -10954,6 +11188,9 @@ async function approvePriceImportRow(rowId, adminUser) {
       row.source_checked_at || submittedAt,
       submittedAt,
       adminUser.id,
+      importBatch?.review_claimed_at || submittedAt,
+      submittedAt,
+      freshnessForPrice({ ...row, submitted_at: submittedAt }),
       submittedAt,
       cleanReport.expires_at
     ]
@@ -10969,7 +11206,8 @@ async function approvePriceImportRow(rowId, adminUser) {
 
   await organizeApprovedReportProduct(updatedReport, adminUser.id);
   await notifyCartUsersForApprovedReport(updatedReport);
-  await updateUserAccuracy(adminUser.id);
+  await updateUserAccuracy(submitterUserId);
+  await recordPriceEvent({ reportId: result.lastID, batchId: row.batch_id, rowId: row.id, eventType: "APPROVED", actorUserId: adminUser.id, submitterUserId, reason: "Human reviewer approved draft price.", metadata: { product_id: productId, store_id: cleanReport.store_id, price: cleanReport.price } });
 
   await run(
     `
@@ -11008,10 +11246,13 @@ async function approvePriceImportRow(rowId, adminUser) {
             THEN 'ready_for_review'
             ELSE status
           END,
+          approved_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'approved'),
+          review_completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN ? ELSE review_completed_at END,
+          review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN 'completed' ELSE review_decision END,
           updated_at = ?
       WHERE id = ?
     `,
-    [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, submittedAt, row.batch_id]
+    [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, row.batch_id, row.batch_id, submittedAt, row.batch_id, submittedAt, row.batch_id]
   );
 
   if (importBatch && isProofSubmissionBatch(importBatch)) {
@@ -11047,7 +11288,7 @@ async function approvePriceImportRow(rowId, adminUser) {
           related_import_row_id: row.id,
           points_awarded: reward.points || 0,
           target_tab: "profile",
-          target_url: `/?tab=accountView&section=proof&proof=${importBatch.id}&report=${result.lastID}`
+          target_url: productId ? `/?tab=productView&product=${productId}&store=${cleanReport.store_id}&report=${result.lastID}` : `/?tab=accountView&section=proof&proof=${importBatch.id}&report=${result.lastID}`
         }
       );
     }
@@ -12096,7 +12337,10 @@ app.post("/api/admin/price-import-rows/bulk", requireAdminAccess, requireLoggedI
     const results = [];
 
     for (const rowId of rowIds) {
-      results.push(await approvePriceImportRow(rowId, request.adminUser));
+      results.push(await approvePriceImportRow(rowId, request.adminUser, {
+        ownerSelfApprovalOverride: request.body.owner_self_approval_override === true,
+        overrideReason: request.body.override_reason
+      }));
     }
 
     const summaries = new Map();
@@ -12459,12 +12703,17 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           coupon_required = ?,
           deal_limit = ?,
           multibuy_details = ?,
+          multibuy_quantity = ?,
+          multibuy_total_price = ?,
+          storage_condition = ?,
+          price_type = ?,
           promotion_text = ?,
           size_text = ?,
           quantity = ?,
           unit = ?,
           proof_type = ?,
           observed_at = ?,
+          source_date = ?,
           valid_start_at = ?,
           valid_end_at = ?,
           source_url = ?,
@@ -12495,12 +12744,17 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.coupon_required,
       draft.deal_limit,
       draft.multibuy_details,
+      draft.multibuy_quantity,
+      draft.multibuy_total_price,
+      draft.storage_condition,
+      draft.price_type,
       draft.promotion_text,
       draft.size_text,
       draft.quantity,
       draft.unit,
       draft.proof_type,
       draft.observed_at,
+      draft.source_date,
       draft.valid_start_at,
       draft.valid_end_at,
       draft.source_url,
@@ -12526,7 +12780,10 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
 
 app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
   const rowId = Number.parseInt(request.params.id, 10);
-  const result = await approvePriceImportRow(rowId, request.adminUser);
+  const result = await approvePriceImportRow(rowId, request.adminUser, {
+    ownerSelfApprovalOverride: request.body.owner_self_approval_override === true,
+    overrideReason: request.body.override_reason
+  });
 
   response.json(result);
 }));
@@ -14757,6 +15014,19 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
   await updateUserAccuracy(report.user_id);
 
   if (comparableFieldsChanged && report.status === "approved") {
+    await recordPriceEvent({
+      reportId,
+      batchId: report.source_import_batch_id,
+      rowId: report.source_import_row_id,
+      eventType: "CORRECTED",
+      actorUserId: adminId,
+      submitterUserId: report.submitted_by_user_id || report.user_id,
+      reason: adminEditNote || "Approved price corrected by admin.",
+      metadata: {
+        original: { item_name: report.item_name, brand: report.brand, category: report.category, price: report.price, size_text: report.size_text, quantity: report.quantity, unit: report.unit },
+        corrected: { item_name: cleanReport.item_name, brand: cleanReport.brand, category: cleanReport.category, price: cleanReport.price, size_text: cleanReport.size_text, quantity: cleanReport.quantity, unit: unitPrice.unit }
+      }
+    });
     const importLink = await get(
       `
         SELECT *

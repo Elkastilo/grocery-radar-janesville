@@ -9,8 +9,10 @@ const CATEGORIES = [
   "drinks",
   "snacks",
   "bakery",
+  "prepared food",
   "household",
   "personal care",
+  "health / personal care",
   "baby",
   "pet",
   "other"

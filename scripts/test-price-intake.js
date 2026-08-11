@@ -74,4 +74,33 @@ function rowFor(text) {
   assert.equal(parsed.rows.length, 0);
 }
 
+{
+  const parsed = parsePriceText("Milk 2% | Kwik Trip | 1 gal | 1 | 3.49 | Dairy & Eggs | Refrigerated | Regular\nCheeseburger | Kwik Trip | 1 ct | 1 | 3.99 | Prepared Food | Hot prepared food | Regular", { store_id: 1, proof_type: "receipt_photo" });
+  assert.equal(parsed.rows.length, 2);
+  assert.equal(parsed.rows[0].item_name, "Milk 2%");
+  assert.equal(parsed.rows[0].price, "3.49");
+  assert.equal(parsed.rows[0].storage_condition, "Refrigerated");
+  assert.equal(parsed.rows[1].category, "prepared food");
+}
+
+{
+  const parsed = parsePriceText("ITEM,BRAND,VARIANT,SIZE,QTY,PRICE,CATEGORY,STORAGE,PRICE TYPE\nChocolate Milk,Kwik Trip,Whole,16 oz,1,2.49,Dairy & Eggs,Refrigerated,Regular");
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].brand, "Kwik Trip");
+  assert.equal(parsed.rows[0].variant, "Whole");
+}
+
+{
+  const parsed = parsePriceText(JSON.stringify({ items: [{ item: "Large Eggs", size: "12 ct", quantity: 1, price: 2.89, category: "Dairy & Eggs", storage: "Refrigerated" }] }));
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].price, "2.89");
+}
+
+{
+  const parsed = parsePriceText("Milk | 1 gal | 3.49\nBack | browser toolbar | nope\nEggs | 12 ct | 2.89");
+  assert.equal(parsed.rows.length, 2);
+  assert.equal(parsed.skipped_lines.length, 1);
+  assert.match(parsed.skipped_lines[0].reason, /browser or navigation/);
+}
+
 console.log("Price intake parser tests passed.");

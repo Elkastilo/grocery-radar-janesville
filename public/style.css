@@ -82,7 +82,7 @@
 .receipt-proof-panel,
 .receipt-items-panel { padding: 1rem; border-radius: 1rem; background: #fff; border: 1px solid #dbe6df; }
 .receipt-proof-image { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 0.75rem; background: #f8fafc; }
-.receipt-item-row { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 0.5rem; margin-top: 0.75rem; }
+.receipt-item-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem; margin-top: 0.75rem; padding: 0.75rem; border: 1px solid #dbe5df; border-radius: 0.85rem; background: #fbfdfc; }
 .review-actions { flex-wrap: wrap; margin-top: 1rem; }
 .review-actions button { min-height: 3rem; }
 .focus-review .receipt-review-layout { grid-template-columns: 1fr; max-width: 780px; margin-inline: auto; }

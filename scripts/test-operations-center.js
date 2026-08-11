@@ -124,6 +124,11 @@ async function updateTempUser(dataDir, sql, params = []) {
   }
 }
 
+async function queryTempDb(dataDir, sql, params = []) {
+  const database = openDb(dataDir);
+  try { return await dbGet(database, sql, params); } finally { await closeDb(database); }
+}
+
 async function approvedReportCount(dataDir) {
   const database = openDb(dataDir);
   try {
@@ -345,6 +350,96 @@ async function main() {
       row_ids: aiDrafts.body.rows.map((row) => row.id)
     });
     assert.equal(blockedDataEntryApproval.response.status, 403);
+
+    const approvedDrafts = await reviewer.post("/api/admin/price-import-rows/bulk", {
+      action: "approve",
+      row_ids: aiDrafts.body.rows.map((row) => row.id)
+    });
+    assert.equal(approvedDrafts.response.status, 200, JSON.stringify(approvedDrafts.body));
+    const approvedResult = approvedDrafts.body.results[0];
+    const provenance = await queryTempDb(app.dataDir, "SELECT pr.*, events.actor_user_id, events.submitter_user_id, events.event_type FROM price_reports pr JOIN price_provenance_events events ON events.price_report_id = pr.id WHERE pr.id = ? AND events.event_type = 'APPROVED'", [approvedResult.report_id]);
+    assert.equal(provenance.user_id, normalRegistration.user.id);
+    assert.equal(provenance.submitted_by_user_id, normalRegistration.user.id);
+    assert.equal(provenance.reviewed_by, reviewerRegistration.user.id);
+    assert.equal(provenance.actor_user_id, reviewerRegistration.user.id);
+    assert.equal(provenance.submitter_user_id, normalRegistration.user.id);
+    assert.equal(provenance.source_import_batch_id, reviewBatchId);
+    assert.equal(provenance.proof_type, "receipt_photo");
+    assert.equal(provenance.source_url || "", "");
+
+    const approvalNotifications = await normal.get("/api/notifications");
+    const priceNotification = approvalNotifications.body.notifications.find((item) => item.related_report_id === approvedResult.report_id);
+    assert.ok(priceNotification);
+    assert.match(priceNotification.target_url, /product=/);
+    assert.equal(priceNotification.target_url.includes("admin"), false);
+
+    const productDetail = await normal.get(`/api/products/${approvedResult.product_id}`);
+    assert.equal(productDetail.response.status, 200, JSON.stringify(productDetail.body));
+    const publicReport = productDetail.body.reports.find((item) => item.id === approvedResult.report_id);
+    assert.equal(publicReport.has_private_receipt_proof, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(publicReport, "photo_path"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(publicReport, "reviewed_by"), false);
+
+    const correctedPrice = await owner.post(`/api/admin/reports/${approvedResult.report_id}/edit`, { price: "3.59", admin_edit_note: "Corrected test price while preserving original history." });
+    assert.equal(correctedPrice.response.status, 200, JSON.stringify(correctedPrice.body));
+    const correctionEvent = await queryTempDb(app.dataDir, "SELECT * FROM price_provenance_events WHERE price_report_id = ? AND event_type = 'CORRECTED' ORDER BY id DESC LIMIT 1", [approvedResult.report_id]);
+    assert.ok(correctionEvent);
+    assert.equal(JSON.parse(correctionEvent.metadata_json).original.price, 3.49);
+    assert.equal(JSON.parse(correctionEvent.metadata_json).corrected.price, 3.59);
+
+    const verifiedQuality = await normal.post("/api/quality-reviews", {
+      product_id: approvedResult.product_id,
+      store_id: provenance.store_id,
+      price_report_id: approvedResult.report_id,
+      rating: 4,
+      tags: ["good quality"],
+      comment: "Fresh this week."
+    });
+    assert.equal(verifiedQuality.response.status, 201, JSON.stringify(verifiedQuality.body));
+    assert.equal(verifiedQuality.body.review.verified_purchase, true);
+
+    const forgedQuality = await reviewer.post("/api/quality-reviews", {
+      product_id: approvedResult.product_id,
+      store_id: provenance.store_id,
+      price_report_id: approvedResult.report_id,
+      rating: 2,
+      comment: "Different shopper observation."
+    });
+    assert.equal(forgedQuality.response.status, 201, JSON.stringify(forgedQuality.body));
+    assert.equal(forgedQuality.body.review.verified_purchase, false);
+    const editOtherReview = await reviewer.request(`/api/quality-reviews/${verifiedQuality.body.review.id}`, { method: "PATCH", json: { rating: 1 } });
+    assert.equal(editOtherReview.response.status, 404);
+    const qualitySummary = await normal.get(`/api/products/${approvedResult.product_id}/quality?store_id=${provenance.store_id}`);
+    assert.equal(qualitySummary.response.status, 200);
+    assert.equal(qualitySummary.body.all_time_count, 2);
+    assert.equal(qualitySummary.body.recent_rating, 3);
+    const helpful = await reviewer.post(`/api/quality-reviews/${verifiedQuality.body.review.id}/helpful`, {});
+    assert.equal(helpful.response.status, 200, JSON.stringify(helpful.body));
+    const reportedReview = await reviewer.post(`/api/quality-reviews/${verifiedQuality.body.review.id}/report`, { reason: "misleading" });
+    assert.equal(reportedReview.response.status, 201, JSON.stringify(reportedReview.body));
+    const moderationQueue = await owner.get("/api/admin/quality-reviews/reports");
+    assert.equal(moderationQueue.response.status, 200, JSON.stringify(moderationQueue.body));
+    assert.ok(moderationQueue.body.reports.some((item) => item.quality_review_id === verifiedQuality.body.review.id && item.reason === "misleading"));
+    const hideReview = await owner.post(`/api/admin/quality-reviews/${forgedQuality.body.review.id}/moderate`, { status: "hidden", reason: "Test moderation" });
+    assert.equal(hideReview.response.status, 200, JSON.stringify(hideReview.body));
+    const hiddenSummary = await normal.get(`/api/products/${approvedResult.product_id}/quality?store_id=${provenance.store_id}`);
+    assert.equal(hiddenSummary.body.all_time_count, 1);
+
+    const selfBatchId = await insertProofBatch(app.dataDir, reviewerRegistration.user.id, "Reviewer own receipt");
+    const selfDrafts = await reviewer.post(`/api/admin/price-imports/${selfBatchId}/parse-price-text`, { source_text: "Bread | 20 oz | 2.59" });
+    assert.equal(selfDrafts.response.status, 201, JSON.stringify(selfDrafts.body));
+    const blockedSelfApproval = await reviewer.post("/api/admin/price-import-rows/bulk", { action: "approve", row_ids: selfDrafts.body.rows.map((row) => row.id) });
+    assert.equal(blockedSelfApproval.response.status, 409);
+
+    const ownerBatchId = await insertProofBatch(app.dataDir, ownerLogin.body.user.id, "Owner test receipt");
+    const ownerDrafts = await owner.post(`/api/admin/price-imports/${ownerBatchId}/parse-price-text`, { source_text: "Coffee | 12 oz | 8.99" });
+    assert.equal(ownerDrafts.response.status, 201, JSON.stringify(ownerDrafts.body));
+    const ownerNeedsConfirmation = await owner.post("/api/admin/price-import-rows/bulk", { action: "approve", row_ids: ownerDrafts.body.rows.map((row) => row.id) });
+    assert.equal(ownerNeedsConfirmation.response.status, 409);
+    const ownerOverride = await owner.post("/api/admin/price-import-rows/bulk", { action: "approve", row_ids: ownerDrafts.body.rows.map((row) => row.id), owner_self_approval_override: true, override_reason: "Automated operational test" });
+    assert.equal(ownerOverride.response.status, 200, JSON.stringify(ownerOverride.body));
+    const overrideEvent = await queryTempDb(app.dataDir, "SELECT * FROM price_provenance_events WHERE import_batch_id = ? AND event_type = 'OWNER_SELF_APPROVAL_OVERRIDE'", [ownerBatchId]);
+    assert.equal(overrideEvent.actor_user_id, ownerLogin.body.user.id);
 
     const heartbeatOne = await normal.post("/api/heartbeat", { visitor_id: "operations-test-visitor" });
     assert.equal(heartbeatOne.response.status, 200);

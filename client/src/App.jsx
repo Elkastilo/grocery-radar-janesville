@@ -194,7 +194,9 @@ function SourceTrust({ report, showLink = true }) {
   const validThrough = report.expires_at
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-black">
+    <details className="mt-3 rounded-xl bg-white/90 p-3 text-sm text-slate-700">
+      <summary className="cursor-pointer font-black text-emerald-800">Why do we trust this price?</summary>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-black">
       <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-800">
         {proofTypeLabel(report.proof_type)} proof
       </span>
@@ -208,7 +210,9 @@ function SourceTrust({ report, showLink = true }) {
           Valid through {shortDate(validThrough)}
         </span>
       ) : null}
-      {showLink && report.source_url ? (
+      {report.submitted_by_username ? <span className="rounded-full bg-slate-100 px-2.5 py-1">Submitted by {report.submitted_by_username}</span> : null}
+      {report.purchased_at ? <span className="rounded-full bg-slate-100 px-2.5 py-1">Purchased {shortDate(report.purchased_at)}</span> : null}
+      {showLink && report.source_url && report.proof_type !== 'receipt_photo' ? (
         <a
           href={report.source_url}
           target="_blank"
@@ -219,7 +223,9 @@ function SourceTrust({ report, showLink = true }) {
           <ExternalLink className="h-3.5 w-3.5" />
         </a>
       ) : null}
-    </div>
+      <p className="basis-full font-semibold text-slate-500">{report.trust_explanation || 'A human reviewer checked the submitted proof. Private proof details are not shown.'}</p>
+      </div>
+    </details>
   )
 }
 
@@ -1017,7 +1023,7 @@ function SearchScreen({
   )
 }
 
-function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, reload }) {
+function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, reload, me }) {
   const product = detail?.product
   const reports = (detail?.reports || []).filter(hasNumericApprovedReportPrice)
   const cheapest = [...reports].sort((a, b) => reportSortPrice(a) - reportSortPrice(b))[0]
@@ -1186,9 +1192,73 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
               <EmptyState title="No price trend yet" body="More approved reports are needed for this product." icon={Clock3} />
             )}
           </section>
+
+          <QualitySection product={product} storeGroups={storeGroups} quality={detail?.quality} me={me} reload={reload} />
         </>
       ) : null}
     </div>
+  )
+}
+
+function QualitySection({ product, storeGroups, quality = {}, me, reload }) {
+  const [open, setOpen] = useState(false)
+  const [storeId, setStoreId] = useState(storeGroups[0]?.store_id || '')
+  const [rating, setRating] = useState(0)
+  const [comment, setComment] = useState('')
+  const [tags, setTags] = useState([])
+  const [message, setMessage] = useState('')
+  const [reportingId, setReportingId] = useState(null)
+  const [reportReason, setReportReason] = useState('spam')
+  const availableTags = product.category === 'produce'
+    ? ['fresh', 'good quality', 'overripe', 'underripe', 'bruised / damaged', 'mold/spoilage observed', 'near expiration', 'great shelf life']
+    : product.category === 'prepared food'
+      ? ['fresh', 'hot when purchased', 'cold when purchased', 'good quality', 'dry', 'overcooked', 'undercooked concern', 'stale']
+      : ['good condition', 'packaging damaged', 'seal issue', 'near expiration', 'good quality']
+  const selectedGroup = storeGroups.find((group) => Number(group.store_id) === Number(storeId))
+  const linkedReport = selectedGroup?.reports?.[0]
+  const submit = async (event) => {
+    event.preventDefault()
+    try {
+      await postJson('/api/quality-reviews', { product_id: product.id, store_id: storeId, price_report_id: linkedReport?.id, rating, tags, comment })
+      setMessage('Thanks. Your quality observation is now visible.')
+      setOpen(false); setRating(0); setComment(''); setTags([])
+      reload()
+    } catch (submitError) { setMessage(submitError.message) }
+  }
+  const markHelpful = async (reviewId) => {
+    try { await postJson(`/api/quality-reviews/${reviewId}/helpful`, {}); setMessage('Marked helpful.'); reload() }
+    catch (actionError) { setMessage(actionError.message) }
+  }
+  const reportReview = async (reviewId) => {
+    try { await postJson(`/api/quality-reviews/${reviewId}/report`, { reason: reportReason }); setMessage('Review reported for moderation.'); setReportingId(null) }
+    catch (actionError) { setMessage(actionError.message) }
+  }
+  const removeOwnReview = async (reviewId) => {
+    if (!window.confirm('Remove your quality review?')) return
+    try { await apiFetch(`/api/quality-reviews/${reviewId}`, { method: 'DELETE' }); setMessage('Review removed.'); reload() }
+    catch (actionError) { setMessage(actionError.message) }
+  }
+  return (
+    <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100" aria-labelledby="quality-heading">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h2 id="quality-heading" className="text-xl font-black text-slate-950">Quality at these stores</h2><p className="mt-1 font-semibold text-slate-500">Recent conditions are separate from price accuracy.</p></div>
+        <button type="button" onClick={() => me?.loggedIn ? setOpen((value) => !value) : setMessage('Sign in to rate your purchase.')} className="rounded-full bg-emerald-700 px-5 py-3 font-black text-white">Rate your purchase</button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-3" aria-label="Quality rating summary">
+        <span className="rounded-full bg-amber-50 px-3 py-2 font-black text-amber-900">Recent: {quality.recent_rating ? `${quality.recent_rating} / 5` : 'No ratings yet'} ({quality.recent_count || 0})</span>
+        <span className="rounded-full bg-slate-100 px-3 py-2 font-black text-slate-700">All time: {quality.all_time_rating ? `${quality.all_time_rating} / 5` : 'No ratings yet'} ({quality.all_time_count || 0})</span>
+      </div>
+      {message ? <p role="status" className="mt-3 rounded-xl bg-emerald-50 p-3 font-bold text-emerald-900">{message}</p> : null}
+      {open ? <form onSubmit={submit} className="mt-4 space-y-4 rounded-2xl bg-slate-50 p-4">
+        <label className="block font-black">Store<select className="field mt-1" value={storeId} onChange={(event) => setStoreId(event.target.value)} required><option value="">Choose store</option>{storeGroups.map((group) => <option key={group.store_id} value={group.store_id}>{group.store_name}</option>)}</select></label>
+        <fieldset><legend className="font-black">Quality</legend><div className="mt-2 flex flex-wrap gap-2">{[1,2,3,4,5].map((value) => <label key={value} className={`min-h-12 cursor-pointer rounded-xl px-3 py-3 font-black ring-2 ${rating === value ? 'bg-amber-100 ring-amber-500' : 'bg-white ring-slate-200'}`}><input className="sr-only" type="radio" name="quality-rating" value={value} checked={rating === value} onChange={() => setRating(value)} required />{value} <Star className="inline h-4 w-4" aria-hidden="true" /><span className="sr-only"> out of 5</span></label>)}</div></fieldset>
+        <fieldset><legend className="font-black">Optional observations</legend><div className="mt-2 flex flex-wrap gap-2">{availableTags.map((tag) => <label key={tag} className="rounded-xl bg-white px-3 py-2 font-bold ring-1 ring-slate-200"><input type="checkbox" className="mr-2" checked={tags.includes(tag)} onChange={() => setTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])} />{titleCase(tag)}</label>)}</div></fieldset>
+        <label className="block font-black">Short comment (optional)<textarea className="field mt-1" rows="3" maxLength="400" value={comment} onChange={(event) => setComment(event.target.value)} /></label>
+        <button type="submit" className="min-h-12 rounded-xl bg-emerald-700 px-5 font-black text-white">Submit review</button>
+      </form> : null}
+      <div className="mt-5 space-y-3">{(quality.reviews || []).map((review) => <article key={review.id} className="rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap justify-between gap-2"><strong>{review.username}</strong><span className="font-black" aria-label={review.rating_label}>{'★'.repeat(review.rating)}{'☆'.repeat(5-review.rating)} · {review.rating_label}</span></div><p className="mt-1 text-sm font-bold text-slate-500">{review.store_name} · {shortDate(review.review_date)} {review.verified_purchase ? '· ✓ Verified purchase' : ''}</p>{review.comment ? <p className="mt-2 font-semibold text-slate-700">“{review.comment}”</p> : null}{review.tags?.length ? <p className="mt-2 text-sm font-bold text-slate-500">{review.tags.map(titleCase).join(' · ')}</p> : null}<div className="mt-3 flex flex-wrap items-center gap-2">{me?.loggedIn && !review.is_owner ? <><button type="button" onClick={() => markHelpful(review.id)} className="min-h-11 rounded-xl bg-white px-3 font-bold ring-1 ring-slate-200">Helpful ({review.helpful_count || 0})</button><button type="button" onClick={() => setReportingId(reportingId === review.id ? null : review.id)} className="min-h-11 rounded-xl bg-white px-3 font-bold ring-1 ring-slate-200">Report review</button></> : null}{review.is_owner ? <button type="button" onClick={() => removeOwnReview(review.id)} className="min-h-11 rounded-xl bg-white px-3 font-bold text-rose-700 ring-1 ring-rose-200">Remove my review</button> : null}</div>{reportingId === review.id ? <div className="mt-3 flex flex-wrap items-end gap-2"><label className="font-bold">Reason<select className="field mt-1" value={reportReason} onChange={(event) => setReportReason(event.target.value)}><option value="spam">Spam</option><option value="harassment">Harassment</option><option value="offensive">Offensive</option><option value="not about this product">Not about this product</option><option value="misleading">Misleading</option><option value="safety concern">Safety concern</option><option value="other">Other</option></select></label><button type="button" onClick={() => reportReview(review.id)} className="min-h-12 rounded-xl bg-slate-800 px-4 font-black text-white">Send report</button></div> : null}</article>)}</div>
+      <p className="mt-4 text-sm font-semibold text-slate-500">Quality comments are community observations and may vary by purchase.</p>
+    </section>
   )
 }
 
@@ -2794,6 +2864,10 @@ function App() {
     loadHomepageService()
     getJson('/api/rewards').then(setRewards).catch(() => {})
     const params = new URLSearchParams(window.location.search)
+    if (params.get('product')) {
+      setSelectedProductId(Number(params.get('product')))
+      setScreen('product')
+    }
     if (params.get('section') === 'proof' && params.get('proof')) {
       setSelectedProofId(params.get('proof'))
       setScreen('profile')
@@ -2984,6 +3058,7 @@ function App() {
             openScreen={openScreen}
             addToCart={addToCart}
             reload={loadProductDetail}
+            me={me}
           />
         ) : null}
         {screen === 'deals' ? (
