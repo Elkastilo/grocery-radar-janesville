@@ -657,6 +657,12 @@ async function main() {
     assert.equal(publicAnnouncements.response.status, 200);
     assert.ok(publicAnnouncements.body.announcements.some((item) => item.id === announcement.body.announcement.id));
 
+    const adminV2Announcements = await owner.get("/api/admin/v2/announcements");
+    assert.equal(adminV2Announcements.response.status, 200, JSON.stringify(adminV2Announcements.body));
+    const adminV2Announcement = adminV2Announcements.body.announcements.find((item) => item.id === announcement.body.announcement.id);
+    assert.ok(adminV2Announcement, "Admin V2 should return an announcement stored in the canonical body column.");
+    assert.equal(adminV2Announcement.message, "Temporary test announcement.");
+
     const blockedAnnouncement = await normal.post("/api/admin/operations/announcements", {
       title: "Blocked",
       body: "Should not save."

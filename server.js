@@ -13507,7 +13507,7 @@ app.get("/api/admin/v2/feedback", requireAdminAccess, requireLoggedInAdminAction
 }));
 
 app.get("/api/admin/v2/announcements", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
-  const rows = await all("SELECT id, announcement_type, title, message, status, published_at, updated_at FROM announcements ORDER BY updated_at DESC LIMIT 50");
+  const rows = await all("SELECT id, announcement_type, title, body AS message, status, published_at, updated_at FROM announcements ORDER BY updated_at DESC LIMIT 50");
   response.json({ announcements: rows });
 }));
 
