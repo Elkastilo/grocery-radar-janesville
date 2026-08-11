@@ -1,7 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { normalizeAiResult, responseSchema } = require("../src/aiProofEngine");
+const { normalizeAiResult, responseSchema, runtimeConfig } = require("../src/aiProofEngine");
 
 const difficult = normalizeAiResult({
   proof_id: 777,
@@ -40,5 +40,9 @@ assert.equal(schema.schema.additionalProperties, false);
 assert.equal(schema.schema.properties.items.items.additionalProperties, false);
 assert.equal(schema.schema.properties.items.items.properties.field_confidences.additionalProperties, false);
 assert.ok(schema.schema.properties.items.items.properties.field_confidences.required.includes("price"));
+
+const routing = runtimeConfig({ AI_MODEL: "legacy-model", AI_PRIMARY_MODEL: "primary-model", AI_FALLBACK_MODEL: "fallback-model" });
+assert.equal(routing.model, "primary-model");
+assert.equal(routing.fallbackModel, "fallback-model");
 
 console.log("AI proof engine tests passed.");

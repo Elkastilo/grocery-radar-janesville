@@ -647,6 +647,18 @@ const PRICE_IMPORT_SOURCE_TYPES = [
   "other"
 ];
 
+const REVIEW_ROW_REJECTION_REASONS = [
+  "wrong item",
+  "wrong price",
+  "wrong size / quantity",
+  "duplicate",
+  "unreadable proof",
+  "wrong store",
+  "promotional terms incomplete",
+  "not enough evidence",
+  "other"
+];
+
 const PROOF_SUBMISSION_NOTE_PREFIX = "Proof submission details";
 const PROOF_SUBMISSION_STATUSES = [
   "needs_admin_review",
@@ -1135,6 +1147,7 @@ function formatPriceImportRow(row) {
     notes: row.notes || "",
     status: row.status,
     admin_rejection_note: row.admin_rejection_note || "",
+    rejection_reason: row.rejection_reason || "",
     created_by: row.created_by || null,
     created_by_username: row.created_by_username || "",
     created_at: row.created_at,
@@ -8921,7 +8934,7 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
       ]
     );
 
-    const aiJob = photoPath ? await ensureAiProofJob(result.lastID) : null;
+    const aiJob = photoPath ? await ensureAiProofJob(result.lastID, { automatic: true }) : null;
 
     await createAdminNotification(
       "proof_submission_needs_review",
@@ -8954,10 +8967,10 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
     const batch = await priceImportBatchById(result.lastID);
 
     response.status(201).json({
-      message: "Proof saved. AI preparation will run in the background when enabled; a human will make the final decision.",
+      message: aiJob ? "Proof saved. Receipt AI preparation is running in the background; a human will make the final decision." : "Proof saved for human review. Staff may run AI manually when useful.",
       batch_id: result.lastID,
       status: "needs_admin_review",
-      ai_processing: aiJob ? { status: aiJob.status, proof_id: result.lastID } : { status: "needs_attention", proof_id: result.lastID },
+      ai_processing: aiJob ? { status: aiJob.status, proof_id: result.lastID, automatic: true } : { status: "manual_available", proof_id: result.lastID, automatic: false },
       batch: formatPriceImportBatch(batch, rows)
     });
   } catch (error) {
@@ -9652,16 +9665,31 @@ const activeAiProofJobs = new Set();
 async function aiProcessingSettings() {
   const stored = await get("SELECT * FROM ai_processing_settings WHERE id = 1");
   const runtime = aiRuntimeConfig();
+  const { todayStart } = dateWindowStarts();
+  const month = new Date();
+  month.setDate(1);
+  month.setHours(0, 0, 0, 0);
+  const monthStart = month.toISOString();
+  const [todayUsage, monthUsage] = await Promise.all([
+    get(`SELECT COUNT(*) AS analyses, SUM(CASE WHEN attempt_kind = 'retry' THEN 1 ELSE 0 END) AS retries, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failures, SUM(total_tokens) AS total_tokens, SUM(estimated_cost_usd) AS estimated_cost_usd FROM ai_proof_attempts WHERE started_at >= ?`, [todayStart]),
+    get(`SELECT COUNT(*) AS analyses, SUM(CASE WHEN attempt_kind = 'retry' THEN 1 ELSE 0 END) AS retries, SUM(total_tokens) AS total_tokens, SUM(estimated_cost_usd) AS estimated_cost_usd FROM ai_proof_attempts WHERE started_at >= ?`, [monthStart])
+  ]);
   return {
     enabled: Boolean(stored?.enabled),
     manual_only: Boolean(stored?.manual_only),
     max_analyses_per_hour: Math.max(1, Number(stored?.max_analyses_per_hour || 20)),
     max_analyses_per_day: Math.max(1, Number(stored?.max_analyses_per_day || 100)),
     retry_limit: Math.max(0, Number(stored?.retry_limit || 2)),
-    model: stored?.model || runtime.model,
+    model: stored?.primary_model || stored?.model || runtime.model,
+    primary_model: stored?.primary_model || stored?.model || runtime.model,
+    fallback_model: stored?.fallback_model || runtime.fallbackModel || "",
     provider: runtime.provider,
     credential_configured: Boolean(runtime.apiKey || runtime.testResponse),
-    updated_at: stored?.updated_at || ""
+    updated_at: stored?.updated_at || "",
+    usage: {
+      today: { analyses: Number(todayUsage?.analyses || 0), retries: Number(todayUsage?.retries || 0), failures: Number(todayUsage?.failures || 0), total_tokens: todayUsage?.total_tokens == null ? null : Number(todayUsage.total_tokens), estimated_cost_usd: todayUsage?.estimated_cost_usd == null ? null : Number(todayUsage.estimated_cost_usd) },
+      month: { analyses: Number(monthUsage?.analyses || 0), retries: Number(monthUsage?.retries || 0), total_tokens: monthUsage?.total_tokens == null ? null : Number(monthUsage.total_tokens), estimated_cost_usd: monthUsage?.estimated_cost_usd == null ? null : Number(monthUsage.estimated_cost_usd) }
+    }
   };
 }
 
@@ -9674,7 +9702,9 @@ async function aiStateForProof(proofId) {
       ...analysis,
       warnings: parseMetadataJson(analysis.warnings_json),
       structured: parseMetadataJson(analysis.structured_json),
-      store_mismatch: Boolean(analysis.detected_store_id && analysis.submitted_store_id && Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))
+      store_mismatch: Boolean(analysis.detected_store_name && (!analysis.detected_store_id || !analysis.submitted_store_id || Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))),
+      exact_store_match_found: Boolean(analysis.detected_store_id),
+      store_needs_resolution: !analysis.resolved_store_id
     } : null
   };
 }
@@ -9688,9 +9718,10 @@ function scheduleAiProofJob(proofId) {
 async function ensureAiProofJob(proofId, options = {}) {
   const proof = await priceImportBatchById(proofId);
   if (!proof || !proof.photo_path) return null;
+  if (options.automatic && proof.source_type !== "receipt" && proof.proof_type !== "receipt_photo") return null;
   const now = new Date().toISOString();
   const fingerprint = proofFingerprint(proof);
-  await run(`INSERT INTO ai_proof_jobs (proof_id, status, attempt_count, request_fingerprint, queued_at, updated_at) VALUES (?, 'waiting', 0, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET status = CASE WHEN ? THEN 'waiting' ELSE ai_proof_jobs.status END, request_fingerprint = excluded.request_fingerprint, last_error = CASE WHEN ? THEN NULL ELSE ai_proof_jobs.last_error END, queued_at = CASE WHEN ? THEN excluded.queued_at ELSE ai_proof_jobs.queued_at END, updated_at = excluded.updated_at`, [proofId, fingerprint, now, now, options.force ? 1 : 0, options.force ? 1 : 0, options.force ? 1 : 0]);
+  await run(`INSERT INTO ai_proof_jobs (proof_id, status, attempt_count, manual_requested, request_fingerprint, queued_at, updated_at) VALUES (?, 'waiting', 0, ?, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET status = CASE WHEN ? THEN 'waiting' ELSE ai_proof_jobs.status END, manual_requested = CASE WHEN ? THEN 1 ELSE ai_proof_jobs.manual_requested END, request_fingerprint = excluded.request_fingerprint, last_error = CASE WHEN ? THEN NULL ELSE ai_proof_jobs.last_error END, queued_at = CASE WHEN ? THEN excluded.queued_at ELSE ai_proof_jobs.queued_at END, updated_at = excluded.updated_at`, [proofId, options.force ? 1 : 0, fingerprint, now, now, options.force ? 1 : 0, options.force ? 1 : 0, options.force ? 1 : 0, options.force ? 1 : 0]);
   const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
   if (["waiting", "ai_failed"].includes(job.status) || options.force) scheduleAiProofJob(proofId);
   return job;
@@ -9699,8 +9730,8 @@ async function ensureAiProofJob(proofId, options = {}) {
 async function aiUsageAllowed(settings) {
   const now = Date.now();
   const [hour, day] = await Promise.all([
-    get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE started_at >= ?", [new Date(now - 3600000).toISOString()]),
-    get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE started_at >= ?", [new Date(now - 86400000).toISOString()])
+    get("SELECT COUNT(*) AS count FROM ai_proof_attempts WHERE started_at >= ?", [new Date(now - 3600000).toISOString()]),
+    get("SELECT COUNT(*) AS count FROM ai_proof_attempts WHERE started_at >= ?", [new Date(now - 86400000).toISOString()])
   ]);
   return Number(hour?.count || 0) < settings.max_analyses_per_hour && Number(day?.count || 0) < settings.max_analyses_per_day;
 }
@@ -9713,11 +9744,13 @@ function closestStoreForAi(name, stores) {
 
 async function upsertAiDrafts(proof, analysisId, result, stores, products, now) {
   const validProductIds = new Set(products.map((product) => Number(product.id)));
+  const detectedStore = closestStoreForAi(result.detected_store, stores);
+  const initialStoreId = detectedStore && Number(detectedStore.id) === Number(proof.default_store_id) ? Number(proof.default_store_id) : null;
   for (const item of result.items) {
     const requestedProductId = validProductIds.has(Number(item.existing_product_match_id)) && item.existing_product_match_confidence === "high" ? Number(item.existing_product_match_id) : null;
     const draft = cleanImportRowDraft({
       product_id: requestedProductId,
-      store_id: proof.default_store_id,
+      store_id: initialStoreId,
       item_name: item.normalized_name || "Unknown item",
       brand: item.brand,
       variant: item.variant,
@@ -9752,8 +9785,8 @@ async function processAiProofJob(proofId) {
   const settings = await aiProcessingSettings();
   const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
   if (!job || job.status !== "waiting") return;
-  if (!settings.enabled || settings.manual_only || !settings.credential_configured) {
-    await run("UPDATE ai_proof_jobs SET status = 'needs_attention', last_error = ?, updated_at = ? WHERE id = ?", [!settings.enabled ? "AI processing is disabled." : settings.manual_only ? "AI processing is in manual-only mode." : "AI credentials are not configured.", new Date().toISOString(), job.id]);
+  if (!settings.enabled || (settings.manual_only && !job.manual_requested) || !settings.credential_configured) {
+    await run("UPDATE ai_proof_jobs SET status = 'needs_attention', last_error = ?, updated_at = ? WHERE id = ?", [!settings.enabled ? "AI processing is disabled." : settings.manual_only ? "AI processing is in manual-only mode. Use Run AI to process this proof." : "AI credentials are not configured.", new Date().toISOString(), job.id]);
     return;
   }
   if (!(await aiUsageAllowed(settings))) {
@@ -9763,26 +9796,32 @@ async function processAiProofJob(proofId) {
   const now = new Date().toISOString();
   const claimed = await run("UPDATE ai_proof_jobs SET status = 'analyzing', attempt_count = attempt_count + 1, provider = ?, model = ?, started_at = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'waiting'", [settings.provider, settings.model, now, now, job.id]);
   if (!claimed.changes) return;
+  const attemptNumber = Number(job.attempt_count || 0) + 1;
+  const attemptKind = attemptNumber === 1 ? "initial" : "retry";
+  await run("INSERT OR IGNORE INTO ai_proof_attempts (job_id, proof_id, attempt_number, attempt_kind, provider, model, status, request_fingerprint, started_at) VALUES (?, ?, ?, ?, ?, ?, 'analyzing', ?, ?)", [job.id, proofId, attemptNumber, attemptKind, settings.provider, settings.model, job.request_fingerprint || "", now]);
   try {
     const proof = await priceImportBatchById(proofId);
     const fullPath = uploadPathFromPhotoPath(proof.photo_path);
     if (!fullPath) throw new Error("Original proof image could not be found.");
-    const [stores, products] = await Promise.all([all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"), all("SELECT id, display_name, category, preferred_brand, common_aliases FROM products WHERE status = 'active' ORDER BY display_name LIMIT 500")]);
+    const [stores, products] = await Promise.all([all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"), all("SELECT id, display_name, category, preferred_brand, common_aliases, variant, upc FROM products WHERE status = 'active' ORDER BY (SELECT COUNT(*) FROM price_reports WHERE price_reports.product_id = products.id AND price_reports.status = 'approved') DESC, display_name LIMIT 500")]);
     const submittedStore = stores.find((store) => Number(store.id) === Number(proof.default_store_id));
-    const result = await analyzeProof({ proof, imageBuffer: await fs.promises.readFile(fullPath), mimeType: proof.photo_mime_type || "image/jpeg", submittedStore: submittedStore?.name || "", stores, products, env: { ...process.env, AI_MODEL: settings.model } });
+    const result = await analyzeProof({ proof, imageBuffer: await fs.promises.readFile(fullPath), mimeType: proof.photo_mime_type || "image/jpeg", submittedStore: submittedStore?.name || "", stores, products, env: { ...process.env, AI_MODEL: settings.model, AI_PRIMARY_MODEL: settings.model } });
     const detectedStore = closestStoreForAi(result.detected_store, stores);
     const completedAt = new Date().toISOString();
     await run(`INSERT INTO ai_proof_analyses (job_id, proof_id, proof_type, detected_store_name, detected_store_id, detected_store_confidence, submitted_store_id, source_date, source_date_confidence, overall_confidence, warnings_json, structured_json, item_count, ready_count, check_count, unknown_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET job_id = excluded.job_id, proof_type = excluded.proof_type, detected_store_name = excluded.detected_store_name, detected_store_id = excluded.detected_store_id, detected_store_confidence = excluded.detected_store_confidence, submitted_store_id = excluded.submitted_store_id, source_date = excluded.source_date, source_date_confidence = excluded.source_date_confidence, overall_confidence = excluded.overall_confidence, warnings_json = excluded.warnings_json, structured_json = excluded.structured_json, item_count = excluded.item_count, ready_count = excluded.ready_count, check_count = excluded.check_count, unknown_count = excluded.unknown_count, updated_at = excluded.updated_at`, [job.id, proofId, result.proof_type, result.detected_store, detectedStore?.id || null, result.detected_store_confidence, proof.default_store_id || null, result.source_date, result.source_date_confidence, result.overall_confidence, JSON.stringify(result.warnings), JSON.stringify(result), result.items.length, result.counts.high, result.counts.check, result.counts.unknown, completedAt, completedAt]);
     const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [proofId]);
     await upsertAiDrafts(proof, analysis.id, result, stores, products, completedAt);
     const finalStatus = result.items.length && !result.counts.unknown ? "ready_for_review" : "needs_attention";
-    await run("UPDATE ai_proof_jobs SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?", [finalStatus, completedAt, completedAt, job.id]);
+    await run("UPDATE ai_proof_jobs SET status = ?, manual_requested = 0, completed_at = ?, updated_at = ? WHERE id = ?", [finalStatus, completedAt, completedAt, job.id]);
+    const usage = result.provider_usage || {};
+    await run("UPDATE ai_proof_attempts SET status = 'completed', prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, completed_at = ? WHERE job_id = ? AND attempt_number = ?", [usage.prompt_tokens ?? null, usage.completion_tokens ?? null, usage.total_tokens ?? null, completedAt, job.id, attemptNumber]);
     await run("UPDATE price_import_batches SET status = CASE WHEN status = 'needs_admin_review' THEN status ELSE 'ready_for_review' END, updated_at = ? WHERE id = ?", [completedAt, proofId]);
     await recordPriceEvent({ batchId: proofId, eventType: "AI_PREPARED", submitterUserId: proof.created_by, reason: `AI prepared ${result.items.length} draft items.`, metadata: { analysis_id: analysis.id, ready: result.counts.high, check: result.counts.check, unknown: result.counts.unknown } });
   } catch (error) {
     const current = await get("SELECT attempt_count FROM ai_proof_jobs WHERE id = ?", [job.id]);
     const retryable = Number(current?.attempt_count || 0) <= settings.retry_limit;
-    await run("UPDATE ai_proof_jobs SET status = ?, last_error = ?, completed_at = ?, updated_at = ? WHERE id = ?", [retryable ? "ai_failed" : "needs_attention", cleanText(error.message || "AI analysis failed.", 300), new Date().toISOString(), new Date().toISOString(), job.id]);
+    await run("UPDATE ai_proof_jobs SET status = ?, manual_requested = 0, last_error = ?, completed_at = ?, updated_at = ? WHERE id = ?", [retryable ? "ai_failed" : "needs_attention", cleanText(error.message || "AI analysis failed.", 300), new Date().toISOString(), new Date().toISOString(), job.id]);
+    await run("UPDATE ai_proof_attempts SET status = 'failed', last_error = ?, completed_at = ? WHERE job_id = ? AND attempt_number = ?", [cleanText(error.message || "AI analysis failed.", 300), new Date().toISOString(), job.id, attemptNumber]);
   }
 }
 
@@ -11286,6 +11325,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
     throw new Error("Rejected import rows must be edited before approval.");
   }
 
+  if (row.ai_analysis_id) {
+    const analysis = await get("SELECT resolved_store_id FROM ai_proof_analyses WHERE id = ? AND proof_id = ?", [row.ai_analysis_id, row.batch_id]);
+    if (analysis && !analysis.resolved_store_id) throw new Error("Resolve the proof store before approving AI-prepared items.");
+  }
+
   if (!row.photo_path && !row.source_url) {
     throw new Error("Import approval requires a linked proof image or source link.");
   }
@@ -11839,7 +11883,7 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, 'import_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, 'import_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           sourceType,
@@ -11871,7 +11915,7 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
       );
 
       created.push(await priceImportBatchById(result.lastID));
-      await ensureAiProofJob(result.lastID);
+      await ensureAiProofJob(result.lastID, { automatic: true });
     }
   } catch (error) {
     for (const file of files) {
@@ -11882,11 +11926,11 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
   }
 
   response.status(201).json({
-    message: "Proof image uploaded. AI preparation is queued; human approval is still required.",
+    message: sourceType === "receipt" || proofType === "receipt_photo" ? "Receipt uploaded. AI preparation is queued; human approval is still required." : "Proof image uploaded for human review. Run AI manually if useful.",
     extraction_attempt: {
-      status: "waiting",
-      message: "AI is preparing proof-scoped draft suggestions in the background. Paste or manual entry remain available.",
-      attempts: created.map((batch) => ({ batch_id: batch.id, status: "waiting" }))
+      status: sourceType === "receipt" || proofType === "receipt_photo" ? "waiting" : "manual_available",
+      message: sourceType === "receipt" || proofType === "receipt_photo" ? "AI is preparing proof-scoped draft suggestions in the background. Paste or manual entry remain available." : "AI was not started automatically for this non-receipt proof.",
+      attempts: created.map((batch) => ({ batch_id: batch.id, status: sourceType === "receipt" || proofType === "receipt_photo" ? "waiting" : "manual_available" }))
     },
     batches: created.map((batch) => formatPriceImportBatch(batch, []))
   });
@@ -12954,7 +12998,10 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           duplicate_warning = ?,
           notes = ?,
           status = ?,
+          rejection_reason = NULL,
           admin_rejection_note = NULL,
+          rejected_by = NULL,
+          rejected_at = NULL,
           updated_by = ?,
           updated_at = ?
       WHERE id = ?
@@ -13007,7 +13054,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
   });
 }));
 
-app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), asyncRoute(async (request, response) => {
   const rowId = Number.parseInt(request.params.id, 10);
   const result = await approvePriceImportRow(rowId, request.adminUser, {
     ownerSelfApprovalOverride: request.body.owner_self_approval_override === true,
@@ -13017,7 +13064,7 @@ app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, require
   response.json(result);
 }));
 
-app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const rowId = Number.parseInt(request.params.id, 10);
   const existing = await priceImportRowById(rowId);
 
@@ -13031,11 +13078,17 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
     return;
   }
 
+  const rejectionReason = cleanText(request.body.rejection_reason, 80).toLowerCase();
+  if (!REVIEW_ROW_REJECTION_REASONS.includes(rejectionReason)) {
+    response.status(400).json({ error: "Choose a valid rejection reason." });
+    return;
+  }
   const now = new Date().toISOString();
   await run(
     `
       UPDATE price_import_rows
       SET status = 'rejected',
+          rejection_reason = ?,
           admin_rejection_note = ?,
           rejected_by = ?,
           rejected_at = ?,
@@ -13044,7 +13097,8 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
       WHERE id = ?
     `,
     [
-      cleanText(request.body.admin_rejection_note || "Rejected by admin.", 500),
+      rejectionReason,
+      cleanText(request.body.admin_rejection_note || "", 500),
       request.adminUser ? request.adminUser.id : null,
       now,
       request.adminUser ? request.adminUser.id : null,
@@ -13052,6 +13106,11 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
       rowId
     ]
   );
+  const batch = await priceImportBatchById(existing.batch_id);
+  await recordPriceEvent({ batchId: existing.batch_id, rowId, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch?.created_by, reason: rejectionReason, metadata: { reviewer_note: cleanText(request.body.admin_rejection_note || "", 500) } });
+  await run("UPDATE price_import_batches SET rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN ? ELSE review_completed_at END, review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'completed' ELSE review_decision END, updated_at = ? WHERE id = ?", [existing.batch_id, existing.batch_id, now, existing.batch_id, now, existing.batch_id]);
+  const unfinished = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [existing.batch_id]);
+  if (!Number(unfinished?.count || 0)) await run("UPDATE ai_proof_jobs SET status = 'human_complete', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE proof_id = ?", [now, now, existing.batch_id]);
 
   response.json({
     message: "Import row rejected.",
@@ -13519,10 +13578,18 @@ app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdm
     return;
   }
   const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batchId]));
+  const formattedRows = rows.map(formatPriceImportRow);
+  const ai = await aiStateForProof(batchId);
+  const unresolvedRows = formattedRows.filter((row) => !["approved", "rejected", "removed"].includes(row.status));
+  const readyRows = unresolvedRows.filter((row) => row.status === "ready_for_review" && row.ai_confidence === "high");
+  const approvableRows = readyRows.filter((row) => ai.analysis?.resolved_store_id && row.store_id && row.item_name && Number(row.price) > 0 && !(row.ai_warnings || []).length && !row.duplicate_warning);
   response.json({
     batch: formatPriceImportBatch(batch, rows),
-    ai: await aiStateForProof(batchId),
+    ai,
+    stores: await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"),
+    approval_summary: { ready: readyRows.length, flagged: unresolvedRows.length - readyRows.length, approvable_ready: approvableRows.length, unresolved: unresolvedRows.length },
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
+    can_review: staffCan(request.adminUser, "review"),
     can_approve: staffCan(request.adminUser, "approve"),
     focus_mode_available: true
   });
@@ -13531,13 +13598,13 @@ app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdm
 app.post("/api/admin/v2/reviews/:batchId/re-run-ai", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
-  if (!batch || !isProofSubmissionBatch(batch) || !batch.photo_path) {
+  if (!batch || !batch.photo_path) {
     response.status(404).json({ error: "An eligible proof image was not found." });
     return;
   }
   const settings = await aiProcessingSettings();
-  if (!settings.enabled || settings.manual_only) {
-    response.status(409).json({ error: "AI processing is disabled or in manual-only mode. Paste from ChatGPT or enter items manually." });
+  if (!settings.enabled) {
+    response.status(409).json({ error: "AI processing is disabled. Paste from ChatGPT or enter items manually." });
     return;
   }
   const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [batchId]);
@@ -13545,13 +13612,13 @@ app.post("/api/admin/v2/reviews/:batchId/re-run-ai", requireAdminAccess, require
     response.status(409).json({ error: "This proof is already being analyzed." });
     return;
   }
-  if (Number(job?.attempt_count || 0) > settings.retry_limit + 1 && staffRoleForUser(request.adminUser) !== "owner") {
-    response.status(429).json({ error: "Retry limit reached. Ask the Owner or use manual fallback." });
+  if (Number(job?.attempt_count || 0) >= 1 + settings.retry_limit) {
+    response.status(429).json({ error: "AI retry limit reached. Use manual fallback or change the Owner limit before retrying." });
     return;
   }
   await ensureAiProofJob(batchId, { force: true });
-  await recordPriceEvent({ batchId, eventType: "AI_RETRY_REQUESTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: cleanText(request.body.reason || "Staff requested AI re-run.", 300) });
-  response.status(202).json({ message: "AI analysis queued again.", ai: await aiStateForProof(batchId) });
+  await recordPriceEvent({ batchId, eventType: job ? "AI_RETRY_REQUESTED" : "AI_MANUAL_REQUESTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: cleanText(request.body.reason || (job ? "Staff requested AI re-run." : "Staff requested AI analysis."), 300) });
+  response.status(202).json({ message: job ? "AI analysis queued again." : "AI analysis queued.", ai: await aiStateForProof(batchId) });
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
@@ -13559,15 +13626,37 @@ app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, 
   const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [batchId]);
   const batch = await priceImportBatchById(batchId);
   if (!analysis || !batch) { response.status(404).json({ error: "AI store analysis was not found for this proof." }); return; }
-  const action = cleanEnum(request.body.action, ["use_ai", "keep_submitted", "not_sure"], "not_sure");
-  const resolvedStoreId = action === "use_ai" ? analysis.detected_store_id : action === "keep_submitted" ? analysis.submitted_store_id : null;
-  if (action !== "not_sure" && !resolvedStoreId) { response.status(400).json({ error: "The selected store option is unavailable." }); return; }
+  const action = cleanEnum(request.body.action, ["use_ai", "keep_submitted", "choose_store", "not_sure"], "not_sure");
+  const requestedStoreId = Number.parseInt(request.body.store_id, 10);
+  const requestedResolutionId = action === "use_ai" ? analysis.detected_store_id : action === "keep_submitted" ? analysis.submitted_store_id : action === "choose_store" ? requestedStoreId : null;
+  const resolvedStore = requestedResolutionId ? await get("SELECT id FROM stores WHERE id = ? AND active = 1", [requestedResolutionId]) : null;
+  const resolvedStoreId = resolvedStore?.id || null;
+  if (action !== "not_sure" && !resolvedStoreId) { response.status(400).json({ error: "The selected active store is unavailable." }); return; }
   const now = new Date().toISOString();
   await run("UPDATE ai_proof_analyses SET resolved_store_id = ?, store_resolution = ?, updated_at = ? WHERE proof_id = ?", [resolvedStoreId, action, now, batchId]);
   if (resolvedStoreId) await run("UPDATE price_import_rows SET store_id = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [resolvedStoreId, request.adminUser.id, now, batchId]);
   if (action === "not_sure") await run("UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = 'Store could not be resolved', updated_at = ? WHERE id = ?", [now, now, batchId]);
   await recordPriceEvent({ batchId, eventType: "STORE_RESOLVED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: action, metadata: { submitted_store_id: analysis.submitted_store_id, detected_store_id: analysis.detected_store_id, resolved_store_id: resolvedStoreId } });
   response.json({ message: action === "not_sure" ? "Store sent for Manager help." : "Store decision saved.", ai: await aiStateForProof(batchId) });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const [batch, analysis, rows, activeStores] = await Promise.all([
+    priceImportBatchById(batchId),
+    get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [batchId]),
+    priceImportRowsForBatchIds([batchId]),
+    getActiveStoreIds()
+  ]);
+  if (!batch) { response.status(404).json({ error: "Proof review was not found." }); return; }
+  if (!analysis?.resolved_store_id) { response.status(409).json({ error: "Resolve the exact price store before approving ready items." }); return; }
+  const eligible = rows.filter((row) => row.status === "ready_for_review" && row.ai_confidence === "high" && row.item_name && Number(row.price) > 0 && activeStores.includes(Number(row.store_id)) && !row.duplicate_warning && !parseMetadataJson(row.ai_warnings_json).length);
+  if (!eligible.length) { response.status(400).json({ error: "No high-confidence items currently meet every publication requirement." }); return; }
+  const results = [];
+  for (const row of eligible) {
+    results.push(await approvePriceImportRow(row.id, request.adminUser, { ownerSelfApprovalOverride: request.body.owner_self_approval_override === true, overrideReason: request.body.override_reason }));
+  }
+  response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results });
 }));
 
 app.get("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
@@ -13581,10 +13670,11 @@ app.post("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRout
   const hourly = Math.min(200, Math.max(1, Number.parseInt(request.body.max_analyses_per_hour || current.max_analyses_per_hour, 10)));
   const daily = Math.min(2000, Math.max(hourly, Number.parseInt(request.body.max_analyses_per_day || current.max_analyses_per_day, 10)));
   const retries = Math.min(5, Math.max(0, Number.parseInt(request.body.retry_limit ?? current.retry_limit, 10)));
-  const model = cleanText(request.body.model || current.model, 100);
+  const primaryModel = cleanText(request.body.primary_model || request.body.model || current.primary_model, 100);
+  const fallbackModel = cleanText(request.body.fallback_model ?? current.fallback_model, 100);
   const now = new Date().toISOString();
-  await run("UPDATE ai_processing_settings SET enabled = ?, manual_only = ?, max_analyses_per_hour = ?, max_analyses_per_day = ?, retry_limit = ?, model = ?, updated_by = ?, updated_at = ? WHERE id = 1", [enabled ? 1 : 0, manualOnly ? 1 : 0, hourly, daily, retries, model, request.adminUser.id, now]);
-  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "AI_SETTINGS_UPDATED", affectedType: "ai_processing_settings", affectedId: 1, metadata: { enabled, manual_only: manualOnly, hourly, daily, retries, model } });
+  await run("UPDATE ai_processing_settings SET enabled = ?, manual_only = ?, max_analyses_per_hour = ?, max_analyses_per_day = ?, retry_limit = ?, model = ?, primary_model = ?, fallback_model = ?, updated_by = ?, updated_at = ? WHERE id = 1", [enabled ? 1 : 0, manualOnly ? 1 : 0, hourly, daily, retries, primaryModel, primaryModel, fallbackModel, request.adminUser.id, now]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "AI_SETTINGS_UPDATED", affectedType: "ai_processing_settings", affectedId: 1, metadata: { enabled, manual_only: manualOnly, hourly, daily, retries, primary_model: primaryModel, fallback_model: fallbackModel } });
   response.json({ message: "AI processing controls saved.", settings: await aiProcessingSettings() });
 }));
 

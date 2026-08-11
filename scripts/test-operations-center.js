@@ -334,8 +334,10 @@ async function main() {
 
     await updateTempUser(app.dataDir, "INSERT OR IGNORE INTO stores (name, address, city, state, store_type, active, created_at) VALUES ('ALDI Janesville', 'Test Aldi', 'Janesville', 'WI', 'discount', 1, ?)", [new Date().toISOString()]);
     await updateTempUser(app.dataDir, "INSERT OR IGNORE INTO stores (name, address, city, state, store_type, active, created_at) VALUES ('Walmart Janesville', 'Test Walmart', 'Janesville', 'WI', 'grocery', 1, ?)", [new Date().toISOString()]);
+    await updateTempUser(app.dataDir, "INSERT OR IGNORE INTO stores (name, address, city, state, store_type, active, created_at) VALUES ('Kwik Trip Janesville East', 'Test Kwik Trip', 'Janesville', 'WI', 'convenience', 1, ?)", [new Date().toISOString()]);
     const aldiStore = await queryTempDb(app.dataDir, "SELECT id FROM stores WHERE name = 'ALDI Janesville'");
     const walmartStore = await queryTempDb(app.dataDir, "SELECT id FROM stores WHERE name = 'Walmart Janesville'");
+    const kwikTripStore = await queryTempDb(app.dataDir, "SELECT id FROM stores WHERE name = 'Kwik Trip Janesville East'");
     fs.writeFileSync(path.join(app.uploadsDir, "test-receipt.png"), Buffer.from("proof-isolation-test"));
 
     const aiSettings = await owner.post("/api/admin/operations/ai-settings", { enabled: true, manual_only: false, max_analyses_per_hour: 20, max_analyses_per_day: 100, retry_limit: 2, model: "test-model" });
@@ -371,6 +373,103 @@ async function main() {
     assert.equal(priorReview.body.batch.rows.length, 1);
     assert.equal(priorReview.body.batch.rows[0].item_name, "Walmart old helper item");
     assert.equal(JSON.stringify(priorReview.body).includes("Bananas"), false);
+
+    const analysisId = aiReview.ai.analysis.id;
+    await updateTempUser(app.dataDir, "UPDATE ai_proof_analyses SET detected_store_name = 'Kwik Trip / Kwik Star', detected_store_id = NULL, submitted_store_id = 1, resolved_store_id = NULL, store_resolution = '' WHERE id = ?", [analysisId]);
+    await updateTempUser(app.dataDir, "UPDATE price_import_rows SET store_id = NULL WHERE batch_id = ?", [aiProofBatch]);
+    const nowForFlagged = new Date().toISOString();
+    await updateTempUser(app.dataDir, "INSERT INTO price_import_rows (batch_id, store_id, item_name, category, price, size_text, quantity, unit, proof_type, status, created_at, updated_at, ai_analysis_id, ai_item_index, ai_confidence, ai_warnings_json) VALUES (?, NULL, 'Promotional Buns', 'bakery', 0.99, '8 ct', 1, 'each', 'receipt_photo', 'needs_edit', ?, ?, ?, 2, 'check', '[\"Promotional terms visible\"]')", [aiProofBatch, nowForFlagged, nowForFlagged, analysisId]);
+    await updateTempUser(app.dataDir, "INSERT INTO price_import_rows (batch_id, store_id, item_name, category, price, size_text, quantity, unit, proof_type, status, created_at, updated_at, ai_analysis_id, ai_item_index, ai_confidence, ai_warnings_json) VALUES (?, NULL, 'Unknown drink', 'drinks', 1.49, '1 ct', 1, 'each', 'receipt_photo', 'needs_edit', ?, ?, ?, 3, 'unknown', '[]')", [aiProofBatch, nowForFlagged, nowForFlagged, analysisId]);
+    const kwikMismatch = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    assert.equal(kwikMismatch.body.ai.analysis.detected_store_name, "Kwik Trip / Kwik Star");
+    assert.equal(kwikMismatch.body.ai.analysis.detected_store_id, null);
+    assert.equal(kwikMismatch.body.ai.analysis.submitted_store_id, 1);
+    assert.equal(kwikMismatch.body.ai.analysis.resolved_store_id, null);
+    assert.equal(kwikMismatch.body.ai.analysis.store_mismatch, true);
+    assert.equal(kwikMismatch.body.ai.analysis.exact_store_match_found, false);
+    assert.equal(kwikMismatch.body.approval_summary.ready, 2);
+    assert.equal(kwikMismatch.body.approval_summary.flagged, 2);
+    assert.ok(kwikMismatch.body.stores.some((store) => store.id === kwikTripStore.id));
+    assert.equal(JSON.stringify(kwikMismatch.body).includes("Walmart old helper item"), false);
+    const chooseKwik = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/store-resolution`, { action: "choose_store", store_id: kwikTripStore.id });
+    assert.equal(chooseKwik.response.status, 200, JSON.stringify(chooseKwik.body));
+    const kwikResolved = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    assert.ok(kwikResolved.body.batch.rows.every((row) => row.store_id === kwikTripStore.id));
+
+    const attemptsBeforeDecisions = await queryTempDb(app.dataDir, "SELECT COUNT(*) AS count FROM ai_proof_attempts WHERE proof_id = ?", [aiProofBatch]);
+    const blockedReadyApproval = await dataEntry.post(`/api/admin/v2/reviews/${aiProofBatch}/approve-ready`, {});
+    assert.equal(blockedReadyApproval.response.status, 403);
+    const approveReady = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/approve-ready`, {});
+    assert.equal(approveReady.response.status, 200, JSON.stringify(approveReady.body));
+    assert.equal(approveReady.body.approved_count, 2);
+    const afterReady = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    const flaggedRows = afterReady.body.batch.rows.filter((row) => !["approved", "rejected", "removed"].includes(row.status));
+    assert.equal(flaggedRows.length, 2);
+    const rejectedFlagged = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[0].id}/reject`, { rejection_reason: "wrong price", admin_rejection_note: "Price is not legible enough." });
+    assert.equal(rejectedFlagged.response.status, 200, JSON.stringify(rejectedFlagged.body));
+    const rejectedRecord = await queryTempDb(app.dataDir, "SELECT rejection_reason, admin_rejection_note, rejected_by, rejected_at, price_report_id FROM price_import_rows WHERE id = ?", [flaggedRows[0].id]);
+    assert.equal(rejectedRecord.rejection_reason, "wrong price");
+    assert.equal(rejectedRecord.rejected_by, reviewerRegistration.user.id);
+    assert.ok(rejectedRecord.rejected_at);
+    assert.equal(rejectedRecord.price_report_id, null);
+    const rejectionEvent = await queryTempDb(app.dataDir, "SELECT actor_user_id, reason FROM price_provenance_events WHERE import_row_id = ? AND event_type = 'REJECTED' ORDER BY id DESC LIMIT 1", [flaggedRows[0].id]);
+    assert.equal(rejectionEvent.actor_user_id, reviewerRegistration.user.id);
+    assert.equal(rejectionEvent.reason, "wrong price");
+    const blockedRejectedPublish = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[0].id}/approve`, {});
+    assert.equal(blockedRejectedPublish.response.status, 400);
+    const editLastFlagged = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[1].id}`, { item_name: "Bottled drink", price: 1.49, size_text: "1 ct", category: "drinks", storage_condition: "refrigerated", store_id: kwikTripStore.id, status: "ready_for_review" });
+    assert.equal(editLastFlagged.response.status, 200, JSON.stringify(editLastFlagged.body));
+    const approveLastFlagged = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[1].id}/approve`, {});
+    assert.equal(approveLastFlagged.response.status, 200, JSON.stringify(approveLastFlagged.body));
+    const decisionCounts = await queryTempDb(app.dataDir, "SELECT SUM(status = 'approved') AS approved, SUM(status = 'rejected') AS rejected FROM price_import_rows WHERE batch_id = ?", [aiProofBatch]);
+    assert.equal(decisionCounts.approved, 3);
+    assert.equal(decisionCounts.rejected, 1);
+    const attemptsAfterDecisions = await queryTempDb(app.dataDir, "SELECT COUNT(*) AS count FROM ai_proof_attempts WHERE proof_id = ?", [aiProofBatch]);
+    assert.equal(attemptsAfterDecisions.count, attemptsBeforeDecisions.count, "Editing, store selection, approval, rejection, and reload must not call AI.");
+    const explicitRerun = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/re-run-ai`, { reason: "Explicit retry count test" });
+    assert.equal(explicitRerun.response.status, 202, JSON.stringify(explicitRerun.body));
+    let attemptsAfterRerun = attemptsAfterDecisions;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      attemptsAfterRerun = await queryTempDb(app.dataDir, "SELECT COUNT(*) AS count FROM ai_proof_attempts WHERE proof_id = ?", [aiProofBatch]);
+      if (attemptsAfterRerun.count === attemptsAfterDecisions.count + 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(attemptsAfterRerun.count, attemptsAfterDecisions.count + 1, "Explicit Re-run AI must create exactly one authorized attempt.");
+
+    const receiptUpload = new FormData();
+    receiptUpload.append("proof_photos", new Blob([Buffer.from("receipt-first-image")], { type: "image/png" }), "receipt-first.png");
+    receiptUpload.append("source_type", "receipt");
+    receiptUpload.append("proof_type", "receipt_photo");
+    receiptUpload.append("default_store_id", String(kwikTripStore.id));
+    const receiptUploadResult = await owner.request("/api/admin/price-imports/upload", { method: "POST", body: receiptUpload });
+    assert.equal(receiptUploadResult.response.status, 201, JSON.stringify(receiptUploadResult.body));
+    assert.equal(receiptUploadResult.body.extraction_attempt.status, "waiting");
+    const autoReceiptBatch = receiptUploadResult.body.batches[0].id;
+    const weeklyUpload = new FormData();
+    weeklyUpload.append("proof_photos", new Blob([Buffer.from("weekly-ad-image")], { type: "image/png" }), "weekly-ad.png");
+    weeklyUpload.append("source_type", "weekly_ad");
+    weeklyUpload.append("proof_type", "weekly_ad");
+    weeklyUpload.append("default_store_id", String(kwikTripStore.id));
+    const weeklyUploadResult = await owner.request("/api/admin/price-imports/upload", { method: "POST", body: weeklyUpload });
+    assert.equal(weeklyUploadResult.response.status, 201, JSON.stringify(weeklyUploadResult.body));
+    assert.equal(weeklyUploadResult.body.extraction_attempt.status, "manual_available");
+    const manualWeeklyBatch = weeklyUploadResult.body.batches[0].id;
+    assert.ok(await queryTempDb(app.dataDir, "SELECT id FROM ai_proof_jobs WHERE proof_id = ?", [autoReceiptBatch]));
+    assert.equal(await queryTempDb(app.dataDir, "SELECT id FROM ai_proof_jobs WHERE proof_id = ?", [manualWeeklyBatch]), undefined);
+    const manualOnlySettings = await owner.post("/api/admin/operations/ai-settings", { enabled: true, manual_only: true, max_analyses_per_hour: 20, max_analyses_per_day: 100, retry_limit: 2, primary_model: "test-primary-model", fallback_model: "test-fallback-model" });
+    assert.equal(manualOnlySettings.response.status, 200, JSON.stringify(manualOnlySettings.body));
+    assert.equal(manualOnlySettings.body.settings.primary_model, "test-primary-model");
+    assert.equal(manualOnlySettings.body.settings.fallback_model, "test-fallback-model");
+    const manualWeeklyAi = await reviewer.post(`/api/admin/v2/reviews/${manualWeeklyBatch}/re-run-ai`, { reason: "Manual non-receipt AI test" });
+    assert.equal(manualWeeklyAi.response.status, 202, JSON.stringify(manualWeeklyAi.body));
+    assert.ok(await queryTempDb(app.dataDir, "SELECT id FROM ai_proof_jobs WHERE proof_id = ?", [manualWeeklyBatch]));
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const manualAttempt = await queryTempDb(app.dataDir, "SELECT id FROM ai_proof_attempts WHERE proof_id = ?", [manualWeeklyBatch]);
+      if (manualAttempt) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(await queryTempDb(app.dataDir, "SELECT id FROM ai_proof_attempts WHERE proof_id = ?", [manualWeeklyBatch]), "Explicit Run AI must work while automatic processing is in manual-only mode.");
+    await owner.post("/api/admin/operations/ai-settings", { enabled: true, manual_only: false, max_analyses_per_hour: 20, max_analyses_per_day: 100, retry_limit: 2, primary_model: "test-model", fallback_model: "" });
 
     const catalogProductResult = await updateTempUser(app.dataDir, "INSERT INTO products (canonical_name, display_name, category, status, created_at, updated_at) VALUES ('catalog duplicate bread', 'Catalog Duplicate Bread', 'bakery', 'active', ?, ?)", [new Date().toISOString(), new Date().toISOString()]);
     const catalog = await owner.post("/api/admin/catalog-imports", { title: "Three product acceptance catalog", rows: [

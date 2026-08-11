@@ -117,9 +117,11 @@
               <label><span>Max per hour</span><input name="max_analyses_per_hour" type="number" min="1" max="200" value="20"></label>
               <label><span>Max per day</span><input name="max_analyses_per_day" type="number" min="1" max="2000" value="100"></label>
               <label><span>Retry limit</span><input name="retry_limit" type="number" min="0" max="5" value="2"></label>
-              <label><span>Model</span><input name="model" maxlength="100"></label>
+              <label><span>Primary extraction model</span><input name="primary_model" maxlength="100"></label>
+              <label><span>Fallback model</span><input name="fallback_model" maxlength="100" placeholder="Optional"></label>
               <button class="primary-button" type="submit">Save AI Controls</button>
             </form>
+            <div id="aiUsageSummary" class="simple-status-list" aria-live="polite"></div>
             <div id="aiSettingsMessage" class="message" aria-live="polite"></div>
           </section>
         </section>

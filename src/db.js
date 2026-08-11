@@ -707,6 +707,7 @@ async function initDb() {
       duplicate_warning TEXT,
       notes TEXT,
       status TEXT NOT NULL DEFAULT 'import_draft',
+      rejection_reason TEXT,
       admin_rejection_note TEXT,
       created_by INTEGER,
       created_at TEXT NOT NULL,
@@ -738,6 +739,8 @@ async function initDb() {
       max_analyses_per_day INTEGER NOT NULL DEFAULT 100,
       retry_limit INTEGER NOT NULL DEFAULT 2,
       model TEXT NOT NULL DEFAULT '',
+      primary_model TEXT NOT NULL DEFAULT '',
+      fallback_model TEXT NOT NULL DEFAULT '',
       updated_by INTEGER,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
@@ -749,6 +752,8 @@ async function initDb() {
     VALUES (1, 0, 1, 20, 100, 2, '', ?)
   `, [new Date().toISOString()]);
 
+  await migrateAiProcessingSettingsTable();
+
   await run(`
     CREATE TABLE IF NOT EXISTS ai_proof_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -757,6 +762,7 @@ async function initDb() {
       provider TEXT,
       model TEXT,
       attempt_count INTEGER NOT NULL DEFAULT 0,
+      manual_requested INTEGER NOT NULL DEFAULT 0,
       request_fingerprint TEXT,
       last_error TEXT,
       queued_at TEXT NOT NULL,
@@ -766,6 +772,8 @@ async function initDb() {
       FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE CASCADE
     )
   `);
+
+  await migrateAiProofJobsTable();
 
   await run(`
     CREATE TABLE IF NOT EXISTS ai_proof_analyses (
@@ -795,6 +803,30 @@ async function initDb() {
       FOREIGN KEY (detected_store_id) REFERENCES stores(id) ON DELETE SET NULL,
       FOREIGN KEY (submitted_store_id) REFERENCES stores(id) ON DELETE SET NULL,
       FOREIGN KEY (resolved_store_id) REFERENCES stores(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ai_proof_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      proof_id INTEGER NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      attempt_kind TEXT NOT NULL DEFAULT 'initial',
+      provider TEXT,
+      model TEXT,
+      status TEXT NOT NULL DEFAULT 'analyzing',
+      request_fingerprint TEXT,
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      total_tokens INTEGER,
+      estimated_cost_usd REAL,
+      last_error TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      UNIQUE(job_id, attempt_number),
+      FOREIGN KEY (job_id) REFERENCES ai_proof_jobs(id) ON DELETE CASCADE,
+      FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE CASCADE
     )
   `);
 
@@ -1339,6 +1371,7 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_duplicate_warning ON price_import_rows(duplicate_warning)");
   await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_import_rows_ai_item ON price_import_rows(ai_analysis_id, ai_item_index) WHERE ai_analysis_id IS NOT NULL");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_jobs_status ON ai_proof_jobs(status, queued_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_attempts_started ON ai_proof_attempts(started_at, attempt_kind, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_product_images_product_status ON product_images(product_id, status, is_primary)");
   await run("CREATE INDEX IF NOT EXISTS idx_catalog_import_rows_batch_status ON catalog_import_rows(batch_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at)");
@@ -1640,6 +1673,7 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "extraction_notes", "TEXT");
   await addColumnIfMissing("price_import_rows", "duplicate_warning", "TEXT");
   await addColumnIfMissing("price_import_rows", "admin_rejection_note", "TEXT");
+  await addColumnIfMissing("price_import_rows", "rejection_reason", "TEXT");
   await addColumnIfMissing("price_import_rows", "created_by", "INTEGER");
   await addColumnIfMissing("price_import_rows", "updated_by", "INTEGER");
   await addColumnIfMissing("price_import_rows", "updated_at", "TEXT");
@@ -1656,6 +1690,16 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "research_sources_json", "TEXT");
   await addColumnIfMissing("price_import_rows", "suggested_new_product", "INTEGER NOT NULL DEFAULT 0");
   await run("UPDATE price_import_rows SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
+}
+
+async function migrateAiProcessingSettingsTable() {
+  await addColumnIfMissing("ai_processing_settings", "primary_model", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("ai_processing_settings", "fallback_model", "TEXT NOT NULL DEFAULT ''");
+  await run("UPDATE ai_processing_settings SET primary_model = COALESCE(NULLIF(primary_model, ''), model, '') WHERE primary_model IS NULL OR primary_model = ''");
+}
+
+async function migrateAiProofJobsTable() {
+  await addColumnIfMissing("ai_proof_jobs", "manual_requested", "INTEGER NOT NULL DEFAULT 0");
 }
 
 async function updateUserAccuracy(userId) {

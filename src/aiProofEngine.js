@@ -117,7 +117,8 @@ function runtimeConfig(env = process.env) {
   return {
     apiKey: clean(env.AI_API_KEY || env.OPENAI_API_KEY, 500),
     endpoint: clean(env.AI_API_URL || "https://api.openai.com/v1/chat/completions", 500),
-    model: clean(env.AI_MODEL || "gpt-5-mini", 100),
+    model: clean(env.AI_PRIMARY_MODEL || env.AI_MODEL || "gpt-5-mini", 100),
+    fallbackModel: clean(env.AI_FALLBACK_MODEL, 100),
     provider: clean(env.AI_PROVIDER || "openai_compatible", 60),
     testResponse: env.NODE_ENV === "test" ? String(env.AI_TEST_RESPONSE_JSON || "") : ""
   };
@@ -128,7 +129,7 @@ async function analyzeProof({ proof, imageBuffer, mimeType, submittedStore, stor
   if (config.testResponse) return normalizeAiResult(JSON.parse(config.testResponse), proof);
   if (!config.apiKey) throw new Error("AI API credentials are not configured.");
   if (!imageBuffer?.length) throw new Error("The original proof image is unavailable.");
-  const prompt = `Analyze only Grocery Radar proof #${proof.id}. Never use information from another proof. The submitted store claim is ${submittedStore || "unknown"}; do not treat it as image evidence. Read the original proof, preserve uncertainty, and return every readable grocery line. Proof price evidence must not be replaced by researched prices. Known Janesville stores: ${stores.map((store) => `${store.id}:${store.name}`).join(", ")}. Candidate catalog products: ${products.map((product) => `${product.id}:${product.display_name}`).join(", ")}.`;
+  const prompt = `Analyze only Grocery Radar proof #${proof.id}. Never use information from another proof. The submitted store claim is ${submittedStore || "unknown"}; do not treat it as image evidence. Read the original proof, preserve uncertainty, and return every readable grocery line. Match Grocery Radar's existing catalog before suggesting enrichment or a new product. External enrichment is secondary and must not block extraction. Proof price evidence must never be replaced by researched prices. Known Janesville stores: ${stores.map((store) => `${store.id}:${store.name}`).join(", ")}. Candidate catalog products: ${products.map((product) => `${product.id}:${product.display_name}${product.preferred_brand ? ` | brand ${product.preferred_brand}` : ""}${product.variant ? ` | variant ${product.variant}` : ""}${product.upc ? ` | UPC ${product.upc}` : ""}${product.common_aliases ? ` | aliases ${product.common_aliases}` : ""}`).join(", ")}.`;
   const body = {
     model: config.model,
     messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBuffer.toString("base64")}` } }] }],
@@ -139,7 +140,14 @@ async function analyzeProof({ proof, imageBuffer, mimeType, submittedStore, stor
   const payload = await response.json();
   const content = payload?.choices?.[0]?.message?.content || payload?.output_text;
   if (!content) throw new Error("AI provider returned no structured analysis.");
-  return normalizeAiResult(typeof content === "string" ? JSON.parse(content) : content, proof);
+  const result = normalizeAiResult(typeof content === "string" ? JSON.parse(content) : content, proof);
+  const usage = payload?.usage || {};
+  result.provider_usage = {
+    prompt_tokens: numberOrNull(usage.prompt_tokens ?? usage.input_tokens),
+    completion_tokens: numberOrNull(usage.completion_tokens ?? usage.output_tokens),
+    total_tokens: numberOrNull(usage.total_tokens)
+  };
+  return result;
 }
 
 function proofFingerprint(proof = {}) {
