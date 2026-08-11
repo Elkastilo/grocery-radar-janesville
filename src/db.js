@@ -258,6 +258,87 @@ async function initDb() {
   await migrateProductsTable();
 
   await run(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      image_path TEXT NOT NULL,
+      original_image_path TEXT,
+      original_name TEXT,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      alt_text TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT 'admin_upload',
+      source_url TEXT,
+      source_note TEXT,
+      crop_fit_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'draft',
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      uploaded_by INTEGER,
+      moderated_by INTEGER,
+      moderated_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (moderated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_import_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      source_format TEXT NOT NULL DEFAULT 'csv',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_import_rows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      product_name TEXT NOT NULL,
+      brand TEXT,
+      variant TEXT,
+      size_text TEXT,
+      category TEXT NOT NULL DEFAULT 'other',
+      upc TEXT,
+      image_filename TEXT,
+      matched_image_path TEXT,
+      image_match_confidence TEXT NOT NULL DEFAULT 'unknown',
+      duplicate_product_id INTEGER,
+      suggested_product_id INTEGER,
+      warnings_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES catalog_import_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (duplicate_product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (suggested_product_id) REFERENCES products(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_import_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      image_path TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      matched_row_id INTEGER,
+      match_confidence TEXT NOT NULL DEFAULT 'unknown',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES catalog_import_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (matched_row_id) REFERENCES catalog_import_rows(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS price_reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -647,6 +728,75 @@ async function initDb() {
   `);
 
   await migratePriceImportRowsTable();
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ai_processing_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      manual_only INTEGER NOT NULL DEFAULT 1,
+      max_analyses_per_hour INTEGER NOT NULL DEFAULT 20,
+      max_analyses_per_day INTEGER NOT NULL DEFAULT 100,
+      retry_limit INTEGER NOT NULL DEFAULT 2,
+      model TEXT NOT NULL DEFAULT '',
+      updated_by INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    INSERT OR IGNORE INTO ai_processing_settings (id, enabled, manual_only, max_analyses_per_hour, max_analyses_per_day, retry_limit, model, updated_at)
+    VALUES (1, 0, 1, 20, 100, 2, '', ?)
+  `, [new Date().toISOString()]);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ai_proof_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      proof_id INTEGER NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'waiting',
+      provider TEXT,
+      model TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      request_fingerprint TEXT,
+      last_error TEXT,
+      queued_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ai_proof_analyses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL UNIQUE,
+      proof_id INTEGER NOT NULL UNIQUE,
+      proof_type TEXT,
+      detected_store_name TEXT,
+      detected_store_id INTEGER,
+      detected_store_confidence TEXT NOT NULL DEFAULT 'unknown',
+      submitted_store_id INTEGER,
+      resolved_store_id INTEGER,
+      store_resolution TEXT NOT NULL DEFAULT 'unresolved',
+      source_date TEXT,
+      source_date_confidence TEXT NOT NULL DEFAULT 'unknown',
+      overall_confidence TEXT NOT NULL DEFAULT 'unknown',
+      warnings_json TEXT NOT NULL DEFAULT '[]',
+      structured_json TEXT NOT NULL,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      ready_count INTEGER NOT NULL DEFAULT 0,
+      check_count INTEGER NOT NULL DEFAULT 0,
+      unknown_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES ai_proof_jobs(id) ON DELETE CASCADE,
+      FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (detected_store_id) REFERENCES stores(id) ON DELETE SET NULL,
+      FOREIGN KEY (submitted_store_id) REFERENCES stores(id) ON DELETE SET NULL,
+      FOREIGN KEY (resolved_store_id) REFERENCES stores(id) ON DELETE SET NULL
+    )
+  `);
 
   await run(`
     CREATE TABLE IF NOT EXISTS notifications (
@@ -1187,6 +1337,10 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_product_store ON price_import_rows(product_id, store_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_report ON price_import_rows(price_report_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_duplicate_warning ON price_import_rows(duplicate_warning)");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_import_rows_ai_item ON price_import_rows(ai_analysis_id, ai_item_index) WHERE ai_analysis_id IS NOT NULL");
+  await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_jobs_status ON ai_proof_jobs(status, queued_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_images_product_status ON product_images(product_id, status, is_primary)");
+  await run("CREATE INDEX IF NOT EXISTS idx_catalog_import_rows_batch_status ON catalog_import_rows(batch_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_admin_read ON notifications(admin_only, is_read, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related ON notifications(related_type, related_id)");
@@ -1357,6 +1511,9 @@ async function migrateBackupRunsTable() {
 }
 
 async function migrateProductsTable() {
+  await addColumnIfMissing("products", "variant", "TEXT");
+  await addColumnIfMissing("products", "upc", "TEXT");
+  await addColumnIfMissing("products", "description", "TEXT");
   await addColumnIfMissing("products", "default_size_text", "TEXT");
   await addColumnIfMissing("products", "default_quantity", "REAL");
   await addColumnIfMissing("products", "default_unit", "TEXT");
@@ -1490,6 +1647,14 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "approved_at", "TEXT");
   await addColumnIfMissing("price_import_rows", "rejected_by", "INTEGER");
   await addColumnIfMissing("price_import_rows", "rejected_at", "TEXT");
+  await addColumnIfMissing("price_import_rows", "ai_analysis_id", "INTEGER");
+  await addColumnIfMissing("price_import_rows", "ai_item_index", "INTEGER");
+  await addColumnIfMissing("price_import_rows", "ai_confidence", "TEXT");
+  await addColumnIfMissing("price_import_rows", "ai_field_confidences_json", "TEXT");
+  await addColumnIfMissing("price_import_rows", "ai_warnings_json", "TEXT");
+  await addColumnIfMissing("price_import_rows", "research_notes", "TEXT");
+  await addColumnIfMissing("price_import_rows", "research_sources_json", "TEXT");
+  await addColumnIfMissing("price_import_rows", "suggested_new_product", "INTEGER NOT NULL DEFAULT 0");
   await run("UPDATE price_import_rows SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }
 

@@ -9,7 +9,6 @@ import {
   Clock3,
   ExternalLink,
   FileCheck2,
-  Home,
   Loader2,
   LogIn,
   LogOut,
@@ -31,15 +30,20 @@ import {
 import { apiFetch, getJson, postJson, putJson } from './api'
 
 const categories = [
-  { label: 'Dairy', value: 'dairy' },
-  { label: 'Meat', value: 'meat' },
-  { label: 'Produce', value: 'produce' },
-  { label: 'Pantry', value: 'pantry' },
+  { label: 'Fresh Produce', value: 'produce' },
+  { label: 'Meat & Seafood', value: 'meat' },
+  { label: 'Dairy & Eggs', value: 'dairy' },
   { label: 'Frozen', value: 'frozen' },
-  { label: 'Drinks', value: 'drinks' },
+  { label: 'Bakery', value: 'bakery' },
+  { label: 'Pantry', value: 'pantry' },
+  { label: 'Snacks', value: 'snacks' },
+  { label: 'Beverages', value: 'drinks' },
+  { label: 'Prepared Food', value: 'prepared food' },
   { label: 'Household', value: 'household' },
+  { label: 'Health & Personal Care', value: 'personal care' },
   { label: 'Baby', value: 'baby' },
-  { label: 'Bathroom', value: 'personal care' },
+  { label: 'Pet', value: 'pet' },
+  { label: 'Other', value: 'other' },
 ]
 
 const filters = ['cheapest', 'verified', 'deals', 'food', 'household']
@@ -252,7 +256,7 @@ function ProductVisual({ item, label = 'Product', compact = false }) {
     return (
       <img
         src={imageUrl}
-        alt=""
+        alt={item.image_alt_text || item.image_alt || `${label} product image`}
         className={`${size} shrink-0 rounded-2xl bg-slate-100 object-cover ring-1 ring-slate-100`}
         loading="lazy"
       />
@@ -606,7 +610,7 @@ function MissionCount({ label, value }) {
   )
 }
 
-function HomeScreen({
+function LegacyHomeScreen({
   browse,
   stores,
   loading,
@@ -910,6 +914,75 @@ function HomeScreen({
           ))}
         </div>
       </section>
+    </div>
+  )
+}
+
+function CatalogTile({ product, reports, openProduct }) {
+  const report = bestReportForProduct(product, reports)
+  const storeName = report?.store_name || product.best_store_name || ''
+  return (
+    <button type="button" onClick={() => openProduct(product.id)} className="min-w-0 rounded-3xl bg-white p-3 text-left shadow-soft ring-1 ring-slate-100 transition focus-visible:ring-4 focus-visible:ring-emerald-300 sm:p-4">
+      <div className="aspect-square w-full overflow-hidden rounded-2xl bg-emerald-50">
+        {productImageUrl(product) ? <img src={productImageUrl(product)} alt={product.image_alt_text || `${product.display_name} product image`} className="h-full w-full object-cover" loading="lazy" /> : <div className="flex h-full w-full items-center justify-center text-emerald-700"><PackageCheck className="h-12 w-12" aria-hidden="true" /><span className="sr-only">Category placeholder for {product.display_name}</span></div>}
+      </div>
+      <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
+      <p className="mt-1 text-2xl font-black text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
+      <p className="mt-1 line-clamp-2 text-sm font-bold text-slate-500">{storeName ? `Best current price: ${storeName}` : titleCase(product.category)}</p>
+    </button>
+  )
+}
+
+function HomeScreen(props) {
+  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct } = props
+  const service = homepageService?.service || fallbackHomepageService.service
+  const products = browse.products || []
+  const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
+  const visibleCategories = categories.map((category) => ({ ...category, products: products.filter((product) => product.category === category.value).slice(0, 4) })).filter((category) => category.products.length)
+
+  return (
+    <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
+      <section className="rounded-[2rem] bg-emerald-800 p-5 text-white shadow-soft sm:p-8">
+        <p className="text-sm font-black uppercase tracking-wide text-emerald-100">Grocery Radar Janesville</p>
+        <h1 className="mt-2 max-w-3xl text-3xl font-black leading-tight sm:text-5xl">Find local grocery prices without the clutter.</h1>
+        <div className="mt-6"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
+        <div className="mt-4 flex flex-wrap gap-2 text-sm font-bold text-emerald-50"><span>{titleCase(service.service_status || 'online')}</span><span aria-hidden="true">·</span><span>{service.main_message}</span></div>
+      </section>
+
+      {homepageServiceState?.error ? <p className="mt-4 rounded-2xl bg-amber-50 p-3 font-bold text-amber-900">Service notes are temporarily unavailable. Grocery search is still working.</p> : null}
+      {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
+      {loading ? <div className="mt-5"><LoadingCard label="Loading products..." /></div> : null}
+
+      {!loading && !error && !products.length ? <div className="mt-6"><EmptyState title="Products are being prepared" body="Search still includes approved prices, and community proof can be submitted now." icon={PackageCheck} /></div> : null}
+
+      {visibleCategories.map((category) => (
+        <section key={category.value} className="mt-8" aria-labelledby={`home-category-${category.value.replaceAll(' ', '-')}`}>
+          <SectionHeader title={category.label} action="View all" onAction={() => openScreen('search', { category: category.value })} />
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">{category.products.map((product) => <CatalogTile key={product.id} product={product} reports={reports} openProduct={openProduct} />)}</div>
+        </section>
+      ))}
+
+      <section className="mt-9 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100">
+        <SectionHeader title="Janesville Stores" />
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} />)}</div>
+        <button type="button" onClick={() => openScreen('stores')} className="mt-4 min-h-12 rounded-2xl bg-emerald-50 px-5 font-black text-emerald-800">View all stores</button>
+      </section>
+
+      <details className="mt-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100">
+        <summary className="cursor-pointer font-black text-slate-700">Service information and community updates</summary>
+        <div className="mt-4"><LegacyHomeScreen {...props} /></div>
+      </details>
+    </div>
+  )
+}
+
+function StoresScreen({ stores }) {
+  return (
+    <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
+      <p className="text-sm font-black uppercase tracking-wide text-emerald-700">Janesville</p>
+      <h1 className="mt-2 text-4xl font-black text-slate-950">Stores</h1>
+      <p className="mt-2 text-lg font-bold text-slate-600">Local stores currently tracked by Grocery Radar.</p>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{stores.map((store) => <StoreCard key={store.id} store={store} />)}</div>
     </div>
   )
 }
@@ -2595,37 +2668,30 @@ function DataBanner({ openScreen, unreadNotifications = 0 }) {
             Janesville, Wisconsin
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() => openScreen('profile')}
-          className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100"
-          aria-label="Open account"
-        >
-          <UserRound className="h-6 w-6" />
-          {unreadNotifications ? (
-            <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">
-              {unreadNotifications > 9 ? '9+' : unreadNotifications}
-            </span>
-          ) : null}
-        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => openScreen('profile')} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open notifications">
+            <BellRing className="h-6 w-6" />
+            {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
+          </button>
+          <button type="button" onClick={() => openScreen('profile')} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open account"><UserRound className="h-6 w-6" /></button>
+        </div>
       </div>
     </div>
   )
 }
 
-function BottomNav({ active, openScreen, unreadNotifications = 0 }) {
+function BottomNav({ active, openScreen }) {
   const navItems = [
-    { id: 'home', label: 'Home', icon: Home },
-    { id: 'search', label: 'Search', icon: Search },
+    { id: 'search', label: 'Products', icon: Search },
     { id: 'deals', label: 'Deals', icon: Tag },
+    { id: 'stores', label: 'Stores', icon: Store },
     { id: 'cart', label: 'My List', icon: ShoppingCart },
-    { id: 'submit', label: 'Submit Proof', icon: Upload },
-    { id: 'profile', label: 'Account', icon: UserRound },
+    { id: 'submit', label: 'Submit', icon: Upload },
   ]
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-emerald-100 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur">
-      <div className="mx-auto grid max-w-4xl grid-cols-6 px-1 py-2">
+      <div className="mx-auto grid max-w-4xl grid-cols-5 px-1 py-2">
         {navItems.map((item) => {
           const Icon = item.icon
           const selected = active === item.id
@@ -2640,11 +2706,6 @@ function BottomNav({ active, openScreen, unreadNotifications = 0 }) {
             >
               <span className="relative">
                 <Icon className="h-6 w-6" />
-                {item.id === 'profile' && unreadNotifications ? (
-                  <span className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">
-                    {unreadNotifications > 9 ? '9+' : unreadNotifications}
-                  </span>
-                ) : null}
               </span>
               {item.label}
             </button>
@@ -2998,7 +3059,7 @@ function App() {
   }
 
   const activeNav = useMemo(() => {
-    if (['home', 'search', 'deals', 'cart', 'submit', 'profile'].includes(screen)) return screen
+    if (['home', 'search', 'deals', 'stores', 'cart', 'submit', 'profile'].includes(screen)) return screen
     if (screen === 'leaderboard') return 'profile'
     if (screen === 'product') return 'search'
     return ''
@@ -3050,6 +3111,7 @@ function App() {
             reload={loadSearch}
           />
         ) : null}
+        {screen === 'stores' ? <StoresScreen stores={stores} /> : null}
         {screen === 'product' ? (
           <ProductDetailScreen
             detail={productDetail}

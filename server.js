@@ -98,6 +98,7 @@ const {
   compactSearchText: compactIntakeSearchText,
   parsePriceText
 } = require("./src/priceIntake");
+const { analyzeProof, proofFingerprint, runtimeConfig: aiRuntimeConfig } = require("./src/aiProofEngine");
 
 const app = express();
 
@@ -247,6 +248,16 @@ const priceImportUpload = multer({
     files: 10
   },
   fileFilter: imageFileFilter
+});
+
+const catalogDataUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+  fileFilter(request, file, callback) {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase();
+    if (extension === ".csv" || file.mimetype === "text/csv" || file.mimetype === "application/json") callback(null, true);
+    else callback(new Error("Catalog data must be CSV or JSON."));
+  }
 });
 
 app.use(express.json());
@@ -1135,7 +1146,15 @@ function formatPriceImportRow(row) {
     approved_at: row.approved_at || "",
     rejected_by: row.rejected_by || null,
     rejected_by_username: row.rejected_by_username || "",
-    rejected_at: row.rejected_at || ""
+    rejected_at: row.rejected_at || "",
+    ai_analysis_id: row.ai_analysis_id || null,
+    ai_item_index: row.ai_item_index == null ? null : Number(row.ai_item_index),
+    ai_confidence: row.ai_confidence || "",
+    ai_field_confidences: parseMetadataJson(row.ai_field_confidences_json),
+    ai_warnings: parseMetadataJson(row.ai_warnings_json),
+    research_notes: row.research_notes || "",
+    research_sources: parseMetadataJson(row.research_sources_json),
+    suggested_new_product: Boolean(row.suggested_new_product)
   };
 }
 
@@ -1362,6 +1381,9 @@ function formatProduct(row) {
     default_unit: row.default_unit || "",
     brand_optional: Boolean(row.brand_optional),
     preferred_brand: row.preferred_brand || "",
+    variant: row.variant || "",
+    upc: row.upc || "",
+    description: row.description || "",
     common_aliases: row.common_aliases || "",
     aliases: String(row.common_aliases || "")
       .split(",")
@@ -1382,6 +1404,9 @@ function formatProduct(row) {
     best_price: row.best_price === null || row.best_price === undefined ? null : Number(row.best_price),
     best_price_label: row.best_price === null || row.best_price === undefined ? "" : `$${Number(row.best_price).toFixed(2)}`,
     best_store_name: row.best_store_name || "",
+    image_id: row.image_id || null,
+    image_url: row.image_id ? `/api/product-images/${row.image_id}/file` : "",
+    image_alt_text: row.image_alt_text || "",
     last_reported_at: row.last_reported_at || "",
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -1411,6 +1436,16 @@ function formatPublicProduct(row) {
 function productSelectColumns(alias = "products") {
   return `
     ${alias}.*,
+    (
+      SELECT product_images.id FROM product_images
+      WHERE product_images.product_id = ${alias}.id AND product_images.status = 'approved'
+      ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
+    ) AS image_id,
+    (
+      SELECT product_images.alt_text FROM product_images
+      WHERE product_images.product_id = ${alias}.id AND product_images.status = 'approved'
+      ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
+    ) AS image_alt_text,
     (
       SELECT COUNT(*)
       FROM price_reports
@@ -1473,8 +1508,11 @@ function productSearchFilter(searchText) {
       products.canonical_name LIKE ?
       OR lower(products.display_name) LIKE ?
       OR lower(COALESCE(products.common_aliases, '')) LIKE ?
+      OR lower(COALESCE(products.preferred_brand, '')) LIKE ?
+      OR lower(COALESCE(products.variant, '')) LIKE ?
+      OR lower(COALESCE(products.category, '')) LIKE ?
     )`,
-    params: [`%${normalized}%`, `%${normalized}%`, `%${normalized}%`]
+    params: [`%${normalized}%`, `%${normalized}%`, `%${normalized}%`, `%${normalized}%`, `%${normalized}%`, `%${normalized}%`]
   };
 }
 
@@ -8269,16 +8307,8 @@ app.get("/api/browse", asyncRoute(async (request, response) => {
         FROM products
         WHERE products.status = 'active'
           ${categoryWhere}
-          AND EXISTS (
-            SELECT 1
-            FROM price_reports
-            JOIN users ON users.id = price_reports.user_id
-            WHERE price_reports.product_id = products.id
-              AND price_reports.status = 'approved'
-              AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
-          )
-        ORDER BY approved_price_count DESC, last_reported_at DESC, products.display_name ASC
-        LIMIT 36
+        ORDER BY CASE WHEN approved_price_count > 0 THEN 0 ELSE 1 END, approved_price_count DESC, last_reported_at DESC, CASE WHEN image_id IS NOT NULL THEN 0 ELSE 1 END, products.display_name ASC
+        LIMIT 80
       `,
       categoriesForBrowse
     ),
@@ -8438,6 +8468,149 @@ app.get("/api/products", asyncRoute(async (request, response) => {
   response.json({
     products: products.map(formatPublicProduct)
   });
+}));
+
+function splitCsvRecord(line) {
+  const output = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && quoted && line[index + 1] === '"') { value += '"'; index += 1; }
+    else if (character === '"') quoted = !quoted;
+    else if (character === "," && !quoted) { output.push(value.trim()); value = ""; }
+    else value += character;
+  }
+  output.push(value.trim());
+  return output;
+}
+
+function catalogRowsFromInput(input) {
+  if (Array.isArray(input)) return input;
+  const text = String(input || "").replace(/^\uFEFF/, "").trim();
+  if (!text) return [];
+  if (text.startsWith("[") || text.startsWith("{")) {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : Array.isArray(parsed.products) ? parsed.products : [parsed];
+  }
+  const lines = text.replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim());
+  const headers = splitCsvRecord(lines.shift() || "").map((header) => cleanText(header, 60).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""));
+  return lines.map((line) => Object.fromEntries(headers.map((header, index) => [header, splitCsvRecord(line)[index] || ""])));
+}
+
+function normalizedCatalogCategory(value) {
+  const aliases = { "dairy & eggs": "dairy", "meat & seafood": "meat", beverages: "drinks", "prepared food": "prepared food", "health & personal care": "health / personal care" };
+  const normalized = cleanText(value || "other", 60).toLowerCase();
+  return CATEGORIES.includes(aliases[normalized] || normalized) ? aliases[normalized] || normalized : "other";
+}
+
+function formatCatalogRow(row) {
+  return { ...row, warnings: parseMetadataJson(row.warnings_json), duplicate_product_id: row.duplicate_product_id || null, suggested_product_id: row.suggested_product_id || null };
+}
+
+async function catalogBatchPayload(batchId) {
+  const batch = await get("SELECT * FROM catalog_import_batches WHERE id = ?", [batchId]);
+  if (!batch) return null;
+  const [rows, images] = await Promise.all([all("SELECT * FROM catalog_import_rows WHERE batch_id = ? ORDER BY id", [batchId]), all("SELECT id, original_name, matched_row_id, match_confidence, status, created_at FROM catalog_import_images WHERE batch_id = ? ORDER BY id", [batchId])]);
+  return { ...batch, rows: rows.map(formatCatalogRow), images };
+}
+
+app.post("/api/admin/catalog-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), catalogDataUpload.single("catalog_file"), asyncRoute(async (request, response) => {
+  const sourceText = request.file ? request.file.buffer.toString("utf8") : request.body.csv_text || request.body.json_text || request.body.rows;
+  const incoming = catalogRowsFromInput(sourceText);
+  if (!incoming.length || incoming.length > 5000) { response.status(400).json({ error: "Add between 1 and 5,000 catalog rows." }); return; }
+  const now = new Date().toISOString();
+  const batchResult = await run("INSERT INTO catalog_import_batches (title, status, source_format, row_count, created_by, created_at, updated_at) VALUES (?, 'draft', ?, ?, ?, ?, ?)", [cleanText(request.body.title || request.file?.originalname || "Catalog import", 160), request.file?.originalname?.toLowerCase().endsWith(".json") || String(sourceText).trim().startsWith("[") ? "json" : "csv", incoming.length, request.adminUser.id, now, now]);
+  for (const input of incoming) {
+    const productName = cleanText(input.product_name || input.display_name || input.name, 160);
+    if (!productName) continue;
+    const brand = cleanText(input.brand, 100);
+    const upc = cleanText(input.upc || input.barcode, 40);
+    const duplicate = await get("SELECT id FROM products WHERE lower(display_name) = lower(?) OR (NULLIF(?, '') IS NOT NULL AND upc = ?) LIMIT 1", [productName, upc, upc]);
+    const warnings = duplicate ? [`Possible duplicate of product #${duplicate.id}.`] : [];
+    await run("INSERT INTO catalog_import_rows (batch_id, product_name, brand, variant, size_text, category, upc, image_filename, duplicate_product_id, warnings_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)", [batchResult.lastID, productName, brand, cleanText(input.variant, 100), cleanText(input.size || input.size_text, 100), normalizedCatalogCategory(input.category), upc, cleanText(input.image_filename, 180), duplicate?.id || null, JSON.stringify(warnings), now, now]);
+  }
+  response.status(201).json({ message: "Draft catalog created. Nothing is public until authorized publication.", batch: await catalogBatchPayload(batchResult.lastID) });
+}));
+
+app.post("/api/admin/catalog-imports/:id/images", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), priceImportUpload.array("images", 50), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.id, 10);
+  const batch = await get("SELECT id FROM catalog_import_batches WHERE id = ? AND status = 'draft'", [batchId]);
+  if (!batch) { response.status(404).json({ error: "Draft catalog import was not found." }); return; }
+  const rows = await all("SELECT * FROM catalog_import_rows WHERE batch_id = ? ORDER BY id", [batchId]);
+  const now = new Date().toISOString();
+  for (const file of request.files || []) {
+    const original = sanitizeOriginalFilename(file.originalname);
+    const explicit = rows.find((row) => String(row.image_filename || "").toLowerCase() === original.toLowerCase());
+    const base = compactIntakeSearchText(path.basename(original, path.extname(original)));
+    const normalized = explicit || rows.find((row) => base && (base.includes(compactIntakeSearchText(row.product_name)) || compactIntakeSearchText(row.product_name).includes(base)));
+    const confidence = explicit ? "high" : normalized ? "check" : "unknown";
+    const image = await run("INSERT INTO catalog_import_images (batch_id, image_path, original_name, matched_row_id, match_confidence, status, created_at) VALUES (?, ?, ?, ?, ?, 'draft', ?)", [batchId, uploadedFileUrl(file.filename), original, normalized?.id || null, confidence, now]);
+    if (normalized && (!normalized.matched_image_path || confidence === "high")) await run("UPDATE catalog_import_rows SET matched_image_path = ?, image_match_confidence = ?, warnings_json = ?, updated_at = ? WHERE id = ? AND batch_id = ?", [uploadedFileUrl(file.filename), confidence, JSON.stringify(confidence === "check" ? ["Image matched by normalized name; confirm before publication."] : parseMetadataJson(normalized.warnings_json)), now, normalized.id, batchId]);
+  }
+  response.status(201).json({ message: "Images added to the draft catalog. Uncertain matches remain flagged.", batch: await catalogBatchPayload(batchId) });
+}));
+
+app.get("/api/admin/catalog-imports/:id", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const batch = await catalogBatchPayload(Number.parseInt(request.params.id, 10));
+  if (!batch) { response.status(404).json({ error: "Catalog import was not found." }); return; }
+  response.json({ batch });
+}));
+
+app.post("/api/admin/catalog-imports/:id/publish", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.id, 10);
+  const requestedIds = parseImportRowIds(request.body.row_ids);
+  const rows = await all(`SELECT * FROM catalog_import_rows WHERE batch_id = ? AND status = 'draft' ${requestedIds.length ? `AND id IN (${requestedIds.map(() => "?").join(",")})` : ""}`, [batchId, ...requestedIds]);
+  if (!rows.length) { response.status(400).json({ error: "Choose draft catalog rows to publish." }); return; }
+  const now = new Date().toISOString();
+  const published = [];
+  for (const row of rows) {
+    if (row.duplicate_product_id && request.body.keep_duplicates !== true) continue;
+    const result = await run("INSERT INTO products (canonical_name, display_name, category, default_size_text, preferred_brand, variant, upc, status, created_by_admin_id, admin_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)", [normalizeProductName(row.product_name), row.product_name, row.category, row.size_text || "", row.brand || "", row.variant || "", row.upc || "", request.adminUser.id, `Published from catalog import #${batchId}, row #${row.id}.`, now, now]);
+    if (row.matched_image_path && (row.image_match_confidence === "high" || request.body.confirm_image_matches === true)) await run("INSERT INTO product_images (product_id, image_path, original_image_path, alt_text, source_type, source_note, status, is_primary, uploaded_by, moderated_by, moderated_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'catalog_import', ?, 'approved', 1, ?, ?, ?, ?, ?)", [result.lastID, row.matched_image_path, row.matched_image_path, `${row.product_name} product image`, `Catalog import #${batchId}`, request.adminUser.id, request.adminUser.id, now, now, now]);
+    await run("UPDATE catalog_import_rows SET suggested_product_id = ?, status = 'published', updated_at = ? WHERE id = ?", [result.lastID, now, row.id]);
+    published.push(result.lastID);
+  }
+  await run("UPDATE catalog_import_batches SET status = CASE WHEN NOT EXISTS (SELECT 1 FROM catalog_import_rows WHERE batch_id = ? AND status = 'draft') THEN 'published' ELSE 'draft' END, updated_at = ? WHERE id = ?", [batchId, now, batchId]);
+  response.json({ message: `${published.length} product${published.length === 1 ? "" : "s"} published.`, product_ids: published, batch: await catalogBatchPayload(batchId) });
+}));
+
+async function optimizeProductImage(file) {
+  const originalPath = uploadedFileUrl(file.filename);
+  if (!sharp) return { imagePath: originalPath, originalPath };
+  const outputName = `${Date.now()}-${crypto.randomBytes(12).toString("hex")}.webp`;
+  await sharp(file.path, { limitInputPixels: false }).rotate().resize({ width: 1200, height: 1200, fit: "inside", withoutEnlargement: true }).webp({ quality: 84 }).toFile(path.join(UPLOAD_DIR, outputName));
+  return { imagePath: uploadedFileUrl(outputName), originalPath };
+}
+
+app.post("/api/admin/products/:id/images", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), upload.single("product_image"), asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.params.id, 10);
+  const product = await get("SELECT id, display_name FROM products WHERE id = ?", [productId]);
+  if (!product || !request.file) { response.status(404).json({ error: "Product or image was not found." }); return; }
+  const paths = await optimizeProductImage(request.file);
+  const now = new Date().toISOString();
+  const result = await run("INSERT INTO product_images (product_id, image_path, original_image_path, original_name, mime_type, size_bytes, alt_text, source_type, source_url, source_note, status, is_primary, uploaded_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'admin_upload', ?, ?, 'draft', 0, ?, ?, ?)", [productId, paths.imagePath, paths.originalPath, sanitizeOriginalFilename(request.file.originalname), request.file.mimetype, request.file.size, cleanText(request.body.alt_text || `${product.display_name} product image`, 240), cleanText(request.body.source_url, 500), cleanText(request.body.source_note || "Admin-uploaded product photo", 300), request.adminUser.id, now, now]);
+  response.status(201).json({ message: "Product image saved as a moderation draft.", image: { id: result.lastID, status: "draft", alt_text: cleanText(request.body.alt_text || `${product.display_name} product image`, 240) } });
+}));
+
+app.post("/api/admin/product-images/:id/moderate", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const imageId = Number.parseInt(request.params.id, 10);
+  const image = await get("SELECT * FROM product_images WHERE id = ?", [imageId]);
+  if (!image) { response.status(404).json({ error: "Product image was not found." }); return; }
+  const status = cleanEnum(request.body.status, ["approved", "hidden", "rejected"], "hidden");
+  const primary = status === "approved" && request.body.is_primary !== false;
+  const now = new Date().toISOString();
+  if (primary) await run("UPDATE product_images SET is_primary = 0, updated_at = ? WHERE product_id = ?", [now, image.product_id]);
+  await run("UPDATE product_images SET status = ?, is_primary = ?, alt_text = ?, source_note = ?, moderated_by = ?, moderated_at = ?, updated_at = ? WHERE id = ?", [status, primary ? 1 : 0, cleanText(request.body.alt_text || image.alt_text, 240), cleanText(request.body.source_note || image.source_note, 300), request.adminUser.id, now, now, imageId]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: `PRODUCT_IMAGE_${status.toUpperCase()}`, affectedType: "product_image", affectedId: imageId, metadata: { product_id: image.product_id, primary } });
+  response.json({ message: `Product image ${status}.` });
+}));
+
+app.get("/api/product-images/:id/file", asyncRoute(async (request, response) => {
+  const image = await get("SELECT images.image_path FROM product_images images JOIN products ON products.id = images.product_id WHERE images.id = ? AND images.status = 'approved' AND products.status = 'active'", [Number.parseInt(request.params.id, 10)]);
+  if (!image) { response.status(404).send("Image not found."); return; }
+  const filename = path.basename(image.image_path);
+  sendUploadFileByFilename(filename, response);
 }));
 
 app.get("/api/products/:id", asyncRoute(async (request, response) => {
@@ -8707,6 +8880,7 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
           source_title,
           source_domain,
           source_checked_at,
+          default_store_id,
           receipt_store_name,
           receipt_store_address,
           notes,
@@ -8719,7 +8893,7 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'needs_admin_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'needs_admin_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         proofMapping.source_type,
@@ -8732,6 +8906,7 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
         source.source_title,
         source.source_domain,
         source.source_checked_at,
+        store.id,
         store.name,
         store.address || "",
         notes,
@@ -8746,40 +8921,7 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
       ]
     );
 
-    let ocrHelper = {
-      ran: false,
-      status: "not_run",
-      confidence: "",
-      has_text: false
-    };
-
-    if (publicProofType === "receipt" && photoPath) {
-      const batch = await priceImportBatchById(result.lastID);
-      const ocr = await runReceiptOcr(batch);
-
-      ocrHelper = {
-        ran: true,
-        status: ocr.text ? "helper_text" : ocr.status,
-        confidence: ocr.confidence || "low",
-        has_text: Boolean(ocr.text)
-      };
-
-      await run(
-        `
-          UPDATE price_import_batches
-          SET receipt_ocr_text = ?,
-              receipt_ocr_confidence = ?,
-              updated_at = ?
-          WHERE id = ?
-        `,
-        [
-          ocr.text || "",
-          ocr.confidence || "low",
-          now,
-          result.lastID
-        ]
-      );
-    }
+    const aiJob = photoPath ? await ensureAiProofJob(result.lastID) : null;
 
     await createAdminNotification(
       "proof_submission_needs_review",
@@ -8812,12 +8954,10 @@ app.post("/api/proof-submissions", requireLogin, upload.single("proof_photo"), a
     const batch = await priceImportBatchById(result.lastID);
 
     response.status(201).json({
-      message: ocrHelper.ran && ocrHelper.has_text
-        ? "Proof saved. OCR helper text was captured for admin review."
-        : "Proof saved. We'll review it manually.",
+      message: "Proof saved. AI preparation will run in the background when enabled; a human will make the final decision.",
       batch_id: result.lastID,
       status: "needs_admin_review",
-      ocr_helper: ocrHelper,
+      ai_processing: aiJob ? { status: aiJob.status, proof_id: result.lastID } : { status: "needs_attention", proof_id: result.lastID },
       batch: formatPriceImportBatch(batch, rows)
     });
   } catch (error) {
@@ -9505,6 +9645,145 @@ async function priceImportRowById(rowId) {
     `,
     [rowId]
   );
+}
+
+const activeAiProofJobs = new Set();
+
+async function aiProcessingSettings() {
+  const stored = await get("SELECT * FROM ai_processing_settings WHERE id = 1");
+  const runtime = aiRuntimeConfig();
+  return {
+    enabled: Boolean(stored?.enabled),
+    manual_only: Boolean(stored?.manual_only),
+    max_analyses_per_hour: Math.max(1, Number(stored?.max_analyses_per_hour || 20)),
+    max_analyses_per_day: Math.max(1, Number(stored?.max_analyses_per_day || 100)),
+    retry_limit: Math.max(0, Number(stored?.retry_limit || 2)),
+    model: stored?.model || runtime.model,
+    provider: runtime.provider,
+    credential_configured: Boolean(runtime.apiKey || runtime.testResponse),
+    updated_at: stored?.updated_at || ""
+  };
+}
+
+async function aiStateForProof(proofId) {
+  const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
+  const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [proofId]);
+  return {
+    job: job ? { ...job, last_error: job.last_error || "" } : null,
+    analysis: analysis ? {
+      ...analysis,
+      warnings: parseMetadataJson(analysis.warnings_json),
+      structured: parseMetadataJson(analysis.structured_json),
+      store_mismatch: Boolean(analysis.detected_store_id && analysis.submitted_store_id && Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))
+    } : null
+  };
+}
+
+function scheduleAiProofJob(proofId) {
+  if (activeAiProofJobs.has(Number(proofId))) return;
+  activeAiProofJobs.add(Number(proofId));
+  setImmediate(() => processAiProofJob(Number(proofId)).catch((error) => console.warn(`AI proof job ${proofId} failed: ${cleanText(error.message, 180)}`)).finally(() => activeAiProofJobs.delete(Number(proofId))));
+}
+
+async function ensureAiProofJob(proofId, options = {}) {
+  const proof = await priceImportBatchById(proofId);
+  if (!proof || !proof.photo_path) return null;
+  const now = new Date().toISOString();
+  const fingerprint = proofFingerprint(proof);
+  await run(`INSERT INTO ai_proof_jobs (proof_id, status, attempt_count, request_fingerprint, queued_at, updated_at) VALUES (?, 'waiting', 0, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET status = CASE WHEN ? THEN 'waiting' ELSE ai_proof_jobs.status END, request_fingerprint = excluded.request_fingerprint, last_error = CASE WHEN ? THEN NULL ELSE ai_proof_jobs.last_error END, queued_at = CASE WHEN ? THEN excluded.queued_at ELSE ai_proof_jobs.queued_at END, updated_at = excluded.updated_at`, [proofId, fingerprint, now, now, options.force ? 1 : 0, options.force ? 1 : 0, options.force ? 1 : 0]);
+  const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
+  if (["waiting", "ai_failed"].includes(job.status) || options.force) scheduleAiProofJob(proofId);
+  return job;
+}
+
+async function aiUsageAllowed(settings) {
+  const now = Date.now();
+  const [hour, day] = await Promise.all([
+    get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE started_at >= ?", [new Date(now - 3600000).toISOString()]),
+    get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE started_at >= ?", [new Date(now - 86400000).toISOString()])
+  ]);
+  return Number(hour?.count || 0) < settings.max_analyses_per_hour && Number(day?.count || 0) < settings.max_analyses_per_day;
+}
+
+function closestStoreForAi(name, stores) {
+  const needle = compactIntakeSearchText(name);
+  if (!needle) return null;
+  return stores.find((store) => compactIntakeSearchText(store.name) === needle) || stores.find((store) => needle.includes(compactIntakeSearchText(store.name)) || compactIntakeSearchText(store.name).includes(needle)) || null;
+}
+
+async function upsertAiDrafts(proof, analysisId, result, stores, products, now) {
+  const validProductIds = new Set(products.map((product) => Number(product.id)));
+  for (const item of result.items) {
+    const requestedProductId = validProductIds.has(Number(item.existing_product_match_id)) && item.existing_product_match_confidence === "high" ? Number(item.existing_product_match_id) : null;
+    const draft = cleanImportRowDraft({
+      product_id: requestedProductId,
+      store_id: proof.default_store_id,
+      item_name: item.normalized_name || "Unknown item",
+      brand: item.brand,
+      variant: item.variant,
+      category: item.category,
+      price: item.price,
+      size_text: item.package_size,
+      quantity: item.quantity || 1,
+      unit: "each",
+      proof_type: proof.proof_type,
+      observed_at: result.source_date,
+      source_date: result.source_date,
+      storage_condition: item.storage_type,
+      price_type: item.price_type,
+      multibuy_quantity: item.multi_buy_quantity,
+      multibuy_total_price: item.multi_buy_total,
+      raw_receipt_line: item.raw_text,
+      extraction_confidence: item.confidence === "high" ? "high" : item.confidence === "check" ? "medium" : "low",
+      extraction_notes: item.research_notes,
+      notes: "Prepared by server-side AI. Human review and approval required.",
+      status: item.confidence === "high" ? "ready_for_review" : "needs_edit"
+    });
+    const existing = await get("SELECT id, status FROM price_import_rows WHERE ai_analysis_id = ? AND ai_item_index = ?", [analysisId, item.item_index]);
+    let rowId = existing?.id;
+    if (!existing) rowId = await insertPriceImportRowDraft(proof.id, draft, null, now);
+    else if (!['approved', 'rejected'].includes(existing.status)) await run(`UPDATE price_import_rows SET product_id = ?, store_id = ?, item_name = ?, brand = ?, variant = ?, category = ?, price = ?, size_text = ?, quantity = ?, proof_type = ?, observed_at = ?, source_date = ?, storage_condition = ?, price_type = ?, multibuy_quantity = ?, multibuy_total_price = ?, raw_receipt_line = ?, extraction_confidence = ?, extraction_notes = ?, notes = ?, status = ?, updated_at = ? WHERE id = ? AND batch_id = ?`, [draft.product_id, draft.store_id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.size_text, draft.quantity, draft.proof_type, draft.observed_at, draft.source_date, draft.storage_condition, draft.price_type, draft.multibuy_quantity, draft.multibuy_total_price, draft.raw_receipt_line, draft.extraction_confidence, draft.extraction_notes, draft.notes, draft.status, now, rowId, proof.id]);
+    await run("UPDATE price_import_rows SET ai_analysis_id = ?, ai_item_index = ?, ai_confidence = ?, ai_field_confidences_json = ?, ai_warnings_json = ?, research_notes = ?, research_sources_json = ?, suggested_new_product = ?, updated_at = ? WHERE id = ? AND batch_id = ?", [analysisId, item.item_index, item.confidence, JSON.stringify(item.field_confidences), JSON.stringify(item.warnings), item.research_notes, JSON.stringify(item.research_sources), item.suggested_new_product ? 1 : 0, now, rowId, proof.id]);
+  }
+  await run("UPDATE price_import_rows SET status = 'removed', updated_at = ? WHERE ai_analysis_id = ? AND ai_item_index >= ? AND status NOT IN ('approved','rejected')", [now, analysisId, result.items.length]);
+}
+
+async function processAiProofJob(proofId) {
+  const settings = await aiProcessingSettings();
+  const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [proofId]);
+  if (!job || job.status !== "waiting") return;
+  if (!settings.enabled || settings.manual_only || !settings.credential_configured) {
+    await run("UPDATE ai_proof_jobs SET status = 'needs_attention', last_error = ?, updated_at = ? WHERE id = ?", [!settings.enabled ? "AI processing is disabled." : settings.manual_only ? "AI processing is in manual-only mode." : "AI credentials are not configured.", new Date().toISOString(), job.id]);
+    return;
+  }
+  if (!(await aiUsageAllowed(settings))) {
+    await run("UPDATE ai_proof_jobs SET status = 'needs_attention', last_error = 'AI usage guard reached. Re-run later or use manual fallback.', updated_at = ? WHERE id = ?", [new Date().toISOString(), job.id]);
+    return;
+  }
+  const now = new Date().toISOString();
+  const claimed = await run("UPDATE ai_proof_jobs SET status = 'analyzing', attempt_count = attempt_count + 1, provider = ?, model = ?, started_at = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'waiting'", [settings.provider, settings.model, now, now, job.id]);
+  if (!claimed.changes) return;
+  try {
+    const proof = await priceImportBatchById(proofId);
+    const fullPath = uploadPathFromPhotoPath(proof.photo_path);
+    if (!fullPath) throw new Error("Original proof image could not be found.");
+    const [stores, products] = await Promise.all([all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"), all("SELECT id, display_name, category, preferred_brand, common_aliases FROM products WHERE status = 'active' ORDER BY display_name LIMIT 500")]);
+    const submittedStore = stores.find((store) => Number(store.id) === Number(proof.default_store_id));
+    const result = await analyzeProof({ proof, imageBuffer: await fs.promises.readFile(fullPath), mimeType: proof.photo_mime_type || "image/jpeg", submittedStore: submittedStore?.name || "", stores, products, env: { ...process.env, AI_MODEL: settings.model } });
+    const detectedStore = closestStoreForAi(result.detected_store, stores);
+    const completedAt = new Date().toISOString();
+    await run(`INSERT INTO ai_proof_analyses (job_id, proof_id, proof_type, detected_store_name, detected_store_id, detected_store_confidence, submitted_store_id, source_date, source_date_confidence, overall_confidence, warnings_json, structured_json, item_count, ready_count, check_count, unknown_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET job_id = excluded.job_id, proof_type = excluded.proof_type, detected_store_name = excluded.detected_store_name, detected_store_id = excluded.detected_store_id, detected_store_confidence = excluded.detected_store_confidence, submitted_store_id = excluded.submitted_store_id, source_date = excluded.source_date, source_date_confidence = excluded.source_date_confidence, overall_confidence = excluded.overall_confidence, warnings_json = excluded.warnings_json, structured_json = excluded.structured_json, item_count = excluded.item_count, ready_count = excluded.ready_count, check_count = excluded.check_count, unknown_count = excluded.unknown_count, updated_at = excluded.updated_at`, [job.id, proofId, result.proof_type, result.detected_store, detectedStore?.id || null, result.detected_store_confidence, proof.default_store_id || null, result.source_date, result.source_date_confidence, result.overall_confidence, JSON.stringify(result.warnings), JSON.stringify(result), result.items.length, result.counts.high, result.counts.check, result.counts.unknown, completedAt, completedAt]);
+    const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [proofId]);
+    await upsertAiDrafts(proof, analysis.id, result, stores, products, completedAt);
+    const finalStatus = result.items.length && !result.counts.unknown ? "ready_for_review" : "needs_attention";
+    await run("UPDATE ai_proof_jobs SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?", [finalStatus, completedAt, completedAt, job.id]);
+    await run("UPDATE price_import_batches SET status = CASE WHEN status = 'needs_admin_review' THEN status ELSE 'ready_for_review' END, updated_at = ? WHERE id = ?", [completedAt, proofId]);
+    await recordPriceEvent({ batchId: proofId, eventType: "AI_PREPARED", submitterUserId: proof.created_by, reason: `AI prepared ${result.items.length} draft items.`, metadata: { analysis_id: analysis.id, ready: result.counts.high, check: result.counts.check, unknown: result.counts.unknown } });
+  } catch (error) {
+    const current = await get("SELECT attempt_count FROM ai_proof_jobs WHERE id = ?", [job.id]);
+    const retryable = Number(current?.attempt_count || 0) <= settings.retry_limit;
+    await run("UPDATE ai_proof_jobs SET status = ?, last_error = ?, completed_at = ?, updated_at = ? WHERE id = ?", [retryable ? "ai_failed" : "needs_attention", cleanText(error.message || "AI analysis failed.", 300), new Date().toISOString(), new Date().toISOString(), job.id]);
+  }
 }
 
 function parseImportRowIds(value) {
@@ -11254,6 +11533,10 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
     `,
     [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, row.batch_id, row.batch_id, submittedAt, row.batch_id, submittedAt, row.batch_id]
   );
+  const unfinishedAfterApproval = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [row.batch_id]);
+  if (!Number(unfinishedAfterApproval?.count || 0)) {
+    await run("UPDATE ai_proof_jobs SET status = 'human_complete', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE proof_id = ?", [submittedAt, submittedAt, row.batch_id]);
+  }
 
   if (importBatch && isProofSubmissionBatch(importBatch)) {
     const rewardRule = proofApprovalPoints(row);
@@ -11588,6 +11871,7 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
       );
 
       created.push(await priceImportBatchById(result.lastID));
+      await ensureAiProofJob(result.lastID);
     }
   } catch (error) {
     for (const file of files) {
@@ -11597,69 +11881,14 @@ app.post("/api/admin/price-imports/upload", requireAdminAccess, requireLoggedInA
     throw error;
   }
 
-  const extractionAttempts = [];
-  let responseBatches = created;
-
-  if (sourceType === "receipt" || proofType === "receipt_photo") {
-    responseBatches = [];
-
-    for (const batch of created) {
-      const ocr = await runReceiptOcr(batch);
-
-      if (ocr.text) {
-        await run(
-          `
-            UPDATE price_import_batches
-            SET receipt_ocr_text = ?,
-                receipt_ocr_confidence = ?,
-                updated_at = ?
-            WHERE id = ?
-          `,
-          [ocr.text, ocr.confidence || "low", now, batch.id]
-        );
-      } else {
-        await run(
-          `
-            UPDATE price_import_batches
-            SET receipt_ocr_confidence = ?,
-                updated_at = ?
-            WHERE id = ?
-          `,
-          [ocr.confidence || "low", now, batch.id]
-        );
-      }
-
-      extractionAttempts.push({
-        batch_id: batch.id,
-        status: ocr.text ? "helper_text" : ocr.status,
-        confidence: ocr.confidence || "low",
-        message: ocr.text
-          ? "Receipt saved as proof. OCR found helper text, but no rows were created automatically. Enter the item and price manually."
-          : "Receipt saved as proof. Enter the item and price manually.",
-        created_count: 0,
-        skipped_duplicate_row_ids: [],
-        ignored_line_count: 0,
-        skipped_lines: [],
-        debug: ocr.debug || ""
-      });
-
-      const rows = await priceImportRowsForBatchIds([batch.id]);
-      responseBatches.push(formatPriceImportBatch(await priceImportBatchById(batch.id), rows));
-    }
-  }
-
   response.status(201).json({
-    message: "Proof image uploaded. Add or edit draft rows before approval.",
+    message: "Proof image uploaded. AI preparation is queued; human approval is still required.",
     extraction_attempt: {
-      status: extractionAttempts.length
-        ? extractionAttempts.some((attempt) => attempt.status === "helper_text") ? "helper_text" : "failed"
-        : "failed",
-      message: extractionAttempts.length
-        ? extractionAttempts.map((attempt) => attempt.message).join(" ")
-        : "Image OCR is not available yet. Use Source Text Autofill below or add rows manually.",
-      attempts: extractionAttempts
+      status: "waiting",
+      message: "AI is preparing proof-scoped draft suggestions in the background. Paste or manual entry remain available.",
+      attempts: created.map((batch) => ({ batch_id: batch.id, status: "waiting" }))
     },
-    batches: responseBatches.map((batch) => batch.rows ? batch : formatPriceImportBatch(batch, []))
+    batches: created.map((batch) => formatPriceImportBatch(batch, []))
   });
 }));
 
@@ -13292,10 +13521,71 @@ app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdm
   const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batchId]));
   response.json({
     batch: formatPriceImportBatch(batch, rows),
+    ai: await aiStateForProof(batchId),
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
     can_approve: staffCan(request.adminUser, "approve"),
     focus_mode_available: true
   });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/re-run-ai", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch) || !batch.photo_path) {
+    response.status(404).json({ error: "An eligible proof image was not found." });
+    return;
+  }
+  const settings = await aiProcessingSettings();
+  if (!settings.enabled || settings.manual_only) {
+    response.status(409).json({ error: "AI processing is disabled or in manual-only mode. Paste from ChatGPT or enter items manually." });
+    return;
+  }
+  const job = await get("SELECT * FROM ai_proof_jobs WHERE proof_id = ?", [batchId]);
+  if (job?.status === "analyzing") {
+    response.status(409).json({ error: "This proof is already being analyzed." });
+    return;
+  }
+  if (Number(job?.attempt_count || 0) > settings.retry_limit + 1 && staffRoleForUser(request.adminUser) !== "owner") {
+    response.status(429).json({ error: "Retry limit reached. Ask the Owner or use manual fallback." });
+    return;
+  }
+  await ensureAiProofJob(batchId, { force: true });
+  await recordPriceEvent({ batchId, eventType: "AI_RETRY_REQUESTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: cleanText(request.body.reason || "Staff requested AI re-run.", 300) });
+  response.status(202).json({ message: "AI analysis queued again.", ai: await aiStateForProof(batchId) });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [batchId]);
+  const batch = await priceImportBatchById(batchId);
+  if (!analysis || !batch) { response.status(404).json({ error: "AI store analysis was not found for this proof." }); return; }
+  const action = cleanEnum(request.body.action, ["use_ai", "keep_submitted", "not_sure"], "not_sure");
+  const resolvedStoreId = action === "use_ai" ? analysis.detected_store_id : action === "keep_submitted" ? analysis.submitted_store_id : null;
+  if (action !== "not_sure" && !resolvedStoreId) { response.status(400).json({ error: "The selected store option is unavailable." }); return; }
+  const now = new Date().toISOString();
+  await run("UPDATE ai_proof_analyses SET resolved_store_id = ?, store_resolution = ?, updated_at = ? WHERE proof_id = ?", [resolvedStoreId, action, now, batchId]);
+  if (resolvedStoreId) await run("UPDATE price_import_rows SET store_id = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [resolvedStoreId, request.adminUser.id, now, batchId]);
+  if (action === "not_sure") await run("UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = 'Store could not be resolved', updated_at = ? WHERE id = ?", [now, now, batchId]);
+  await recordPriceEvent({ batchId, eventType: "STORE_RESOLVED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: action, metadata: { submitted_store_id: analysis.submitted_store_id, detected_store_id: analysis.detected_store_id, resolved_store_id: resolvedStoreId } });
+  response.json({ message: action === "not_sure" ? "Store sent for Manager help." : "Store decision saved.", ai: await aiStateForProof(batchId) });
+}));
+
+app.get("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  response.json({ settings: await aiProcessingSettings() });
+}));
+
+app.post("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const current = await aiProcessingSettings();
+  const enabled = request.body.enabled === true;
+  const manualOnly = request.body.manual_only !== false;
+  const hourly = Math.min(200, Math.max(1, Number.parseInt(request.body.max_analyses_per_hour || current.max_analyses_per_hour, 10)));
+  const daily = Math.min(2000, Math.max(hourly, Number.parseInt(request.body.max_analyses_per_day || current.max_analyses_per_day, 10)));
+  const retries = Math.min(5, Math.max(0, Number.parseInt(request.body.retry_limit ?? current.retry_limit, 10)));
+  const model = cleanText(request.body.model || current.model, 100);
+  const now = new Date().toISOString();
+  await run("UPDATE ai_processing_settings SET enabled = ?, manual_only = ?, max_analyses_per_hour = ?, max_analyses_per_day = ?, retry_limit = ?, model = ?, updated_by = ?, updated_at = ? WHERE id = 1", [enabled ? 1 : 0, manualOnly ? 1 : 0, hourly, daily, retries, model, request.adminUser.id, now]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "AI_SETTINGS_UPDATED", affectedType: "ai_processing_settings", affectedId: 1, metadata: { enabled, manual_only: manualOnly, hourly, daily, retries, model } });
+  response.json({ message: "AI processing controls saved.", settings: await aiProcessingSettings() });
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/claim", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
@@ -15439,7 +15729,7 @@ app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (reques
   });
 }));
 
-app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const product = validateProduct(request.body, { defaultActive: true });
   const now = new Date().toISOString();
   const result = await run(
@@ -15453,6 +15743,9 @@ app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, 
         default_unit,
         brand_optional,
         preferred_brand,
+        variant,
+        upc,
+        description,
         common_aliases,
         ingredient_info_url,
         allergen_note,
@@ -15464,7 +15757,7 @@ app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, 
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       product.canonical_name,
@@ -15475,6 +15768,9 @@ app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, 
       product.default_unit,
       product.brand_optional,
       product.preferred_brand,
+      cleanText(request.body.variant, 100),
+      cleanText(request.body.upc, 40),
+      cleanText(request.body.description, 1000),
       product.common_aliases,
       product.ingredient_info_url,
       product.allergen_note,
@@ -15494,7 +15790,7 @@ app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, 
   });
 }));
 
-app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const productId = Number.parseInt(request.params.id, 10);
   const existing = await get("SELECT * FROM products WHERE id = ?", [productId]);
 
@@ -15532,6 +15828,9 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
           default_unit = ?,
           brand_optional = ?,
           preferred_brand = ?,
+          variant = ?,
+          upc = ?,
+          description = ?,
           common_aliases = ?,
           ingredient_info_url = ?,
           allergen_note = ?,
@@ -15551,6 +15850,9 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
       product.default_unit,
       product.brand_optional,
       product.preferred_brand,
+      cleanText(request.body.variant ?? existing.variant, 100),
+      cleanText(request.body.upc ?? existing.upc, 40),
+      cleanText(request.body.description ?? existing.description, 1000),
       product.common_aliases,
       product.ingredient_info_url,
       product.allergen_note,
@@ -15566,7 +15868,7 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
   response.json({ message: "Product updated." });
 }));
 
-app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const sourceId = Number.parseInt(request.params.id, 10);
   const targetId = Number.parseInt(request.body.target_product_id, 10);
   const adminNote = cleanText(request.body.admin_note, 500);
@@ -16230,11 +16532,19 @@ app.use((error, request, response, next) => {
   response.status(error.statusCode || 400).json({ error: error.message || "Something went wrong." });
 });
 
+async function resumeAiProofJobs() {
+  const staleBefore = new Date(Date.now() - 15 * 60000).toISOString();
+  await run("UPDATE ai_proof_jobs SET status = 'waiting', last_error = 'Recovered after interrupted analysis.', updated_at = ? WHERE status = 'analyzing' AND started_at < ?", [new Date().toISOString(), staleBefore]);
+  const jobs = await all("SELECT proof_id FROM ai_proof_jobs WHERE status = 'waiting' ORDER BY queued_at ASC LIMIT 25");
+  for (const job of jobs) scheduleAiProofJob(job.proof_id);
+}
+
 Promise.resolve()
   .then(runOwnerRepairOnStartIfEnabled)
   .then(initDb)
   .then(ensureBootstrapSuperAdmin)
   .then(auditExistingUsernames)
+  .then(resumeAiProofJobs)
   .then(() => {
     app.listen(PORT, HOST, () => {
       console.log(`Grocery Radar Janesville running at http://localhost:${PORT}`);

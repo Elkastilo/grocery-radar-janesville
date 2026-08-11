@@ -22,28 +22,14 @@
 
     <main class="admin-shell">
       <aside class="admin-sidebar" aria-label="Admin sections">
-        <div class="admin-nav-group"><span>Home</span>
-          <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Home</button>
-        </div>
         <div class="admin-nav-group"><span>Work</span>
+          <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Home</button>
           <button class="admin-tab" type="button" data-admin-tab="inboxTab">Inbox</button>
-          <button class="admin-tab" type="button" data-admin-tab="pricesTab">Prices</button>
           <button class="admin-tab" type="button" data-admin-tab="productToolsTab" data-manager-only>Products</button>
           <button class="admin-tab" type="button" data-admin-tab="storesTab" data-manager-only>Stores</button>
-        </div>
-        <div class="admin-nav-group" data-manager-only><span>People</span>
-          <button class="admin-tab" type="button" data-admin-tab="workersTab">Workers</button>
-          <button class="admin-tab" type="button" data-admin-tab="usersTab">Users</button>
-          <button class="admin-tab" type="button" data-admin-tab="feedbackTab">Feedback</button>
-        </div>
-        <div class="admin-nav-group" data-manager-only><span>Management</span>
-          <button class="admin-tab" type="button" data-admin-tab="reviewTab">Reports</button>
-          <button class="admin-tab" type="button" data-admin-tab="announcementsTab">Announcements</button>
-        </div>
-        <div class="admin-nav-group" data-owner-only><span>Owner only</span>
-          <button class="admin-tab" type="button" data-admin-tab="operationsTab">Operations</button>
-          <button class="admin-tab" type="button" data-admin-tab="emailTab">Email / Diagnostics</button>
-          <button class="admin-tab" type="button" data-admin-tab="settingsTab">Settings</button>
+          <button class="admin-tab" type="button" data-admin-tab="usersTab" data-manager-only>Users</button>
+          <button id="workersNavButton" class="admin-tab" type="button" data-admin-tab="workersTab">Workers</button>
+          <button class="admin-tab" type="button" data-admin-tab="advancedTab" data-manager-only>Advanced</button>
         </div>
       </aside>
 
@@ -92,6 +78,50 @@
           <div class="admin-panel-heading"><div><h2>Workers</h2><p class="field-help">Roles, current work, and shifts. Active now is separate from clocked in.</p></div></div>
           <div id="workerShiftControls" class="card-actions"></div>
           <div id="workersList" class="admin-list"></div>
+        </section>
+
+        <section id="advancedTab" class="admin-panel" data-manager-only>
+          <div class="admin-panel-heading"><div><h2>Advanced</h2><p class="field-help">Occasional management, diagnostics, imports, and system tools.</p></div></div>
+          <div class="manage-grid">
+            <button class="attention-card" type="button" data-jump-tab="operationsTab" data-owner-only><strong>Operations</strong><span>Health, backups, audit, diagnostics</span></button>
+            <button class="attention-card" type="button" data-jump-tab="pricesTab"><strong>Prices</strong><span>Approved and disputed prices</span></button>
+            <button class="attention-card" type="button" data-jump-tab="reviewTab"><strong>Reports</strong><span>Legacy report queue</span></button>
+            <button class="attention-card" type="button" data-jump-tab="priceImporterTab"><strong>Importer Tools</strong><span>Manual and legacy intake</span></button>
+            <button class="attention-card" type="button" data-jump-tab="feedbackTab"><strong>Feedback</strong><span>Community messages</span></button>
+            <button class="attention-card" type="button" data-jump-tab="announcementsTab"><strong>Announcements</strong><span>Service messaging</span></button>
+            <button class="attention-card" type="button" data-jump-tab="analyticsTab"><strong>Analytics</strong><span>Aggregate usage</span></button>
+            <button class="attention-card" type="button" data-jump-tab="emailTab" data-owner-only><strong>Email</strong><span>Diagnostics and setup</span></button>
+            <button class="attention-card" type="button" data-jump-tab="settingsTab" data-owner-only><strong>Settings</strong><span>Owner controls</span></button>
+          </div>
+          <section class="admin-card" data-manager-only>
+            <h3>Catalog Import</h3>
+            <p class="field-help">Create product drafts from CSV or JSON. Nothing publishes automatically.</p>
+            <form id="catalogImportForm" class="form-grid">
+              <label><span>Import title</span><input name="title" maxlength="160" value="Product catalog import"></label>
+              <label class="span-full"><span>CSV or JSON</span><textarea name="catalog_text" rows="8" placeholder="product_name,brand,variant,size,category,upc,image_filename"></textarea></label>
+              <button class="primary-button" type="submit">Create Draft Catalog</button>
+            </form>
+            <form id="catalogImagesForm" class="admin-toolbar" hidden enctype="multipart/form-data">
+              <input name="batch_id" type="hidden">
+              <label><span>Product images</span><input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
+              <button class="secondary-button" type="submit">Match Images</button>
+            </form>
+            <div id="catalogImportMessage" class="message" aria-live="polite"></div>
+            <div id="catalogImportResults" class="admin-list"></div>
+          </section>
+          <section class="admin-card" data-owner-only>
+            <h3>AI Processing Controls</h3>
+            <form id="aiSettingsForm" class="form-grid">
+              <label class="checkbox-row"><input name="enabled" type="checkbox"><span>AI enabled</span></label>
+              <label class="checkbox-row"><input name="manual_only" type="checkbox" checked><span>Manual-only fallback</span></label>
+              <label><span>Max per hour</span><input name="max_analyses_per_hour" type="number" min="1" max="200" value="20"></label>
+              <label><span>Max per day</span><input name="max_analyses_per_day" type="number" min="1" max="2000" value="100"></label>
+              <label><span>Retry limit</span><input name="retry_limit" type="number" min="0" max="5" value="2"></label>
+              <label><span>Model</span><input name="model" maxlength="100"></label>
+              <button class="primary-button" type="submit">Save AI Controls</button>
+            </form>
+            <div id="aiSettingsMessage" class="message" aria-live="polite"></div>
+          </section>
         </section>
 
         <section id="feedbackTab" class="admin-panel">

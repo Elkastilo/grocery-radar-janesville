@@ -7,6 +7,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const bcrypt = require("bcrypt");
+const sharp = require("sharp");
 const sqlite3 = require("sqlite3").verbose();
 
 const ROOT_DIR = path.join(__dirname, "..");
@@ -197,7 +198,22 @@ async function startServer() {
     SUPER_ADMIN_EMAIL: "attacker@example.invalid",
     OWNER_EMAIL: "attacker@example.invalid",
     EMAIL_TEST_MODE: "1",
-    VERIFICATION_RESEND_COOLDOWN_SECONDS: "60"
+    VERIFICATION_RESEND_COOLDOWN_SECONDS: "60",
+    AI_TEST_RESPONSE_JSON: JSON.stringify({
+      proof_id: 999999,
+      proof_type: "receipt_photo",
+      detected_store: "ALDI Janesville",
+      detected_store_confidence: "high",
+      source_date: "2026-07-04",
+      source_date_confidence: "high",
+      overall_confidence: "high",
+      warnings: [],
+      items: [
+        { raw_text: "BANANAS 1.23 LB @ 0.59 0.73", normalized_name: "Bananas", quantity: 1.23, package_size: "1.23 lb", price: 0.73, category: "Produce", storage_type: "Fresh produce", price_type: "Regular", confidence: "high", field_confidences: { name: "high", price: "high" }, warnings: [] },
+        { raw_text: "MILK 1 GAL 3.49", normalized_name: "Milk", quantity: 1, package_size: "1 gal", price: 3.49, category: "Dairy & Eggs", storage_type: "Refrigerated", price_type: "Regular", confidence: "high", field_confidences: { name: "high", price: "high" }, warnings: [] }
+      ]
+    }),
+    AI_API_KEY: "test-only-key"
   };
   const child = childProcess.spawn(process.execPath, ["server.js"], {
     cwd: ROOT_DIR,
@@ -315,6 +331,99 @@ async function main() {
     assert.equal(reviewerRole.response.status, 200, JSON.stringify(reviewerRole.body));
     const dataEntryRole = await owner.post(`/api/admin/v2/workers/${dataEntryRegistration.user.id}/role`, { role: "data_entry" });
     assert.equal(dataEntryRole.response.status, 200, JSON.stringify(dataEntryRole.body));
+
+    await updateTempUser(app.dataDir, "INSERT OR IGNORE INTO stores (name, address, city, state, store_type, active, created_at) VALUES ('ALDI Janesville', 'Test Aldi', 'Janesville', 'WI', 'discount', 1, ?)", [new Date().toISOString()]);
+    await updateTempUser(app.dataDir, "INSERT OR IGNORE INTO stores (name, address, city, state, store_type, active, created_at) VALUES ('Walmart Janesville', 'Test Walmart', 'Janesville', 'WI', 'grocery', 1, ?)", [new Date().toISOString()]);
+    const aldiStore = await queryTempDb(app.dataDir, "SELECT id FROM stores WHERE name = 'ALDI Janesville'");
+    const walmartStore = await queryTempDb(app.dataDir, "SELECT id FROM stores WHERE name = 'Walmart Janesville'");
+    fs.writeFileSync(path.join(app.uploadsDir, "test-receipt.png"), Buffer.from("proof-isolation-test"));
+
+    const aiSettings = await owner.post("/api/admin/operations/ai-settings", { enabled: true, manual_only: false, max_analyses_per_hour: 20, max_analyses_per_day: 100, retry_limit: 2, model: "test-model" });
+    assert.equal(aiSettings.response.status, 200, JSON.stringify(aiSettings.body));
+    const priorWalmartBatch = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Previous Walmart helper proof");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET default_store_id = ?, source_text = 'WALMART OLD HELPER TEXT' WHERE id = ?", [walmartStore.id, priorWalmartBatch]);
+    await updateTempUser(app.dataDir, "INSERT INTO price_import_rows (batch_id, store_id, item_name, category, price, quantity, unit, proof_type, status, created_at, updated_at) VALUES (?, ?, 'Walmart old helper item', 'other', 9.99, 1, 'each', 'receipt_photo', 'ready_for_review', ?, ?)", [priorWalmartBatch, walmartStore.id, new Date().toISOString(), new Date().toISOString()]);
+    const aiProofBatch = await insertProofBatch(app.dataDir, normalRegistration.user.id, "ALDI image submitted as Woodmans");
+    const queuedAi = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/re-run-ai`, { reason: "Proof isolation acceptance test" });
+    assert.equal(queuedAi.response.status, 202, JSON.stringify(queuedAi.body));
+    let aiReview = null;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+      assert.equal(result.response.status, 200, JSON.stringify(result.body));
+      aiReview = result.body;
+      if (["ready_for_review", "needs_attention"].includes(aiReview.ai?.job?.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(aiReview.ai.job.status, "ready_for_review", JSON.stringify(aiReview.ai));
+    assert.equal(aiReview.ai.analysis.structured.proof_id, aiProofBatch);
+    assert.equal(aiReview.ai.analysis.submitted_store_id, 1);
+    assert.equal(aiReview.ai.analysis.detected_store_id, aldiStore.id);
+    assert.equal(aiReview.ai.analysis.store_mismatch, true);
+    assert.equal(aiReview.batch.rows.length, 2);
+    assert.deepEqual(aiReview.batch.rows.map((row) => row.item_name), ["Bananas", "Milk"]);
+    assert.equal(JSON.stringify(aiReview).includes("Walmart old helper item"), false);
+    assert.ok(aiReview.batch.rows.every((row) => row.batch_id === aiProofBatch && row.ai_analysis_id === aiReview.ai.analysis.id));
+    const useAldi = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/store-resolution`, { action: "use_ai" });
+    assert.equal(useAldi.response.status, 200, JSON.stringify(useAldi.body));
+    const resolvedAiReview = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    assert.ok(resolvedAiReview.body.batch.rows.every((row) => row.store_id === aldiStore.id));
+    const priorReview = await reviewer.get(`/api/admin/v2/reviews/${priorWalmartBatch}`);
+    assert.equal(priorReview.body.batch.rows.length, 1);
+    assert.equal(priorReview.body.batch.rows[0].item_name, "Walmart old helper item");
+    assert.equal(JSON.stringify(priorReview.body).includes("Bananas"), false);
+
+    const catalogProductResult = await updateTempUser(app.dataDir, "INSERT INTO products (canonical_name, display_name, category, status, created_at, updated_at) VALUES ('catalog duplicate bread', 'Catalog Duplicate Bread', 'bakery', 'active', ?, ?)", [new Date().toISOString(), new Date().toISOString()]);
+    const catalog = await owner.post("/api/admin/catalog-imports", { title: "Three product acceptance catalog", rows: [
+      { product_name: "Catalog Alpha Milk", brand: "Test Brand", variant: "2%", size: "1 gal", category: "Dairy & Eggs", image_filename: "alpha-milk.png" },
+      { product_name: "Catalog Beta Bananas", size: "per lb", category: "Produce", image_filename: "beta-bananas.png" },
+      { product_name: "Catalog Duplicate Bread", size: "20 oz", category: "Bakery" }
+    ] });
+    assert.equal(catalog.response.status, 201, JSON.stringify(catalog.body));
+    assert.equal(catalog.body.batch.rows.length, 3);
+    assert.ok(catalog.body.batch.rows.every((row) => row.status === "draft"));
+    assert.equal(catalog.body.batch.rows[0].category, "dairy");
+    assert.equal(catalog.body.batch.rows[1].category, "produce");
+    assert.equal(catalog.body.batch.rows[2].duplicate_product_id, catalogProductResult.lastID);
+    const png = await sharp({ create: { width: 40, height: 40, channels: 3, background: { r: 40, g: 150, b: 90 } } }).png().toBuffer();
+    const catalogImagesForm = new FormData();
+    catalogImagesForm.append("images", new Blob([png], { type: "image/png" }), "alpha-milk.png");
+    catalogImagesForm.append("images", new Blob([png], { type: "image/png" }), "beta-bananas.png");
+    catalogImagesForm.append("images", new Blob([png], { type: "image/png" }), "catalog-duplicate-bread-photo.png");
+    const catalogImages = await owner.request(`/api/admin/catalog-imports/${catalog.body.batch.id}/images`, { method: "POST", body: catalogImagesForm });
+    assert.equal(catalogImages.response.status, 201, JSON.stringify(catalogImages.body));
+    assert.equal(catalogImages.body.batch.images.length, 3);
+    assert.equal(catalogImages.body.batch.rows[0].image_match_confidence, "high");
+    assert.equal(catalogImages.body.batch.rows[1].image_match_confidence, "high");
+    assert.equal(catalogImages.body.batch.rows[2].image_match_confidence, "check");
+    assert.equal((await normal.get("/api/products?q=Catalog%20Alpha%20Milk")).body.products.length, 0, "Draft catalog products must not be public.");
+    const blockedCatalog = await dataEntry.post("/api/admin/catalog-imports", { rows: [{ product_name: "Blocked Product" }] });
+    assert.equal(blockedCatalog.response.status, 403);
+    const blockedPublicCatalog = await normal.post("/api/admin/catalog-imports", { rows: [{ product_name: "Impersonated Product" }] });
+    assert.equal(blockedPublicCatalog.response.status, 403);
+    const blockedReviewerAiSettings = await reviewer.post("/api/admin/operations/ai-settings", { enabled: false });
+    assert.equal(blockedReviewerAiSettings.response.status, 403);
+    const publishCatalog = await owner.post(`/api/admin/catalog-imports/${catalog.body.batch.id}/publish`, {});
+    assert.equal(publishCatalog.response.status, 200, JSON.stringify(publishCatalog.body));
+    assert.equal(publishCatalog.body.product_ids.length, 2, "The duplicate row must remain a draft unless explicitly overridden.");
+    const publicImported = await normal.get("/api/products?q=Catalog%20Alpha%20Milk");
+    assert.equal(publicImported.body.products.length, 1);
+    assert.match(publicImported.body.products[0].image_url, /\/api\/product-images\//);
+
+    const productImageForm = new FormData();
+    productImageForm.append("product_image", new Blob([png], { type: "image/png" }), "catalog-bread.png");
+    productImageForm.append("alt_text", "Catalog Duplicate Bread package");
+    const productImage = await owner.request(`/api/admin/products/${catalogProductResult.lastID}/images`, { method: "POST", body: productImageForm });
+    assert.equal(productImage.response.status, 201, JSON.stringify(productImage.body));
+    assert.equal(productImage.body.image.status, "draft");
+    const beforeImageApproval = await normal.get(`/api/products/${catalogProductResult.lastID}`);
+    assert.equal(beforeImageApproval.body.product.image_url, "");
+    const approveImage = await owner.post(`/api/admin/product-images/${productImage.body.image.id}/moderate`, { status: "approved", is_primary: true, alt_text: "Catalog Duplicate Bread package" });
+    assert.equal(approveImage.response.status, 200, JSON.stringify(approveImage.body));
+    const afterImageApproval = await normal.get(`/api/products/${catalogProductResult.lastID}`);
+    assert.match(afterImageApproval.body.product.image_url, /\/api\/product-images\//);
+    assert.equal(afterImageApproval.body.product.image_alt_text, "Catalog Duplicate Bread package");
+    const publicImage = await normal.get(afterImageApproval.body.product.image_url);
+    assert.equal(publicImage.response.status, 200);
 
     const ownerHome = await owner.get("/api/admin/v2/home");
     assert.equal(ownerHome.response.status, 200, JSON.stringify(ownerHome.body));

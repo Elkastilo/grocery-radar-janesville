@@ -61,6 +61,10 @@
 .attention-card span { display: block; margin-top: 0.35rem; font-weight: 800; }
 .admin-home-section { flex-direction: column; margin-top: 1.25rem; }
 .admin-home-section h3 { margin: 0; }
+.large-primary-action { min-height: 3.5rem; align-self: flex-start; padding-inline: 1.5rem; font-size: 1.05rem; }
+.manage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
+.manage-grid .attention-card { min-height: 5.5rem; text-align: left; }
+.manage-grid .attention-card strong { font-size: 1.1rem; }
 .simple-status-list { display: grid; gap: 0.6rem; }
 .simple-status-row,
 .inbox-card,
@@ -82,7 +86,29 @@
 .receipt-proof-panel,
 .receipt-items-panel { padding: 1rem; border-radius: 1rem; background: #fff; border: 1px solid #dbe6df; }
 .receipt-proof-image { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 0.75rem; background: #f8fafc; }
-.receipt-item-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem; margin-top: 0.75rem; padding: 0.75rem; border: 1px solid #dbe5df; border-radius: 0.85rem; background: #fbfdfc; }
+.receipt-item-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; padding: 1rem; border: 1px solid #dbe5df; border-radius: 0.85rem; background: #fbfdfc; }
+.receipt-item-heading,
+.receipt-item-details,
+.receipt-item-details .receipt-item-more { grid-column: 1 / -1; }
+.receipt-item-heading,
+.ai-analysis-summary,
+.items-summary { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.receipt-item-heading strong { font-size: 1.1rem; }
+.receipt-item-more { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+.ai-analysis-summary,
+.store-comparison,
+.items-summary { padding: 0.9rem; margin-bottom: 0.75rem; border: 1px solid #dbe5df; border-radius: 0.85rem; background: #f8fafc; }
+.ai-analysis-summary h3,
+.items-summary h3,
+.store-comparison h4 { margin: 0; }
+.store-comparison p { margin: 0.45rem 0; }
+.store-comparison.has-mismatch { border-color: #d59a27; background: #fff9e8; }
+.ai-confidence { font-weight: 800; }
+.ai-confidence-high { color: #166534; }
+.ai-confidence-check { color: #8a5b09; }
+.ai-confidence-unknown { color: #475569; }
+.show-flagged-only .receipt-item-row.is-ai-ready { display: none; }
+.admin-upload-preview-image { width: 8rem; height: 8rem; object-fit: cover; border-radius: 1rem; background: #f1f5f9; }
 .review-actions { flex-wrap: wrap; margin-top: 1rem; }
 .review-actions button { min-height: 3rem; }
 .focus-review .receipt-review-layout { grid-template-columns: 1fr; max-width: 780px; margin-inline: auto; }

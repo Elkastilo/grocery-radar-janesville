@@ -108,6 +108,12 @@ const v2AnnouncementsList = document.querySelector("#v2AnnouncementsList");
 const adminNotificationBell = document.querySelector("#adminNotificationBell");
 const adminBellCount = document.querySelector("#adminBellCount");
 const adminV2NotificationPanel = document.querySelector("#adminV2NotificationPanel");
+const catalogImportForm = document.querySelector("#catalogImportForm");
+const catalogImagesForm = document.querySelector("#catalogImagesForm");
+const catalogImportMessage = document.querySelector("#catalogImportMessage");
+const catalogImportResults = document.querySelector("#catalogImportResults");
+const aiSettingsForm = document.querySelector("#aiSettingsForm");
+const aiSettingsMessage = document.querySelector("#aiSettingsMessage");
 
 let allReports = [];
 let allUsers = [];
@@ -416,6 +422,10 @@ function openAdminTab(tabId, options = {}) {
     loadOperationsCenter();
   }
 
+  if (tabId === "advancedTab" && (adminSession.staff_role || adminSession.admin_role) === "owner") {
+    loadAiSettings();
+  }
+
   window.setTimeout(() => highlightAdminTarget(options), 80);
 }
 
@@ -497,8 +507,11 @@ function productFormFields(product = {}) {
     <label><span>Default quantity</span><input data-product-field="default_quantity" type="number" min="0.01" step="0.01" value="${product.default_quantity ?? ""}"></label>
     <label><span>Default unit</span><input data-product-field="default_unit" type="text" maxlength="30" value="${escapeHtml(product.default_unit || "")}" placeholder="each, lb, oz"></label>
     <label><span>Preferred brand</span><input data-product-field="preferred_brand" type="text" maxlength="80" value="${escapeHtml(product.preferred_brand || "")}"></label>
+    <label><span>Variant</span><input data-product-field="variant" type="text" maxlength="100" value="${escapeHtml(product.variant || "")}"></label>
+    <label><span>UPC</span><input data-product-field="upc" type="text" maxlength="40" value="${escapeHtml(product.upc || "")}"></label>
     <label><span>Status</span><select data-product-field="status">${optionRows(productStatuses, product.status || "active")}</select></label>
     <label class="span-full"><span>Aliases</span><textarea data-product-field="common_aliases" rows="2" maxlength="1000">${escapeHtml(product.common_aliases || "")}</textarea></label>
+    <label class="span-full"><span>Description</span><textarea data-product-field="description" rows="2" maxlength="1000">${escapeHtml(product.description || "")}</textarea></label>
     <label class="span-full"><span>Ingredient/allergy source</span><input data-product-field="ingredient_info_url" type="url" maxlength="300" value="${escapeHtml(product.ingredient_info_url || "")}"></label>
     <label class="span-full"><span>Allergen note</span><input data-product-field="allergen_note" type="text" maxlength="500" value="${escapeHtml(product.allergen_note || "")}"></label>
     <label class="span-full"><span>Admin safety note</span><input data-product-field="admin_safety_note" type="text" maxlength="500" value="${escapeHtml(product.admin_safety_note || "")}"></label>
@@ -619,43 +632,27 @@ function renderDashboard(notifications = {}, home = null) {
     const attention = home.needs_attention || {};
     const today = home.today || {};
     const live = home.live || {};
-    const team = home.team || {};
-    const system = home.system || {};
-    const cards = [
-      [attention.proofs_waiting || 0, "Proofs waiting", "inboxTab"],
-      [attention.worker_escalations || 0, "Worker escalations", "inboxTab"],
-      [attention.price_disputes || 0, "Price disputes", "pricesTab"],
-      [attention.system_problems || 0, "System problems", "operationsTab"]
-    ];
+    const role = home.role || "reviewer";
+    const attentionCount = Number(attention.proofs_waiting || 0) + Number(attention.worker_escalations || 0) + Number(attention.price_disputes || 0) + Number(attention.system_problems || 0);
+    const isManager = ["owner", "manager"].includes(role);
     adminNotifications.innerHTML = `
       <section class="admin-home-section">
         <p class="field-help">Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, ${escapeHtml(home.greeting_name || "")}</p>
-        <h3>Needs attention</h3>
-        <div class="attention-grid">${cards.map(([value, label, tab]) => `
-          <button class="attention-card" type="button" data-jump-tab="${tab}"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></button>
-        `).join("")}</div>
-        <button class="primary-button" type="button" data-start-review>Review Next</button>
+        <h2>${isManager ? `${attentionCount} thing${attentionCount === 1 ? "" : "s"} need attention` : `${attention.proofs_waiting || 0} proofs waiting`}</h2>
+        <button class="primary-button large-primary-action" type="button" data-start-review>${isManager ? "Review Next Proof" : "Start Reviewing"}</button>
+        ${home.team?.unfinished_reviews ? '<button class="quiet-button" type="button" data-start-review>Continue unfinished review</button>' : ""}
       </section>
-      <section class="admin-home-section"><h3>Today</h3><div class="attention-grid">
-        ${[[today.prices_approved,"Prices approved"],[today.receipts_reviewed,"Receipts reviewed"],[today.new_users,"New users"],[today.feedback_messages,"New feedback"]].map(([value,label]) => `<article class="attention-card"><strong>${escapeHtml(value || 0)}</strong><span>${escapeHtml(label)}</span></article>`).join("")}
+      <section class="admin-home-section"><h3>Today</h3><div class="simple-status-list">
+        <div class="simple-status-row"><span>Receipts reviewed</span><strong>${escapeHtml(today.receipts_reviewed || 0)}</strong></div>
+        <div class="simple-status-row"><span>Prices approved</span><strong>${escapeHtml(today.prices_approved || 0)}</strong></div>
+        ${isManager ? `<div class="simple-status-row"><span>People using Grocery Radar</span><strong>${escapeHtml(live.active_now || 0)}</strong></div>` : ""}
       </div></section>
-      <section class="admin-home-section"><h3>Live now</h3><div class="simple-status-list">
-        <div class="simple-status-row"><span>People active now</span><span>${escapeHtml(live.active_now || 0)}</span></div>
-        <div class="simple-status-row"><span>Guests / Members / Team</span><span>${escapeHtml(live.by_role?.guest || 0)} / ${escapeHtml(live.by_role?.member || 0)} / ${escapeHtml((live.active_now || 0) - (live.by_role?.guest || 0) - (live.by_role?.member || 0))}</span></div>
-        <div class="simple-status-row"><span>Visitors today</span><span>${escapeHtml(live.visitors_today || 0)}</span></div>
-        <div class="simple-status-row"><span>Searches / Receipts today</span><span>${escapeHtml(today.searches || 0)} / ${escapeHtml(today.receipts_submitted || 0)}</span></div>
-      </div></section>
-      <section class="admin-home-section"><h3>Team</h3><div class="simple-status-list">
-        <div class="simple-status-row"><span>Workers active</span><span>${escapeHtml(team.workers_active || 0)}</span></div>
-        <div class="simple-status-row"><span>Unfinished reviews</span><span>${escapeHtml(team.unfinished_reviews || 0)}</span></div>
-        <div class="simple-status-row"><span>Urgent problems</span><span>${escapeHtml(team.urgent_problems || 0)}</span></div>
-      </div></section>
-      <section class="admin-home-section"><h3>System</h3><div class="simple-status-list">
-        ${Object.entries(system).map(([label,value]) => `<div class="simple-status-row"><span>${escapeHtml(titleCase(label))}</span><span>${escapeHtml(value)}</span></div>`).join("")}
-      </div>${home.role === "owner" ? '<button class="secondary-button" type="button" data-jump-tab="operationsTab">Open Operations</button>' : ""}</section>
+      ${isManager ? `<section class="admin-home-section"><h3>Manage</h3><div class="manage-grid">${[["Products","productToolsTab"],["Stores","storesTab"],["Users","usersTab"],["Workers","workersTab"],["Advanced","advancedTab"]].map(([label,tab]) => `<button class="attention-card" type="button" data-jump-tab="${tab}"><strong>${label}</strong></button>`).join("")}</div></section>` : `<section class="admin-home-section"><h3>Work</h3><div class="manage-grid"><button class="attention-card" type="button" data-jump-tab="workersTab"><strong>My Hours</strong></button><button class="attention-card" type="button" data-open-home-notifications><strong>Notifications</strong></button></div><div class="card-actions"><button class="quiet-button" type="button" data-shift-home="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift-home="take-break">Take Break</button><button class="quiet-button" type="button" data-shift-home="return">Return</button><button class="quiet-button" type="button" data-shift-home="clock-out">Clock Out</button></div></section>`}
     `;
     for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
-    adminNotifications.querySelector("[data-start-review]")?.addEventListener("click", startReviewNext);
+    for (const button of adminNotifications.querySelectorAll("[data-start-review]")) button.addEventListener("click", startReviewNext);
+    for (const button of adminNotifications.querySelectorAll("[data-shift-home]")) button.addEventListener("click", () => updateShift(button.dataset.shiftHome));
+    adminNotifications.querySelector("[data-open-home-notifications]")?.addEventListener("click", () => adminNotificationBell?.click());
     const unread = Number(notifications.unread_admin_notifications || notifications.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
     if (adminBellCount) adminBellCount.textContent = `${unread} unread`;
     adminNotificationBell?.classList.toggle("has-unread", unread > 0);
@@ -835,38 +832,56 @@ function reviewRowMarkup(row) {
   const categories = ["produce","meat","dairy","frozen","bakery","pantry","snacks","drinks","prepared food","household","health / personal care","baby","pet","other"];
   const storage = ["shelf stable","refrigerated","frozen","fresh produce","hot prepared food","cold prepared food","not applicable","unknown"];
   const priceTypes = ["regular","sale","clearance","member / loyalty","coupon-dependent","multi-buy","unknown"];
-  return `<div class="receipt-item-row" data-review-row="${row.id}">
-    <label><span class="visually-hidden">Item name</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
-    <label><span class="visually-hidden">Brand</span><input name="brand" value="${escapeHtml(row.brand || "")}" aria-label="Brand" placeholder="Brand"></label>
-    <label><span class="visually-hidden">Variant</span><input name="variant" value="${escapeHtml(row.variant || "")}" aria-label="Variant" placeholder="Variant"></label>
-    <label><span class="visually-hidden">Size</span><input name="size_text" value="${escapeHtml(row.size_text || "")}" aria-label="Package size"></label>
-    <label><span class="visually-hidden">Quantity</span><input name="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(row.quantity || 1)}" aria-label="Quantity"></label>
-    <label><span class="visually-hidden">Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.price || "")}" aria-label="Price"></label>
-    <label><span class="visually-hidden">Category</span><select name="category" aria-label="Category">${categories.map((value) => `<option value="${value}" ${row.category === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
-    <label><span class="visually-hidden">Storage</span><select name="storage_condition" aria-label="Storage or condition">${storage.map((value) => `<option value="${value}" ${row.storage_condition === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
-    <label><span class="visually-hidden">Price type</span><select name="price_type" aria-label="Price type">${priceTypes.map((value) => `<option value="${value}" ${row.price_type === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
-    <label><span class="visually-hidden">Source date</span><input name="source_date" type="date" value="${escapeHtml(row.source_date || "")}" aria-label="Purchased or source date"></label>
-    <button class="quiet-button" type="button" data-remove-row="${row.id}">Remove</button>
+  const confidence = row.ai_confidence || "check";
+  const confidenceCopy = confidence === "high" ? "✓ Looks good" : confidence === "unknown" ? "? Could not determine" : "⚠ Please verify";
+  return `<div class="receipt-item-row ${confidence === "high" ? "is-ai-ready" : "is-ai-flagged"}" data-review-row="${row.id}">
+    <div class="receipt-item-heading"><strong>${escapeHtml(row.item_name || "Unknown item")}</strong><span class="ai-confidence ai-confidence-${escapeHtml(confidence)}">${confidenceCopy}</span></div>
+    <label><span>Item</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
+    <label><span>Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.price || "")}" aria-label="Price"></label>
+    <label><span>Size / amount</span><input name="size_text" value="${escapeHtml(row.size_text || "")}" aria-label="Package size or amount"></label>
+    <label><span>Category</span><select name="category" aria-label="Category">${categories.map((value) => `<option value="${value}" ${row.category === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+    <label><span>Storage</span><select name="storage_condition" aria-label="Storage or condition">${storage.map((value) => `<option value="${value}" ${row.storage_condition === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+    <details class="receipt-item-details"><summary>More details</summary><div class="receipt-item-more">
+      <label><span>Brand</span><input name="brand" value="${escapeHtml(row.brand || "")}"></label>
+      <label><span>Variant</span><input name="variant" value="${escapeHtml(row.variant || "")}"></label>
+      <label><span>Quantity</span><input name="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(row.quantity || 1)}"></label>
+      <label><span>Price type</span><select name="price_type">${priceTypes.map((value) => `<option value="${value}" ${row.price_type === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
+      <label><span>Source date</span><input name="source_date" type="date" value="${escapeHtml(row.source_date || "")}"></label>
+    </div></details>
+    ${(row.ai_warnings || []).length ? `<p class="warning span-full">${escapeHtml(row.ai_warnings.join(" "))}</p>` : ""}
+    <button class="quiet-button" type="button" data-remove-row="${row.id}">Remove item</button>
   </div>`;
+}
+
+function aiJobLabel(status) {
+  return ({ waiting: "Waiting for AI", analyzing: "Analyzing", ready_for_review: "Ready for review", needs_attention: "Needs attention", ai_failed: "AI failed", human_complete: "Human review complete" })[status] || "Not started";
 }
 
 function renderReceiptReview(data) {
   const batch = data.batch || {};
   const rows = batch.rows || [];
+  const ai = data.ai || {};
+  const analysis = ai.analysis || {};
+  const jobStatus = ai.job?.status || "";
+  const flaggedCount = Number(analysis.check_count || 0) + Number(analysis.unknown_count || 0);
+  const submittedStore = batch.proof_store_name || batch.receipt_store_name || "Not selected";
+  const detectedStore = analysis.detected_store_name || "Could not determine";
   receiptReviewWorkspace.hidden = false;
   receiptReviewWorkspace.innerHTML = `
-    <div class="admin-panel-heading"><div><h2>Review Receipt #${batch.id}</h2><p class="field-help">Look at the receipt, confirm each draft item, then approve or ask for help.</p></div><button class="quiet-button" type="button" data-focus-review>Focus Mode</button></div>
+    <div class="admin-panel-heading"><div><h2>Review Proof #${batch.id}</h2><p class="field-help">AI prepares suggestions. You make the decision.</p></div><div class="card-actions"><button class="quiet-button" type="button" data-exit-review>Exit</button><button class="quiet-button" type="button" data-focus-review>Focus Mode</button></div></div>
     <div class="receipt-review-layout">
       <section class="receipt-proof-panel">
-        <h3>Receipt</h3>
+        <h3>Original proof</h3>
         ${data.proof_url ? `<img class="receipt-proof-image" src="${escapeHtml(data.proof_url + adminQuery())}" alt="Submitted receipt for manual review">` : '<div class="warning">No receipt image is available.</div>'}
-        <div class="card-actions">${data.proof_url ? `<a class="secondary-button" href="${escapeHtml(data.proof_url + adminQuery())}" target="_blank" rel="noopener">Open full size</a><a class="quiet-button" href="${escapeHtml(data.proof_url + adminQuery())}" download>Download image</a>` : ""}</div>
-        <dl><div><dt>Store</dt><dd>${escapeHtml(batch.proof_store_name || batch.receipt_store_name || "Not selected")}</dd></div><div><dt>Submitted</dt><dd>${escapeHtml(formatDate(batch.created_at))}</dd></div><div><dt>Submitted by</dt><dd>${escapeHtml(batch.created_by_username || "Community member")}</dd></div></dl>
+        <div class="card-actions">${data.proof_url ? `<a class="secondary-button" href="${escapeHtml(data.proof_url + adminQuery())}" target="_blank" rel="noopener">Open Large</a><a class="quiet-button" href="${escapeHtml(data.proof_url + adminQuery())}" download>Download</a>` : ""}</div>
+        <dl><div><dt>Submitted</dt><dd>${escapeHtml(formatDate(batch.created_at))}</dd></div><div><dt>Submitted by</dt><dd>${escapeHtml(batch.created_by_username || "Community member")}</dd></div></dl>
       </section>
       <section class="receipt-items-panel">
-        <h3>Items</h3>
+        <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong>${escapeHtml(aiJobLabel(jobStatus))}</strong></div><button class="quiet-button" type="button" data-rerun-ai>Re-run AI</button></div>
+        ${analysis.id ? `<section class="store-comparison ${analysis.store_mismatch ? "has-mismatch" : ""}"><h4>${analysis.store_mismatch ? "⚠ Store mismatch" : "Store"}</h4><p><strong>Submitted:</strong> ${escapeHtml(submittedStore)}</p><p><strong>AI believes:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.store_mismatch ? `<div class="card-actions"><button class="secondary-button" type="button" data-store-resolution="use_ai">Use ${escapeHtml(detectedStore)}</button><button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep ${escapeHtml(submittedStore)}</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div>` : ""}</section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
+        <div class="items-summary"><h3>${rows.length} item${rows.length === 1 ? "" : "s"} found</h3>${analysis.id ? `<span>${analysis.ready_count || 0} ✓ ready · ${analysis.check_count || 0} ⚠ check · ${analysis.unknown_count || 0} ? unknown</span>` : ""}${flaggedCount ? `<button class="secondary-button" type="button" data-toggle-ready>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>` : ""}</div>
         <div id="receiptEditableRows">${rows.map(reviewRowMarkup).join("") || '<div class="empty-state">No draft items yet.</div>'}</div>
-        <details open><summary>Paste AI Results</summary><p class="field-help">Paste pipe-delimited, CSV, or JSON results. Grocery fields and header-style STORE/DATE blocks are supported. Every result remains a draft until a person approves it.</p><textarea id="receiptAiPaste" rows="7" placeholder="Milk 2% | Kwik Trip | 1 gal | 1 | 3.49 | Dairy &amp; Eggs | Refrigerated | Regular"></textarea><button class="secondary-button" type="button" data-parse-ai>Turn Into Editable Items</button></details>
+        <details><summary>Manual fallbacks</summary><p class="field-help">If AI cannot finish, paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
         <div class="review-actions">
           <button class="quiet-button" type="button" data-help-reason="Receipt image cannot be read">Can't Read</button>
           <button class="quiet-button" type="button" data-help-reason="Possible duplicate receipt">Duplicate</button>
@@ -884,11 +899,50 @@ function renderReceiptReview(data) {
   }
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-remove-row]")) button.addEventListener("click", () => removeReviewRow(button.dataset.removeRow));
   receiptReviewWorkspace.querySelector("[data-parse-ai]")?.addEventListener("click", () => parseAiResults(batch.id));
+  receiptReviewWorkspace.querySelector("[data-add-manual-row]")?.addEventListener("click", () => addManualReviewRow(batch.id));
+  receiptReviewWorkspace.querySelector("[data-rerun-ai]")?.addEventListener("click", () => rerunAi(batch.id));
+  receiptReviewWorkspace.querySelector("[data-exit-review]")?.addEventListener("click", () => releaseAndExitReview(batch.id));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-store-resolution]")) button.addEventListener("click", () => resolveReviewStore(batch.id, button.dataset.storeResolution));
+  receiptReviewWorkspace.querySelector("[data-toggle-ready]")?.addEventListener("click", (event) => {
+    const hiding = !receiptReviewWorkspace.classList.contains("show-flagged-only");
+    receiptReviewWorkspace.classList.toggle("show-flagged-only", hiding);
+    event.currentTarget.textContent = hiding ? `View all ${rows.length}` : `Review ${flaggedCount} flagged items`;
+  });
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-help-reason]")) button.addEventListener("click", () => escalateReview(batch.id, button.dataset.helpReason));
   receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
   receiptReviewWorkspace.querySelector("[data-approve-rows]")?.addEventListener("click", () => approveReviewRows(batch));
   receiptReviewWorkspace.querySelector("[data-save-next]")?.addEventListener("click", () => saveAndReviewNext(batch.id));
   receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
+}
+
+async function rerunAi(batchId) {
+  try {
+    const data = await fetchJson(`/api/admin/v2/reviews/${batchId}/re-run-ai${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason: "Staff requested a fresh proof analysis." }) });
+    setMessage(inboxMessage, data.message, "success");
+    window.setTimeout(() => openReceiptReview(batchId), 1200);
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function resolveReviewStore(batchId, action) {
+  try {
+    const data = await fetchJson(`/api/admin/v2/reviews/${batchId}/store-resolution${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), action }) });
+    setMessage(inboxMessage, data.message, "success");
+    await openReceiptReview(batchId);
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function addManualReviewRow(batchId) {
+  try {
+    await fetchJson(`/api/admin/price-imports/${batchId}/rows${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), item_name: "New item", price: null, category: "other", storage_condition: "unknown", status: "needs_edit" }) });
+    const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+    renderReceiptReview(review);
+  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+}
+
+async function releaseAndExitReview(batchId) {
+  try { await fetchJson(`/api/admin/v2/reviews/${batchId}/release${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); } catch (error) { /* An expired claim should not trap the worker. */ }
+  receiptReviewWorkspace.hidden = true;
+  openAdminTab("inboxTab");
 }
 
 async function saveReviewRow(rowElement) {
@@ -2941,6 +2995,13 @@ function renderProductTools() {
             <button class="quiet-button" type="button" data-hide-product="${product.id}">Hide product</button>
             <button class="danger-button" type="button" data-merge-product="${product.id}">Merge duplicate</button>
           </div>
+          <div class="admin-control-grid" data-product-image-form="${product.id}">
+            ${product.image_url ? `<img class="admin-upload-preview-image" src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.image_alt_text || product.display_name)}">` : '<div class="empty-state">No approved product image. A category placeholder is shown publicly.</div>'}
+            <label><span>Product photo</span><input name="product_image" type="file" accept="image/jpeg,image/png,image/webp"></label>
+            <label><span>Alt text</span><input name="alt_text" maxlength="240" value="${escapeHtml(product.image_alt_text || `${product.display_name} product image`)}"></label>
+            <label><span>Image source note</span><input name="source_note" maxlength="300" placeholder="Admin photo, authorized manufacturer asset, etc."></label>
+            <button class="secondary-button" type="button" data-upload-product-image="${product.id}">Upload image draft</button>
+          </div>
         </details>
       `).join("") : '<div class="empty-state">No products yet. Create one here or from an unlinked report.</div>'}
     </article>
@@ -3010,6 +3071,10 @@ function renderProductTools() {
     button.addEventListener("click", () => mergeProduct(button.dataset.mergeProduct));
   }
 
+  for (const button of productToolsContent.querySelectorAll("[data-upload-product-image]")) {
+    button.addEventListener("click", () => uploadProductImage(button.dataset.uploadProductImage));
+  }
+
   for (const button of productToolsContent.querySelectorAll("[data-link-report-product]")) {
     button.addEventListener("click", () => linkReportProduct(button.dataset.linkReportProduct));
   }
@@ -3070,6 +3135,26 @@ async function saveProduct(productId, overrides = {}) {
   } catch (error) {
     setAdminMessage(error.message, "error");
   }
+}
+
+async function uploadProductImage(productId) {
+  const container = productToolsContent.querySelector(`[data-product-image-form="${productId}"]`);
+  const input = container?.querySelector('[name="product_image"]');
+  if (!input?.files?.length) { setAdminMessage("Choose a product photo first.", "error"); return; }
+  const body = new FormData();
+  body.append("product_image", input.files[0]);
+  body.append("alt_text", container.querySelector('[name="alt_text"]')?.value || "Product image");
+  body.append("source_note", container.querySelector('[name="source_note"]')?.value || "Admin-uploaded product photo");
+  body.append("pin", getPin());
+  try {
+    const data = await fetchJson(`/api/admin/products/${productId}/images${adminQuery()}`, { method: "POST", body });
+    setAdminMessage(data.message, "success");
+    if (window.confirm("The image is a private draft. Approve it as this product's primary public image now?")) {
+      await fetchJson(`/api/admin/product-images/${data.image.id}/moderate${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "approved", is_primary: true, alt_text: container.querySelector('[name="alt_text"]')?.value || "Product image", source_note: container.querySelector('[name="source_note"]')?.value || "Admin-uploaded product photo" }) });
+      setAdminMessage("Product image approved.", "success");
+    }
+    await loadAdminData();
+  } catch (error) { setAdminMessage(error.message, "error"); }
 }
 
 async function mergeProduct(productId) {
@@ -5437,9 +5522,77 @@ async function undoSelectedImportBatch() {
   }
 }
 
+function renderCatalogImport(batch) {
+  if (!catalogImportResults || !batch) return;
+  catalogImportResults.dataset.batchId = batch.id;
+  catalogImagesForm.hidden = false;
+  catalogImagesForm.elements.batch_id.value = batch.id;
+  const rows = batch.rows || [];
+  catalogImportResults.innerHTML = `<div class="admin-panel-heading"><div><h4>${escapeHtml(batch.title || `Catalog #${batch.id}`)}</h4><p>${rows.length} draft product${rows.length === 1 ? "" : "s"}. Nothing is public yet.</p></div><button class="primary-button" type="button" data-publish-catalog>Publish reviewed drafts</button></div>${rows.map((row) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml([row.brand, row.variant, row.size_text].filter(Boolean).join(" · ") || "No extra details")}</span><span>${escapeHtml(titleCase(row.category || "other"))} · Image: ${escapeHtml(titleCase(row.image_match_confidence || "not matched"))}</span>${row.duplicate_product_id ? `<span class="warning">Possible duplicate of product #${row.duplicate_product_id}</span>` : ""}${(row.warnings || []).map((warning) => `<span class="warning">${escapeHtml(warning)}</span>`).join("")}</div><span class="badge ${row.status === "published" ? "confidence-high" : "status-ready"}">${escapeHtml(titleCase(row.status))}</span></article>`).join("")}`;
+  catalogImportResults.querySelector("[data-publish-catalog]")?.addEventListener("click", () => publishCatalog(batch.id));
+}
+
+async function submitCatalogImport(event) {
+  event.preventDefault();
+  const form = new FormData(catalogImportForm);
+  try {
+    setMessage(catalogImportMessage, "Creating draft catalog...");
+    const data = await fetchJson(`/api/admin/catalog-imports${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), title: form.get("title"), csv_text: form.get("catalog_text") }) });
+    setMessage(catalogImportMessage, data.message, "success");
+    renderCatalogImport(data.batch);
+  } catch (error) { setMessage(catalogImportMessage, error.message, "error"); }
+}
+
+async function submitCatalogImages(event) {
+  event.preventDefault();
+  const batchId = catalogImagesForm.elements.batch_id.value;
+  const body = new FormData(catalogImagesForm);
+  body.append("pin", getPin());
+  try {
+    setMessage(catalogImportMessage, "Matching images to draft products...");
+    const data = await fetchJson(`/api/admin/catalog-imports/${batchId}/images${adminQuery()}`, { method: "POST", body });
+    setMessage(catalogImportMessage, data.message, "success");
+    renderCatalogImport(data.batch);
+  } catch (error) { setMessage(catalogImportMessage, error.message, "error"); }
+}
+
+async function publishCatalog(batchId) {
+  if (!window.confirm("Publish reviewed, non-duplicate catalog drafts? Uncertain image matches will remain private.")) return;
+  try {
+    const data = await fetchJson(`/api/admin/catalog-imports/${batchId}/publish${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+    setMessage(catalogImportMessage, data.message, "success");
+    renderCatalogImport(data.batch);
+    await loadAdminData();
+  } catch (error) { setMessage(catalogImportMessage, error.message, "error"); }
+}
+
+async function loadAiSettings() {
+  if (!aiSettingsForm) return;
+  try {
+    const data = await fetchJson(`/api/admin/operations/ai-settings${adminQuery()}`);
+    const settings = data.settings || {};
+    for (const name of ["max_analyses_per_hour", "max_analyses_per_day", "retry_limit", "model"]) aiSettingsForm.elements[name].value = settings[name] ?? "";
+    aiSettingsForm.elements.enabled.checked = Boolean(settings.enabled);
+    aiSettingsForm.elements.manual_only.checked = Boolean(settings.manual_only);
+    setMessage(aiSettingsMessage, settings.credential_configured ? `Provider configured: ${settings.provider}.` : "No server-side AI credential is configured. Manual fallback remains available.", settings.credential_configured ? "success" : "info");
+  } catch (error) { setMessage(aiSettingsMessage, error.message, "error"); }
+}
+
+async function saveAiSettings(event) {
+  event.preventDefault();
+  const form = new FormData(aiSettingsForm);
+  try {
+    const data = await fetchJson(`/api/admin/operations/ai-settings${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), enabled: form.get("enabled") === "on", manual_only: form.get("manual_only") === "on", max_analyses_per_hour: form.get("max_analyses_per_hour"), max_analyses_per_day: form.get("max_analyses_per_day"), retry_limit: form.get("retry_limit"), model: form.get("model") }) });
+    setMessage(aiSettingsMessage, data.message, "success");
+  } catch (error) { setMessage(aiSettingsMessage, error.message, "error"); }
+}
+
 function setupAdminTabs() {
   for (const button of document.querySelectorAll("[data-admin-tab]")) {
     button.addEventListener("click", () => goToAdminTab(button.dataset.adminTab));
+  }
+  for (const button of document.querySelectorAll("[data-jump-tab]")) {
+    button.addEventListener("click", () => goToAdminTab(button.dataset.jumpTab));
   }
 }
 
@@ -5502,6 +5655,9 @@ priceImportRejectSelected.addEventListener("click", () => bulkPriceImport("rejec
 priceImportBulkEditForm.addEventListener("submit", submitPriceImportBulkEdit);
 priceImportRemoveSelected.addEventListener("click", () => bulkPriceImport("remove"));
 priceImportUndoBatch.addEventListener("click", undoSelectedImportBatch);
+catalogImportForm?.addEventListener("submit", submitCatalogImport);
+catalogImagesForm?.addEventListener("submit", submitCatalogImages);
+aiSettingsForm?.addEventListener("submit", saveAiSettings);
 operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 reviewNextButton?.addEventListener("click", startReviewNext);

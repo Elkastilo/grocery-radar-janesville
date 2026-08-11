@@ -72,6 +72,8 @@ APP_BASE_URL=http://localhost:3000
 
 Change `SESSION_SECRET` before any real deployment.
 
+Optional proof analysis runs only on the server. Configure `AI_API_KEY` (or `OPENAI_API_KEY`), `AI_API_URL`, `AI_PROVIDER`, and `AI_MODEL`, then let the Owner enable processing and usage limits in Admin → Advanced. Without credentials—or while manual-only mode is enabled—workers can still paste structured results or enter drafts manually.
+
 Do not use a default `ADMIN_PIN` in production. The PIN fallback is read-only for dangerous admin actions; logged-in admin accounts are required for approvals, role changes, and other mutations.
 
 `HOST=0.0.0.0` makes local phone testing easier on the same Wi-Fi. The server still logs the normal localhost URL.
