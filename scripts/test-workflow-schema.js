@@ -37,7 +37,7 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
         if (productError) throw productError;
         const productColumnNames = new Set(productColumns.map((column) => column.name));
         for (const name of ["variant", "upc", "description", "default_storage_condition"]) assert.ok(productColumnNames.has(name), name);
-        database.all("SELECT version_label, status, published_at FROM homepage_patch_notes WHERE version_label = 'v0.9.3'", (releaseError, releases) => {
+        database.all("SELECT version_label, status, published_at FROM homepage_patch_notes WHERE version_label = 'v0.9.4'", (releaseError, releases) => {
           if (releaseError) throw releaseError;
           assert.equal(releases.length, 1);
           assert.equal(releases[0].status, "draft");

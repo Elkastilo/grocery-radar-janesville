@@ -809,7 +809,7 @@ async function startReviewNext() {
   const role = adminSession.staff_role || adminSession.admin_role;
   const candidate = (adminV2InboxData.items || []).find((item) => item.target_type === "price_import_batch" && (!item.claimed_by || Number(item.claimed_by) === Number(adminSession.id || adminSession.user?.id)) && (item.type !== "needs_help" || ["owner","manager"].includes(role)));
   if (!candidate) {
-    setMessage(inboxMessage, "No available receipt is waiting right now.", "success");
+    setMessage(inboxMessage, "No more proofs waiting.", "success");
     openAdminTab("inboxTab");
     return;
   }
@@ -829,7 +829,7 @@ async function openReceiptReview(batchId) {
   }
 }
 
-function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false) {
+function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false, canManageImages = false) {
   const categories = ["produce","meat","dairy","frozen","bakery","pantry","snacks","drinks","prepared food","household","health / personal care","baby","pet","other"];
   const storage = ["shelf stable","refrigerated","frozen","fresh produce","hot prepared food","cold prepared food","not applicable","unknown"];
   const priceTypes = ["regular","sale","clearance","member / loyalty","coupon-dependent","multi-buy","unknown"];
@@ -840,7 +840,8 @@ function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false
   const price = Number(row.price);
   const statusCopy = row.status === "approved" ? "Approved" : row.status === "rejected" ? `Rejected${row.rejection_reason ? ` · ${titleCase(row.rejection_reason)}` : ""}` : confidenceCopy;
   return `<article class="receipt-item-row ${confidence === "high" && row.status === "ready_for_review" ? "is-ai-ready" : "is-ai-flagged"}" data-review-row="${row.id}" data-row-status="${escapeHtml(row.status)}">
-    <div class="receipt-item-heading"><div><strong>${escapeHtml(row.item_name || "Unknown item")}</strong><div class="receipt-item-summary"><span>${Number.isFinite(price) ? `$${price.toFixed(2)}` : "Price needed"}</span><span>${escapeHtml(row.size_text || "Size unknown")}</span><span>${escapeHtml(titleCase(row.category || "other"))} · ${escapeHtml(titleCase(row.storage_condition || "unknown"))}</span></div></div><span class="ai-confidence ai-confidence-${escapeHtml(confidence)}">${escapeHtml(statusCopy)}</span></div>
+    <div class="receipt-item-heading"><div class="receipt-product-summary">${row.product_image_url ? `<img class="receipt-product-thumbnail" src="${escapeHtml(row.product_image_url)}" alt="${escapeHtml(row.product_image_alt_text || row.product_display_name || row.item_name)}" loading="lazy">` : ""}<div><strong>${escapeHtml(row.item_name || "Unknown item")}</strong><div class="receipt-item-summary"><span>${Number.isFinite(price) ? `$${price.toFixed(2)}` : "Price needed"}</span><span>${escapeHtml(row.size_text || "Size unknown")}</span><span>${escapeHtml(titleCase(row.category || "other"))} · ${escapeHtml(titleCase(row.storage_condition || "unknown"))}</span></div></div></div><span class="ai-confidence ai-confidence-${escapeHtml(confidence)}">${escapeHtml(statusCopy)}</span></div>
+    ${row.product_id && !row.product_image_url ? `<div class="missing-product-photo"><strong>No product photo</strong>${canManageImages ? `<div class="card-actions"><button class="quiet-button" type="button" data-add-review-photo="${row.product_id}" data-product-name="${escapeHtml(row.product_display_name || row.item_name)}">Add photo</button><button class="quiet-button" type="button" data-proof-crop-deferred>Use from proof</button><button class="quiet-button" type="button" data-skip-photo>Skip</button></div>` : '<span class="field-help">A category placeholder will be shown publicly.</span>'}</div>` : ""}
     ${!decided ? `<div class="receipt-item-actions"><button class="primary-button" type="button" data-approve-row="${row.id}" ${canApprove ? "" : "disabled"}>Approve</button>${canReview ? `<button class="danger-button" type="button" data-open-reject="${row.id}">Reject</button>` : ""}<button class="quiet-button" type="button" data-edit-row="${row.id}" aria-expanded="false">Edit</button></div>` : ""}
     <div class="receipt-item-edit" data-edit-fields hidden>
       <label><span>Item</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
@@ -878,6 +879,7 @@ function renderReceiptReview(data) {
   const flaggedCount = Number(summary.flagged || 0);
   const readyCount = Number(summary.ready || 0);
   const approvableReady = Number(summary.approvable_ready || 0);
+  const completedRows = data.completed_rows || [];
   const submittedStore = batch.proof_store_name || batch.receipt_store_name || "Not selected";
   const detectedStore = analysis.detected_retailer || analysis.detected_store_name || "Not determined";
   const candidateIds = new Set((analysis.store_candidates || []).map((store) => Number(store.id)));
@@ -896,18 +898,20 @@ function renderReceiptReview(data) {
       <section class="receipt-items-panel">
         <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong>${escapeHtml(aiJobLabel(jobStatus))}</strong></div><button class="quiet-button" type="button" data-rerun-ai>${ai.job ? "Re-run AI" : "Run AI"}</button></div>
         ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div></section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
-        <div class="items-summary"><div><h3>${rows.length} item${rows.length === 1 ? "" : "s"} found</h3><span>${readyCount} ready · ${flaggedCount} need review</span></div><div class="card-actions">${flaggedCount ? `<button class="secondary-button" type="button" data-toggle-ready>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>` : ""}${data.can_approve && approvableReady ? `<button class="primary-button" type="button" data-approve-ready>Approve All ${approvableReady} Ready</button>` : ""}</div></div>
-        <div id="receiptEditableRows">${rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve)).join("") || '<div class="empty-state">No draft items yet.</div>'}</div>
+        <div class="items-summary"><div><h3><span data-review-remaining>${rows.length}</span> remaining</h3><span><span data-review-ready>${readyCount}</span> ready · <span data-review-flagged>${flaggedCount}</span> need review</span></div><div class="card-actions"><button class="secondary-button" type="button" data-toggle-ready ${flaggedCount ? "" : "hidden"}>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>${data.can_approve ? `<button class="primary-button" type="button" data-approve-ready ${approvableReady ? "" : "hidden"}>Approve All <span data-approvable-ready>${approvableReady}</span> Ready</button>` : ""}</div></div>
+        <div id="receiptEditableRows">${rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve, data.can_manage_images)).join("") || '<div class="empty-state" data-review-complete>Receipt complete. <button class="primary-button" type="button" data-next-proof>Next Proof</button></div>'}</div>
+        <details class="completed-review-items" data-completed-items ${completedRows.length ? "" : "hidden"}><summary>Show completed (<span data-completed-count>${completedRows.length}</span>)</summary><div data-completed-list>${completedRows.map(completedReviewRowMarkup).join("")}</div></details>
         <details><summary>Manual fallbacks</summary><p class="field-help">If AI cannot finish, paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
         <div class="review-actions">
           <button class="quiet-button" type="button" data-help-reason="Receipt image cannot be read">Can't Read</button>
           <button class="quiet-button" type="button" data-help-reason="Possible duplicate receipt">Duplicate</button>
           <button class="quiet-button" type="button" data-help-reason="Store does not match the receipt">Wrong Store</button>
           <button class="secondary-button" type="button" data-help-reason="Manager review requested">Needs Manager Help</button>
-          <button class="danger-button" type="button" data-reject-receipt>Reject Receipt</button>
+          <button class="danger-button" type="button" data-open-proof-reject>Reject Proof</button>
           ${data.can_approve ? "" : '<span class="warning">Data Entry can save drafts but cannot publish prices.</span>'}
           <button class="primary-button" type="button" data-save-next>Save &amp; Review Next</button>
         </div>
+        <div class="receipt-reject-form" data-proof-reject-form hidden><label><span>Why reject this proof?</span><select name="proof_rejection_reason">${["proof unreadable","wrong store/source","duplicate proof","not enough price information","invalid proof","out of date","private/sensitive information","other"].map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional reviewer note</span><input name="proof_rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-reject-receipt>Reject proof and close task</button><button class="quiet-button" type="button" data-cancel-proof-reject>Cancel</button></div></div>
       </section>
     </div>`;
   receiptReviewWorkspace.scrollIntoView({ block: "start" });
@@ -923,6 +927,7 @@ function renderReceiptReview(data) {
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-cancel-reject]")) button.addEventListener("click", () => { button.closest("[data-reject-form]").hidden = true; });
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-approve-row]")) button.addEventListener("click", () => approveReviewRow(batch.id, button.dataset.approveRow));
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-confirm-reject]")) button.addEventListener("click", () => rejectReviewRow(batch.id, button.dataset.confirmReject));
+  bindReviewImageActions(batch.id);
   receiptReviewWorkspace.querySelector("[data-parse-ai]")?.addEventListener("click", () => parseAiResults(batch.id));
   receiptReviewWorkspace.querySelector("[data-add-manual-row]")?.addEventListener("click", () => addManualReviewRow(batch.id));
   receiptReviewWorkspace.querySelector("[data-rerun-ai]")?.addEventListener("click", () => rerunAi(batch.id));
@@ -934,10 +939,18 @@ function renderReceiptReview(data) {
     event.currentTarget.textContent = hiding ? `View all ${rows.length}` : `Review ${flaggedCount} flagged items`;
   });
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-help-reason]")) button.addEventListener("click", () => escalateReview(batch.id, button.dataset.helpReason));
+  receiptReviewWorkspace.querySelector("[data-open-proof-reject]")?.addEventListener("click", () => { receiptReviewWorkspace.querySelector("[data-proof-reject-form]").hidden = false; });
+  receiptReviewWorkspace.querySelector("[data-cancel-proof-reject]")?.addEventListener("click", () => { receiptReviewWorkspace.querySelector("[data-proof-reject-form]").hidden = true; });
   receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
   receiptReviewWorkspace.querySelector("[data-approve-ready]")?.addEventListener("click", () => approveReadyRows(batch.id, approvableReady));
   receiptReviewWorkspace.querySelector("[data-save-next]")?.addEventListener("click", () => saveAndReviewNext(batch.id));
   receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
+  receiptReviewWorkspace.querySelector("[data-next-proof]")?.addEventListener("click", startReviewNext);
+}
+
+function completedReviewRowMarkup(row) {
+  const label = row.status === "rejected" ? `Rejected · ${titleCase(row.rejection_reason || "Other")}` : row.status === "approved" ? "Approved" : "Removed";
+  return `<div class="completed-review-row"><strong>${escapeHtml(row.item_name || "Item")}</strong><span>${escapeHtml(label)}</span></div>`;
 }
 
 async function rerunAi(batchId) {
@@ -961,6 +974,82 @@ async function resolveReviewStore(batchId, action) {
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
+async function refreshResolvedReviewRows(batchId, resolvedRowIds) {
+  const scrollTop = window.scrollY;
+  const flaggedOnly = receiptReviewWorkspace.classList.contains("show-flagged-only");
+  const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+  for (const rowId of resolvedRowIds) receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`)?.remove();
+  const summary = review.approval_summary || {};
+  const remaining = Number(summary.unresolved || 0);
+  const ready = Number(summary.ready || 0);
+  const flagged = Number(summary.flagged || 0);
+  const approvable = Number(summary.approvable_ready || 0);
+  const setText = (selector, value) => { const element = receiptReviewWorkspace.querySelector(selector); if (element) element.textContent = value; };
+  setText("[data-review-remaining]", remaining);
+  setText("[data-review-ready]", ready);
+  setText("[data-review-flagged]", flagged);
+  setText("[data-approvable-ready]", approvable);
+  const toggle = receiptReviewWorkspace.querySelector("[data-toggle-ready]");
+  if (toggle) { toggle.hidden = !flagged; toggle.textContent = flaggedOnly ? `View all ${remaining}` : `Review ${flagged} flagged item${flagged === 1 ? "" : "s"}`; }
+  const approveReady = receiptReviewWorkspace.querySelector("[data-approve-ready]");
+  if (approveReady) approveReady.hidden = !approvable;
+  const completed = review.completed_rows || [];
+  const completedBox = receiptReviewWorkspace.querySelector("[data-completed-items]");
+  if (completedBox) {
+    completedBox.hidden = !completed.length;
+    setText("[data-completed-count]", completed.length);
+    const list = completedBox.querySelector("[data-completed-list]");
+    if (list) list.innerHTML = completed.map(completedReviewRowMarkup).join("");
+  }
+  const rowsBox = receiptReviewWorkspace.querySelector("#receiptEditableRows");
+  if (rowsBox && !remaining) {
+    rowsBox.innerHTML = '<div class="empty-state" data-review-complete>Receipt complete. <button class="primary-button" type="button" data-next-proof>Next Proof</button></div>';
+    rowsBox.querySelector("[data-next-proof]")?.addEventListener("click", startReviewNext);
+  }
+  window.requestAnimationFrame(() => {
+    window.scrollTo({ top: scrollTop, behavior: "auto" });
+    receiptReviewWorkspace.querySelector("[data-review-row] button:not([disabled]), [data-next-proof]")?.focus({ preventScroll: true });
+  });
+}
+
+function bindReviewImageActions(batchId) {
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-add-review-photo]")) button.addEventListener("click", () => openReviewPhotoDialog(batchId, button.dataset.addReviewPhoto, button.dataset.productName));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-proof-crop-deferred]")) button.addEventListener("click", () => setMessage(inboxMessage, "Proof cropping is deferred for safety. Upload a product-only crop with Add Photo.", "warning"));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-skip-photo]")) button.addEventListener("click", () => { button.closest(".missing-product-photo").hidden = true; });
+}
+
+function openReviewPhotoDialog(batchId, productId, productName) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "product-photo-dialog";
+  dialog.innerHTML = `<form method="dialog"><div class="admin-panel-heading"><div><h3>Add product photo</h3><p>Product: ${escapeHtml(productName || "Product")}</p></div><button class="quiet-button" value="cancel" aria-label="Close photo dialog">Close</button></div><label><span>Choose image</span><input name="product_image" type="file" accept="image/jpeg,image/png,image/webp" required></label><label><span>Alt text</span><input name="alt_text" maxlength="240" value="${escapeHtml(productName || "Product image")}" required></label><p class="field-help">Use only a product-only photo Grocery Radar is allowed to publish. It will be approved as the primary image.</p><div class="card-actions"><button class="primary-button" type="button" data-save-review-photo>Save product photo</button><button class="quiet-button" value="cancel">Cancel</button></div></form>`;
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.querySelector("[data-save-review-photo]").addEventListener("click", async () => {
+    const input = dialog.querySelector('[name="product_image"]');
+    if (!input.files.length) { setMessage(inboxMessage, "Choose a product photo first.", "error"); return; }
+    const body = new FormData();
+    body.append("product_image", input.files[0]);
+    body.append("alt_text", dialog.querySelector('[name="alt_text"]').value);
+    body.append("source_note", "Authorized staff upload during proof review");
+    body.append("pin", getPin());
+    try {
+      const upload = await fetchJson(`/api/admin/products/${productId}/images${adminQuery()}`, { method: "POST", body });
+      await fetchJson(`/api/admin/product-images/${upload.image.id}/moderate${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "approved", is_primary: true, alt_text: dialog.querySelector('[name="alt_text"]').value, source_note: "Authorized staff upload during proof review" }) });
+      dialog.close();
+      const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+      const updated = review.batch.rows.find((row) => Number(row.product_id) === Number(productId));
+      if (updated?.product_image_url) for (const card of receiptReviewWorkspace.querySelectorAll(`[data-review-row]`)) {
+        if (card.querySelector(`[data-add-review-photo="${productId}"]`)) {
+          card.querySelector(".missing-product-photo")?.remove();
+          card.querySelector(".receipt-product-summary")?.insertAdjacentHTML("afterbegin", `<img class="receipt-product-thumbnail" src="${escapeHtml(updated.product_image_url)}" alt="${escapeHtml(updated.product_image_alt_text || productName)}" loading="lazy">`);
+        }
+      }
+      setMessage(inboxMessage, "Product photo approved and set as primary.", "success");
+    } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+  });
+  dialog.showModal();
+}
+
 async function approveReviewRow(batchId, rowId) {
   const payload = { pin: getPin() };
   try {
@@ -972,7 +1061,7 @@ async function approveReviewRow(batchId, rowId) {
       payload.override_reason = "Owner confirmed operational self-approval in Receipt Review.";
       await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
-    renderReceiptReview(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+    await refreshResolvedReviewRows(batchId, [rowId]);
     setMessage(inboxMessage, "Item approved.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
@@ -983,7 +1072,7 @@ async function rejectReviewRow(batchId, rowId) {
   const note = row?.querySelector('[name="rejection_note"]')?.value || "";
   try {
     await fetchJson(`/api/admin/price-import-rows/${rowId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), rejection_reason: reason, admin_rejection_note: note }) });
-    renderReceiptReview(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+    await refreshResolvedReviewRows(batchId, [rowId]);
     setMessage(inboxMessage, "Item rejected. Its reason and reviewer were recorded.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
@@ -993,15 +1082,15 @@ async function approveReadyRows(batchId, count) {
   const payload = { pin: getPin() };
   try {
     try {
-      await fetchJson(`/api/admin/v2/reviews/${batchId}/approve-ready${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      var result = await fetchJson(`/api/admin/v2/reviews/${batchId}/approve-ready${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     } catch (error) {
       if (!/Owner confirmation is required/i.test(error.message) || !window.confirm("You submitted this proof yourself. Use the Owner operational override and create an audit record?")) throw error;
       payload.owner_self_approval_override = true;
       payload.override_reason = "Owner confirmed bulk ready-item self-approval in Receipt Review.";
-      await fetchJson(`/api/admin/v2/reviews/${batchId}/approve-ready${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      result = await fetchJson(`/api/admin/v2/reviews/${batchId}/approve-ready${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
-    renderReceiptReview(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
-    setMessage(inboxMessage, `${count} ready item${count === 1 ? "" : "s"} approved. Flagged items were left for review.`, "success");
+    await refreshResolvedReviewRows(batchId, result.approved_row_ids || []);
+    setMessage(inboxMessage, `${result.approved_count} ready item${result.approved_count === 1 ? "" : "s"} approved. Flagged items were left for review.`, "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
@@ -1058,11 +1147,15 @@ async function escalateReview(batchId, reason) {
 }
 
 async function rejectReceipt(batchId) {
-  if (!window.confirm("Reject this entire receipt? The user will be notified.")) return;
+  const form = receiptReviewWorkspace.querySelector("[data-proof-reject-form]");
+  const reason = form?.querySelector('[name="proof_rejection_reason"]')?.value || "";
+  const note = form?.querySelector('[name="proof_rejection_note"]')?.value || "";
+  if (!window.confirm("Reject this entire proof and close the task? The user will be notified.")) return;
   try {
-    await fetchJson(`/api/admin/proof-submissions/${batchId}/status${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "proof_rejected", admin_note: "Rejected during receipt review." }) });
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason, note }) });
+    receiptReviewWorkspace.hidden = true;
     await loadAdminData();
-    openAdminTab("inboxTab");
+    await startReviewNext();
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
@@ -3053,9 +3146,9 @@ function renderProductTools() {
       </div>
     </article>
     <article class="admin-card compact-card">
-      <h3>Products</h3>
+      <div class="admin-panel-heading"><div><h3>Products</h3><p class="field-help">${Number(productTools?.missing_photo_count || 0)} products need primary photos.</p></div><div class="card-actions"><button class="secondary-button" type="button" data-product-filter="all">All products</button><button class="quiet-button" type="button" data-product-filter="missing">Missing photos</button></div></div>
       ${products.length ? products.map((product) => `
-        <details class="technical-details product-admin-row" data-product-admin-card="${product.id}">
+        <details class="technical-details product-admin-row" data-product-admin-card="${product.id}" data-missing-photo="${product.missing_primary_image && (product.status === "active" || product.approved_price_count > 0) ? "true" : "false"}">
           <summary>
             ${escapeHtml(product.display_name)}
             <span class="badge confidence-${product.status === "active" ? "high" : "low"}">${escapeHtml(product.status)}</span>
@@ -3076,7 +3169,7 @@ function renderProductTools() {
             <button class="danger-button" type="button" data-merge-product="${product.id}">Merge duplicate</button>
           </div>
           <div class="admin-control-grid" data-product-image-form="${product.id}">
-            ${product.image_url ? `<img class="admin-upload-preview-image" src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.image_alt_text || product.display_name)}">` : '<div class="empty-state">No approved product image. A category placeholder is shown publicly.</div>'}
+            <section class="product-image-manager"><h4>Primary image</h4>${product.primary_image ? `<img class="admin-upload-preview-image" src="${escapeHtml(product.primary_image.image_url)}" alt="${escapeHtml(product.primary_image.alt_text || product.display_name)}" loading="lazy"><button class="quiet-button" type="button" data-remove-primary="${product.id}">Remove primary</button>` : '<div class="empty-state">No approved primary image. Public pages use another approved image or a category placeholder.</div>'}<h4>Other images</h4><div class="product-image-thumbnails">${(product.images || []).filter((image) => !image.is_primary).map((image) => `<div class="product-image-thumbnail"><img src="${escapeHtml(image.image_url + (image.status === "approved" ? "" : adminQuery()))}" alt="${escapeHtml(image.alt_text || product.display_name)}" loading="lazy"><span>${escapeHtml(titleCase(image.status))}</span>${image.status === "approved" ? `<button class="quiet-button" type="button" data-set-primary="${image.id}">Set Primary</button>` : ""}</div>`).join("") || '<span class="field-help">No other images.</span>'}</div></section>
             <label><span>Product photo</span><input name="product_image" type="file" accept="image/jpeg,image/png,image/webp"></label>
             <label><span>Alt text</span><input name="alt_text" maxlength="240" value="${escapeHtml(product.image_alt_text || `${product.display_name} product image`)}"></label>
             <label><span>Image source note</span><input name="source_note" maxlength="300" placeholder="Admin photo, authorized manufacturer asset, etc."></label>
@@ -3154,6 +3247,13 @@ function renderProductTools() {
   for (const button of productToolsContent.querySelectorAll("[data-upload-product-image]")) {
     button.addEventListener("click", () => uploadProductImage(button.dataset.uploadProductImage));
   }
+
+  for (const button of productToolsContent.querySelectorAll("[data-product-filter]")) button.addEventListener("click", () => {
+    const missingOnly = button.dataset.productFilter === "missing";
+    for (const card of productToolsContent.querySelectorAll("[data-product-admin-card]")) card.hidden = missingOnly && card.dataset.missingPhoto !== "true";
+  });
+  for (const button of productToolsContent.querySelectorAll("[data-set-primary]")) button.addEventListener("click", () => moderateProductImage(button.dataset.setPrimary, "approved", true));
+  for (const button of productToolsContent.querySelectorAll("[data-remove-primary]")) button.addEventListener("click", () => removeProductPrimary(button.dataset.removePrimary));
 
   for (const button of productToolsContent.querySelectorAll("[data-link-report-product]")) {
     button.addEventListener("click", () => linkReportProduct(button.dataset.linkReportProduct));
@@ -3235,6 +3335,21 @@ async function uploadProductImage(productId) {
     }
     await loadAdminData();
   } catch (error) { setAdminMessage(error.message, "error"); }
+}
+
+async function moderateProductImage(imageId, status, isPrimary) {
+  try {
+    const data = await fetchJson(`/api/admin/product-images/${imageId}/moderate${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status, is_primary: isPrimary }) });
+    setAdminMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) { setAdminMessage(error.message, "error"); }
+}
+
+async function removeProductPrimary(productId) {
+  const product = (productTools?.products || []).find((entry) => Number(entry.id) === Number(productId));
+  const primary = (product?.images || []).find((image) => image.status === "approved" && image.is_primary);
+  if (!primary || !window.confirm("Remove the primary designation? The approved image remains available and public fallback rules still apply.")) return;
+  await moderateProductImage(primary.id, "approved", false);
 }
 
 async function mergeProduct(productId) {

@@ -675,6 +675,17 @@ const REVIEW_ROW_REJECTION_REASONS = [
   "other"
 ];
 
+const REVIEW_PROOF_REJECTION_REASONS = [
+  "proof unreadable",
+  "wrong store/source",
+  "duplicate proof",
+  "not enough price information",
+  "invalid proof",
+  "out of date",
+  "private/sensitive information",
+  "other"
+];
+
 const PROOF_SUBMISSION_NOTE_PREFIX = "Proof submission details";
 const PROOF_SUBMISSION_STATUSES = [
   "needs_admin_review",
@@ -1177,6 +1188,9 @@ function formatPriceImportRow(row) {
     price_report_id: row.price_report_id || null,
     product_id: row.product_id || null,
     product_display_name: row.product_display_name || "",
+    product_image_id: row.product_image_id || null,
+    product_image_url: row.product_image_id ? `/api/product-images/${row.product_image_id}/file` : "",
+    product_image_alt_text: row.product_image_alt_text || "",
     store_id: row.store_id || null,
     store_name: row.store_name || "",
     item_name: row.item_name || "",
@@ -8804,7 +8818,14 @@ app.post("/api/admin/product-images/:id/moderate", requireAdminAccess, requireLo
   if (primary) await run("UPDATE product_images SET is_primary = 0, updated_at = ? WHERE product_id = ?", [now, image.product_id]);
   await run("UPDATE product_images SET status = ?, is_primary = ?, alt_text = ?, source_note = ?, moderated_by = ?, moderated_at = ?, updated_at = ? WHERE id = ?", [status, primary ? 1 : 0, cleanText(request.body.alt_text || image.alt_text, 240), cleanText(request.body.source_note || image.source_note, 300), request.adminUser.id, now, now, imageId]);
   await recordAdminAudit({ adminUserId: request.adminUser.id, action: `PRODUCT_IMAGE_${status.toUpperCase()}`, affectedType: "product_image", affectedId: imageId, metadata: { product_id: image.product_id, primary } });
-  response.json({ message: `Product image ${status}.` });
+  const saved = await get("SELECT id, product_id, alt_text, status, is_primary FROM product_images WHERE id = ?", [imageId]);
+  response.json({ message: `Product image ${status}.`, image: { ...saved, image_url: saved.status === "approved" ? `/api/product-images/${saved.id}/file` : "" } });
+}));
+
+app.get("/api/admin/product-images/:id/file", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const image = await get("SELECT image_path FROM product_images WHERE id = ?", [Number.parseInt(request.params.id, 10)]);
+  if (!image) { response.status(404).send("Image not found."); return; }
+  sendUploadFileByFilename(path.basename(image.image_path), response);
 }));
 
 app.get("/api/product-images/:id/file", asyncRoute(async (request, response) => {
@@ -9810,6 +9831,16 @@ async function priceImportRowsForBatchIds(batchIds) {
         rows.*,
         stores.name AS store_name,
         products.display_name AS product_display_name,
+        (
+          SELECT product_images.id FROM product_images
+          WHERE product_images.product_id = rows.product_id AND product_images.status = 'approved'
+          ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
+        ) AS product_image_id,
+        (
+          SELECT product_images.alt_text FROM product_images
+          WHERE product_images.product_id = rows.product_id AND product_images.status = 'approved'
+          ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
+        ) AS product_image_alt_text,
         creator.username AS created_by_username,
         updater.username AS updated_by_username,
         approver.username AS approved_by_username,
@@ -13771,6 +13802,7 @@ async function adminV2Inbox() {
       LEFT JOIN price_import_rows rows ON rows.batch_id = batches.id AND rows.status NOT IN ('removed','rejected')
       WHERE batches.notes LIKE ?
         AND batches.status NOT IN ('proof_rejected','reviewed_no_prices','completed')
+        AND COALESCE(batches.review_decision, '') NOT IN ('completed','rejected')
       GROUP BY batches.id
       ORDER BY
         CASE WHEN batches.review_status = 'needs_help' THEN 1 WHEN batches.review_claimed_by IS NULL THEN 2 ELSE 3 END,
@@ -13855,13 +13887,15 @@ app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdm
   const readyRows = unresolvedRows.filter((row) => row.status === "ready_for_review" && row.ai_confidence === "high");
   const approvableRows = readyRows.filter((row) => ai.analysis?.resolved_store_id && row.store_id && row.item_name && Number(row.price) > 0 && !(row.ai_warnings || []).length && !row.duplicate_warning);
   response.json({
-    batch: formatPriceImportBatch(batch, rows),
+    batch: formatPriceImportBatch(batch, unresolvedRows),
+    completed_rows: formattedRows.filter((row) => ["approved", "rejected", "removed"].includes(row.status)),
     ai,
     stores: await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"),
     approval_summary: { ready: readyRows.length, flagged: unresolvedRows.length - readyRows.length, approvable_ready: approvableRows.length, unresolved: unresolvedRows.length },
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
     can_review: staffCan(request.adminUser, "review"),
     can_approve: staffCan(request.adminUser, "approve"),
+    can_manage_images: staffCan(request.adminUser, "manage"),
     focus_mode_available: true
   });
 }));
@@ -13928,6 +13962,29 @@ app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, req
     results.push(await approvePriceImportRow(row.id, request.adminUser, { ownerSelfApprovalOverride: request.body.owner_self_approval_override === true, overrideReason: request.body.override_reason }));
   }
   response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/reject", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+    response.status(403).json({ error: "Only the current reviewer or a Manager can reject this proof." });
+    return;
+  }
+  const reason = cleanText(request.body.reason, 80).toLowerCase();
+  if (!REVIEW_PROOF_REJECTION_REASONS.includes(reason)) { response.status(400).json({ error: "Choose a valid proof rejection reason." }); return; }
+  const note = cleanText(request.body.note || "", 500);
+  const now = new Date().toISOString();
+  const unresolved = await all("SELECT id FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [batchId]);
+  await run("UPDATE price_import_rows SET status = 'rejected', rejection_reason = ?, admin_rejection_note = ?, rejected_by = ?, rejected_at = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [reason, note, request.adminUser.id, now, request.adminUser.id, now, batchId]);
+  await run("UPDATE price_import_batches SET status = 'proof_rejected', review_status = 'rejected', review_decision = 'rejected', review_completed_at = ?, rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, notes = COALESCE(notes, '') || ?, updated_at = ? WHERE id = ?", [now, batchId, `\nProof rejected: ${reason}${note ? ` — ${note}` : ""}`, now, batchId]);
+  for (const row of unresolved) await recordPriceEvent({ batchId, rowId: row.id, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true } });
+  await recordPriceEvent({ batchId, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true, rejected_draft_count: unresolved.length } });
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'rejected', ?, ?)", [batchId, request.adminUser.id, reason, now]);
+  await run("UPDATE ai_proof_jobs SET status = 'human_complete', updated_at = ? WHERE proof_id = ?", [now, batchId]);
+  if (batch.created_by) await createUserNotification(batch.created_by, "proof_reviewed", "Your proof was reviewed", `Your proof was not accepted: ${reason}.`, { related_type: "proof_submission", related_id: batchId, target_tab: "accountView", target_url: `/?tab=accountView&section=contributions&proof=${batchId}` });
+  response.json({ message: "Proof rejected and removed from the review queue.", rejected_row_count: unresolved.length });
 }));
 
 app.get("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
@@ -16086,11 +16143,25 @@ app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (reques
       LIMIT 20
     `
   );
+  const productIds = products.map((product) => product.id);
+  const productImages = productIds.length ? await all(`SELECT id, product_id, alt_text, source_type, source_note, status, is_primary, uploaded_by, moderated_by, moderated_at, created_at FROM product_images WHERE product_id IN (${productIds.map(() => "?").join(",")}) ORDER BY product_id, is_primary DESC, id ASC`, productIds) : [];
+  const imagesByProduct = new Map();
+  for (const image of productImages) {
+    const list = imagesByProduct.get(image.product_id) || [];
+    list.push({ ...image, image_url: image.status === "approved" ? `/api/product-images/${image.id}/file` : `/api/admin/product-images/${image.id}/file` });
+    imagesByProduct.set(image.product_id, list);
+  }
+  const formattedProducts = products.map((product) => {
+    const images = imagesByProduct.get(product.id) || [];
+    const primaryImage = images.find((image) => image.status === "approved" && image.is_primary) || null;
+    return { ...formatProduct(product), images, primary_image: primaryImage, missing_primary_image: !primaryImage };
+  });
 
   response.json({
     message: "Product tools help organize real user reports into admin-controlled products.",
     product_statuses: PRODUCT_STATUSES,
-    products: products.map(formatProduct),
+    products: formattedProducts,
+    missing_photo_count: formattedProducts.filter((product) => (product.status === "active" || product.approved_price_count > 0) && product.missing_primary_image).length,
     pending_product_candidates: products.filter((product) => product.status === "needs_review").map(formatProduct),
     unlinked_reports: unlinkedReports.map(formatReport),
     reports_missing_product_info: productInfoNeeds.map(formatReport),

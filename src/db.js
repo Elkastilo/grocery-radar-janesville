@@ -1334,31 +1334,30 @@ async function initDb() {
         known_issues_json, next_focus_json, release_date, internal_commit_hash,
         status, published_at, created_at, updated_at
       )
-      SELECT ?, 'Prices + AI Accuracy',
-        'Prices are easier to find, AI store handling is more accurate, and Grocery Radar now has permanent public release notes.',
+      SELECT ?, 'Faster Reviews + Product Photos',
+        'Receipt review is faster and product photos are easier to manage.',
         ?, ?, ?, ?, '[]', NULL, '', 'draft', NULL, ?, ?
       WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = ?)
     `,
     [
       `v${APP_VERSION}`,
       JSON.stringify([
-        "Public product prices are easier to see throughout Grocery Radar.",
-        "New What's New / release-note system."
+        "Product photos can now be managed directly from Grocery Radar.",
+        "Products missing photos are easier for admins to find."
       ]),
       JSON.stringify([
-        "Receipt review store detection.",
-        "Price normalization for unit and estimated prices.",
-        "Product category/storage suggestions.",
-        "Public product and store browsing."
+        "Receipt review stays in place while approving and rejecting items.",
+        "Completed items disappear from the active review automatically.",
+        "Product cards handle missing images more cleanly."
       ]),
       JSON.stringify([
-        "Unknown retailer suggestions can no longer be selected as a real store.",
-        "Improved handling of grocery prices such as per-pound versus estimated-each pricing."
+        "Rejected items no longer remain in the active review list.",
+        "Rejected proofs leave the review queue correctly.",
+        "Approving items no longer jumps reviewers back to the top of the page."
       ]),
       JSON.stringify([
-        "AI may still need human help identifying exact store locations.",
-        "Some older products may not yet have images or current prices.",
-        "Product catalog coverage is still growing."
+        "Some products still need real product photos.",
+        "AI may still require human correction on unusual proofs."
       ]),
       now,
       now,

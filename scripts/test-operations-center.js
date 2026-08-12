@@ -407,6 +407,9 @@ async function main() {
     assert.equal(flaggedRows.length, 2);
     const rejectedFlagged = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[0].id}/reject`, { rejection_reason: "wrong price", admin_rejection_note: "Price is not legible enough." });
     assert.equal(rejectedFlagged.response.status, 200, JSON.stringify(rejectedFlagged.body));
+    const afterSingleRejection = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    assert.equal(afterSingleRejection.body.batch.rows.some((row) => row.id === flaggedRows[0].id), false, "Rejected rows must leave the active review list.");
+    assert.equal(afterSingleRejection.body.completed_rows.some((row) => row.id === flaggedRows[0].id && row.status === "rejected"), true, "Rejected rows must remain available as completed history.");
     const rejectedRecord = await queryTempDb(app.dataDir, "SELECT rejection_reason, admin_rejection_note, rejected_by, rejected_at, price_report_id FROM price_import_rows WHERE id = ?", [flaggedRows[0].id]);
     assert.equal(rejectedRecord.rejection_reason, "wrong price");
     assert.equal(rejectedRecord.rejected_by, reviewerRegistration.user.id);
@@ -523,6 +526,13 @@ async function main() {
     assert.equal(afterImageApproval.body.product.image_alt_text, "Catalog Duplicate Bread package");
     const publicImage = await normal.get(afterImageApproval.body.product.image_url);
     assert.equal(publicImage.response.status, 200);
+    const blockedReviewerImage = await reviewer.request(`/api/admin/products/${catalogProductResult.lastID}/images`, { method: "POST", body: productImageForm });
+    assert.equal(blockedReviewerImage.response.status, 403, "Reviewers cannot manage arbitrary product images.");
+    const productToolsAfterImage = await owner.get("/api/admin/product-tools");
+    const imageManagedProduct = productToolsAfterImage.body.products.find((product) => product.id === catalogProductResult.lastID);
+    assert.ok(imageManagedProduct.images.some((image) => image.id === productImage.body.image.id && image.is_primary));
+    assert.equal(imageManagedProduct.primary_image.id, productImage.body.image.id);
+    assert.equal(imageManagedProduct.missing_primary_image, false);
 
     const ownerHome = await owner.get("/api/admin/v2/home");
     assert.equal(ownerHome.response.status, 200, JSON.stringify(ownerHome.body));
@@ -546,6 +556,22 @@ async function main() {
     assert.equal(firstClaim.response.status, 200, JSON.stringify(firstClaim.body));
     const conflictingClaim = await owner.post(`/api/admin/v2/reviews/${reviewBatchId}/claim`, {});
     assert.equal(conflictingClaim.response.status, 409);
+
+    const rejectProofBatchId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Proof rejection close test");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/claim`, {})).response.status, 200);
+    const proofRows = await reviewer.post(`/api/admin/price-imports/${rejectProofBatchId}/parse-price-text`, { source_text: "Bananas | 1 lb | 0.49\nMilk | 1 gal | 3.49" });
+    assert.equal(proofRows.response.status, 201, JSON.stringify(proofRows.body));
+    const rejectedProof = await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/reject`, { reason: "proof unreadable", note: "The lower half cannot be verified." });
+    assert.equal(rejectedProof.response.status, 200, JSON.stringify(rejectedProof.body));
+    const closedProof = await queryTempDb(app.dataDir, "SELECT status, review_status, review_decision, review_claimed_by, review_completed_at FROM price_import_batches WHERE id = ?", [rejectProofBatchId]);
+    assert.equal(closedProof.status, "proof_rejected");
+    assert.equal(closedProof.review_decision, "rejected");
+    assert.equal(closedProof.review_claimed_by, null);
+    assert.ok(closedProof.review_completed_at);
+    const closedRows = await queryTempDb(app.dataDir, "SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status != 'rejected'", [rejectProofBatchId]);
+    assert.equal(closedRows.count, 0);
+    const inboxAfterProofRejection = await reviewer.get("/api/admin/v2/inbox");
+    assert.equal(inboxAfterProofRejection.body.items.some((item) => item.target_id === rejectProofBatchId), false, "Rejected proof must leave the Inbox.");
 
     const aiDrafts = await dataEntry.post(`/api/admin/price-imports/${reviewBatchId}/parse-price-text`, {
       source_text: "Milk 2% | 1 gal | 3.49\nLarge Eggs | 12 ct | 2.89"
@@ -673,11 +699,12 @@ async function main() {
     assert.equal(heartbeatOne.body.streak.current, 1);
     const heartbeatSameDay = await normal.post("/api/heartbeat", { visitor_id: "operations-test-visitor" });
     assert.equal(heartbeatSameDay.body.streak.current, 1);
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const janesvilleDate = (offsetDays) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + offsetDays * 86400000));
+    const yesterday = janesvilleDate(-1);
     await updateTempUser(app.dataDir, "UPDATE user_engagement SET current_streak = 1, last_qualifying_date = ? WHERE user_id = ?", [yesterday, normalRegistration.user.id]);
     const heartbeatNextDay = await normal.post("/api/heartbeat", { visitor_id: "operations-test-visitor" });
     assert.equal(heartbeatNextDay.body.streak.current, 2);
-    const missed = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+    const missed = janesvilleDate(-3);
     await updateTempUser(app.dataDir, "UPDATE user_engagement SET current_streak = 7, last_qualifying_date = ? WHERE user_id = ?", [missed, normalRegistration.user.id]);
     const heartbeatAfterMiss = await normal.post("/api/heartbeat", { visitor_id: "operations-test-visitor" });
     assert.equal(heartbeatAfterMiss.body.streak.current, 1);
@@ -800,10 +827,10 @@ async function main() {
     assert.ok(Array.isArray(initialHomepageService.body.known_issues));
     assert.equal(JSON.stringify(initialHomepageService.body).includes(OWNER_EMAIL), false);
     assert.equal(JSON.stringify(initialHomepageService.body).includes("password"), false);
-    assert.equal(initialHomepageService.body.application_version, "0.9.3");
+    assert.equal(initialHomepageService.body.application_version, "0.9.4");
     const initialReleases = await normal.get("/api/releases");
     assert.equal(initialReleases.response.status, 200);
-    assert.equal(initialReleases.body.releases.some((release) => release.version_label === "v0.9.3"), false, "The seeded v0.9.3 draft must not be public.");
+    assert.equal(initialReleases.body.releases.some((release) => release.version_label === "v0.9.4"), false, "The seeded v0.9.4 draft must not be public.");
 
     const blockedHomepageStatus = await normal.post("/api/admin/operations/homepage-service/status", {
       service_status: "maintenance",
@@ -870,14 +897,14 @@ async function main() {
     assert.equal(hiddenPatch.response.status, 201, JSON.stringify(hiddenPatch.body));
     const ownerReleaseNotes = await owner.get("/api/admin/v2/release-notes");
     assert.equal(ownerReleaseNotes.response.status, 200);
-    const seededReleaseDraft = ownerReleaseNotes.body.releases.find((release) => release.version_label === "v0.9.3" && release.status === "draft");
+    const seededReleaseDraft = ownerReleaseNotes.body.releases.find((release) => release.version_label === "v0.9.4" && release.status === "draft");
     assert.ok(seededReleaseDraft);
     assert.equal((await reviewer.get("/api/admin/v2/release-notes")).response.status, 403);
     assert.equal((await reviewer.post(`/api/admin/operations/homepage-service/patch-notes/${seededReleaseDraft.id}`, { ...seededReleaseDraft, status: "published" })).response.status, 403);
     const publishSeededRelease = await owner.post(`/api/admin/operations/homepage-service/patch-notes/${seededReleaseDraft.id}`, { ...seededReleaseDraft, status: "published", release_date: "2026-08-11" });
     assert.equal(publishSeededRelease.response.status, 200, JSON.stringify(publishSeededRelease.body));
     const releasesAfterPublish = await normal.get("/api/releases");
-    assert.ok(releasesAfterPublish.body.releases.some((release) => release.version_label === "v0.9.3"));
+    assert.ok(releasesAfterPublish.body.releases.some((release) => release.version_label === "v0.9.4"));
     const publishedRelease = releasesAfterPublish.body.releases.find((release) => release.id === publicPatch.body.patch_note.id);
     assert.ok(publishedRelease);
     assert.deepEqual(publishedRelease.improved, ["Clearer Janesville early-access messaging"]);
