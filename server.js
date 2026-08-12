@@ -11851,12 +11851,12 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
             ELSE status
           END,
           approved_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'approved'),
-          review_completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN ? ELSE review_completed_at END,
-          review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN 'completed' ELSE review_decision END,
+          review_status = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN 'ready_to_finish' ELSE review_status END,
+          review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved', 'rejected', 'removed')) THEN 'ready_to_finish' ELSE review_decision END,
           updated_at = ?
       WHERE id = ?
     `,
-    [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, row.batch_id, row.batch_id, submittedAt, row.batch_id, submittedAt, row.batch_id]
+    [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, row.batch_id, row.batch_id, row.batch_id, submittedAt, row.batch_id]
   );
   const unfinishedAfterApproval = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [row.batch_id]);
   if (!Number(unfinishedAfterApproval?.count || 0)) {
@@ -13405,7 +13405,7 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
   );
   const batch = await priceImportBatchById(existing.batch_id);
   await recordPriceEvent({ batchId: existing.batch_id, rowId, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch?.created_by, reason: rejectionReason, metadata: { reviewer_note: cleanText(request.body.admin_rejection_note || "", 500) } });
-  await run("UPDATE price_import_batches SET rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN ? ELSE review_completed_at END, review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'completed' ELSE review_decision END, updated_at = ? WHERE id = ?", [existing.batch_id, existing.batch_id, now, existing.batch_id, now, existing.batch_id]);
+  await run("UPDATE price_import_batches SET rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_status = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_status END, review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_decision END, updated_at = ? WHERE id = ?", [existing.batch_id, existing.batch_id, existing.batch_id, now, existing.batch_id]);
   const unfinished = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [existing.batch_id]);
   if (!Number(unfinished?.count || 0)) await run("UPDATE ai_proof_jobs SET status = 'human_complete', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE proof_id = ?", [now, now, existing.batch_id]);
 
@@ -13803,6 +13803,7 @@ async function adminV2Inbox() {
       WHERE batches.notes LIKE ?
         AND batches.status NOT IN ('proof_rejected','reviewed_no_prices','completed')
         AND COALESCE(batches.review_decision, '') NOT IN ('completed','rejected')
+        AND COALESCE(batches.review_status, '') NOT IN ('completed','rejected')
       GROUP BY batches.id
       ORDER BY
         CASE WHEN batches.review_status = 'needs_help' THEN 1 WHEN batches.review_claimed_by IS NULL THEN 2 ELSE 3 END,
@@ -13892,6 +13893,14 @@ app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdm
     ai,
     stores: await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"),
     approval_summary: { ready: readyRows.length, flagged: unresolvedRows.length - readyRows.length, approvable_ready: approvableRows.length, unresolved: unresolvedRows.length },
+    review_lifecycle: {
+      state: ["completed", "rejected"].includes(batch.review_status) ? batch.review_status : formattedRows.length > 0 && unresolvedRows.length === 0 ? "ready_to_finish" : formattedRows.length === 0 ? "no_items" : "reviewing",
+      total_rows: formattedRows.length,
+      resolved_rows: formattedRows.length - unresolvedRows.length,
+      unresolved_rows: unresolvedRows.length,
+      can_finish: formattedRows.length > 0 && unresolvedRows.length === 0,
+      is_final: ["completed", "rejected"].includes(batch.review_status)
+    },
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
     can_review: staffCan(request.adminUser, "review"),
     can_approve: staffCan(request.adminUser, "approve"),
@@ -13978,6 +13987,26 @@ app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, req
   response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results });
 }));
 
+app.post("/api/admin/v2/reviews/:batchId/complete", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  if (batch.review_status === "completed" && batch.review_decision === "completed") { response.json({ message: "Review was already complete.", batch_id: batchId, state: "completed" }); return; }
+  if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+    response.status(403).json({ error: batch.review_claimed_by ? `Currently being reviewed by ${batch.review_claimed_by_username || "another worker"}.` : "Claim this proof before finishing its review." });
+    return;
+  }
+  const counts = await get("SELECT COUNT(*) AS total, SUM(CASE WHEN status NOT IN ('approved','rejected','removed') THEN 1 ELSE 0 END) AS unresolved, SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved FROM price_import_rows WHERE batch_id = ?", [batchId]);
+  if (Number(counts?.unresolved || 0) > 0) { response.status(409).json({ error: "Resolve every remaining item before finishing this review." }); return; }
+  if (Number(counts?.total || 0) === 0) { response.status(409).json({ error: "No items were reviewed. Add an item, ask for help, or reject the proof with a reason." }); return; }
+  const now = new Date().toISOString();
+  const finalStatus = Number(counts.approved || 0) > 0 ? "used_for_prices" : "reviewed_no_prices";
+  await run("UPDATE price_import_batches SET status = ?, review_status = 'completed', review_decision = 'completed', review_completed_at = ?, review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, updated_at = ? WHERE id = ?", [finalStatus, now, now, batchId]);
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'completed', 'All discovered rows resolved', ?)", [batchId, request.adminUser.id, now]);
+  await recordPriceEvent({ batchId, eventType: "REVIEW_COMPLETED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: "All discovered rows resolved.", metadata: { total_rows: Number(counts.total), approved_rows: Number(counts.approved || 0) } });
+  response.json({ message: "Review complete.", batch_id: batchId, state: "completed", status: finalStatus });
+}));
+
 app.post("/api/admin/v2/reviews/:batchId/reject", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
@@ -14028,8 +14057,10 @@ app.post("/api/admin/v2/reviews/:batchId/claim", requireAdminAccess, requireLogg
   const result = await run(
     `
       UPDATE price_import_batches
-      SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = 'in_review', updated_at = ?
+      SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = CASE WHEN review_decision = 'ready_to_finish' THEN 'ready_to_finish' ELSE 'in_review' END, updated_at = ?
       WHERE id = ? AND notes LIKE ?
+        AND status NOT IN ('proof_rejected','reviewed_no_prices','completed')
+        AND COALESCE(review_status, '') NOT IN ('completed','rejected')
         AND (review_claimed_by IS NULL OR review_claim_expires_at <= ? OR review_claimed_by = ?)
     `,
     [request.adminUser.id, nowIso, expiresAt, nowIso, batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`, nowIso, request.adminUser.id]
@@ -14066,7 +14097,7 @@ app.post("/api/admin/v2/reviews/:batchId/release", requireAdminAccess, requireLo
   }
   const now = new Date().toISOString();
   await run(
-    "UPDATE price_import_batches SET review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, review_status = CASE WHEN review_escalated_at IS NULL THEN 'waiting' ELSE 'needs_help' END, updated_at = ? WHERE id = ?",
+    "UPDATE price_import_batches SET review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, review_status = CASE WHEN review_decision = 'ready_to_finish' THEN 'ready_to_finish' WHEN review_escalated_at IS NULL THEN 'waiting' ELSE 'needs_help' END, updated_at = ? WHERE id = ?",
     [now, batchId]
   );
   await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, created_at) VALUES (?, ?, 'released', ?)", [batchId, request.adminUser.id, now]);

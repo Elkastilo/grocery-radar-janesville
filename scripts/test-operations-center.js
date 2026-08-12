@@ -574,8 +574,11 @@ async function main() {
 
     const rejectProofBatchId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Proof rejection close test");
     assert.equal((await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/claim`, {})).response.status, 200);
-    const proofRows = await reviewer.post(`/api/admin/price-imports/${rejectProofBatchId}/parse-price-text`, { source_text: "Bananas | 1 lb | 0.49\nMilk | 1 gal | 3.49" });
-    assert.equal(proofRows.response.status, 201, JSON.stringify(proofRows.body));
+    const zeroDraftReview = await reviewer.get(`/api/admin/v2/reviews/${rejectProofBatchId}`);
+    assert.equal(zeroDraftReview.body.review_lifecycle.state, "no_items");
+    assert.equal(zeroDraftReview.body.review_lifecycle.can_finish, false);
+    const blockedEmptyCompletion = await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/complete`, {});
+    assert.equal(blockedEmptyCompletion.response.status, 409, "A zero-draft proof must require rejection, escalation, or manual entry.");
     const rejectedProof = await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/reject`, { reason: "proof unreadable", note: "The lower half cannot be verified." });
     assert.equal(rejectedProof.response.status, 200, JSON.stringify(rejectedProof.body));
     const closedProof = await queryTempDb(app.dataDir, "SELECT status, review_status, review_decision, review_claimed_by, review_completed_at FROM price_import_batches WHERE id = ?", [rejectProofBatchId]);
@@ -587,6 +590,47 @@ async function main() {
     assert.equal(closedRows.count, 0);
     const inboxAfterProofRejection = await reviewer.get("/api/admin/v2/inbox");
     assert.equal(inboxAfterProofRejection.body.items.some((item) => item.target_id === rejectProofBatchId), false, "Rejected proof must leave the Inbox.");
+
+    const completedProofBatchId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Zero unresolved completion test");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/claim`, {})).response.status, 200);
+    const completedProofRows = await reviewer.post(`/api/admin/price-imports/${completedProofBatchId}/parse-price-text`, { source_text: "Bananas | 1 lb | 0.49\nMilk | 1 gal | 3.49" });
+    assert.equal(completedProofRows.response.status, 201, JSON.stringify(completedProofRows.body));
+    for (const row of completedProofRows.body.rows) {
+      const rejectedRow = await reviewer.post(`/api/admin/price-import-rows/${row.id}/reject`, { rejection_reason: "not enough evidence", admin_rejection_note: "Lifecycle completion test." });
+      assert.equal(rejectedRow.response.status, 200, JSON.stringify(rejectedRow.body));
+    }
+    const readyToFinishReview = await reviewer.get(`/api/admin/v2/reviews/${completedProofBatchId}`);
+    assert.equal(readyToFinishReview.body.review_lifecycle.state, "ready_to_finish");
+    assert.equal(readyToFinishReview.body.review_lifecycle.unresolved_rows, 0);
+    assert.equal(readyToFinishReview.body.review_lifecycle.can_finish, true);
+    const readyToFinishBatch = await queryTempDb(app.dataDir, "SELECT review_status, review_decision, review_claimed_by, review_completed_at FROM price_import_batches WHERE id = ?", [completedProofBatchId]);
+    assert.equal(readyToFinishBatch.review_status, "ready_to_finish");
+    assert.equal(readyToFinishBatch.review_decision, "ready_to_finish");
+    assert.equal(readyToFinishBatch.review_claimed_by, reviewerRegistration.user.id, "Resolving the last row must not silently release the active reviewer.");
+    assert.equal(readyToFinishBatch.review_completed_at, null, "Row resolution alone must not falsely finalize the proof.");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET review_status = 'in_review', review_decision = 'completed', review_completed_at = ? WHERE id = ?", [new Date().toISOString(), completedProofBatchId]);
+    const legacyZeroUnresolved = await reviewer.get(`/api/admin/v2/reviews/${completedProofBatchId}`);
+    assert.equal(legacyZeroUnresolved.body.review_lifecycle.state, "ready_to_finish", "Proofs left in the old row-completed state must remain finishable after this hotfix.");
+    assert.equal(legacyZeroUnresolved.body.review_lifecycle.can_finish, true);
+    const completedProof = await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/complete`, {});
+    assert.equal(completedProof.response.status, 200, JSON.stringify(completedProof.body));
+    assert.equal(completedProof.body.state, "completed");
+    assert.equal(completedProof.body.status, "reviewed_no_prices");
+    const finalizedProof = await queryTempDb(app.dataDir, "SELECT status, review_status, review_decision, review_claimed_by, review_claimed_at, review_claim_expires_at, review_completed_at FROM price_import_batches WHERE id = ?", [completedProofBatchId]);
+    assert.equal(finalizedProof.status, "reviewed_no_prices");
+    assert.equal(finalizedProof.review_status, "completed");
+    assert.equal(finalizedProof.review_decision, "completed");
+    assert.equal(finalizedProof.review_claimed_by, null);
+    assert.equal(finalizedProof.review_claimed_at, null);
+    assert.equal(finalizedProof.review_claim_expires_at, null);
+    assert.ok(finalizedProof.review_completed_at);
+    const inboxAfterCompletion = await reviewer.get("/api/admin/v2/inbox");
+    assert.equal(inboxAfterCompletion.body.items.some((item) => item.target_id === completedProofBatchId), false, "Completed proof must leave the active Inbox.");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/claim`, {})).response.status, 409, "A completed proof must not be reclaimed by Review Next.");
+    const nextWaitingProofId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Next proof after completion");
+    const nextInbox = await reviewer.get("/api/admin/v2/inbox");
+    assert.ok(nextInbox.body.items.some((item) => item.target_id === nextWaitingProofId), "The next waiting proof must remain selectable.");
+    assert.equal(nextInbox.body.items.some((item) => item.target_id === completedProofBatchId), false);
 
     const aiDrafts = await dataEntry.post(`/api/admin/price-imports/${reviewBatchId}/parse-price-text`, {
       source_text: "Milk 2% | 1 gal | 3.49\nLarge Eggs | 12 ct | 2.89"
