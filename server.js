@@ -9920,6 +9920,8 @@ async function aiStateForProof(proofId) {
   const stores = analysis ? await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name") : [];
   const retailer = normalizedRetailerName(analysis?.detected_store_name);
   const storeCandidates = retailer ? stores.filter((store) => normalizedRetailerName(store.name) === retailer) : [];
+  const submittedStore = stores.find((store) => Number(store.id) === Number(analysis?.submitted_store_id)) || null;
+  const resolvedStore = stores.find((store) => Number(store.id) === Number(analysis?.resolved_store_id)) || null;
   return {
     job: job ? { ...job, last_error: job.last_error || "" } : null,
     analysis: analysis ? {
@@ -9931,7 +9933,9 @@ async function aiStateForProof(proofId) {
       store_candidates: storeCandidates,
       store_mismatch: Boolean(retailer && (!analysis.detected_store_id || !analysis.submitted_store_id || Number(analysis.detected_store_id) !== Number(analysis.submitted_store_id))),
       exact_store_match_found: Boolean(analysis.detected_store_id),
-      store_needs_resolution: !analysis.resolved_store_id
+      store_needs_resolution: !analysis.resolved_store_id,
+      submitted_store: submittedStore,
+      resolved_store: resolvedStore
     } : null
   };
 }
@@ -10056,6 +10060,11 @@ async function processAiProofJob(proofId) {
     }
     const detectedStore = closestStoreForAi(result.detected_store, stores);
     const completedAt = new Date().toISOString();
+    const latestProof = await priceImportBatchById(proofId);
+    if (TERMINAL_REJECTED_PROOF_STATUSES.has(latestProof?.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(latestProof?.status) || ["completed", "rejected"].includes(latestProof?.review_status)) {
+      await run("UPDATE ai_proof_attempts SET status = 'completed', last_error = 'Proof closed during analysis; result was not applied.', completed_at = ? WHERE job_id = ? AND attempt_number = ?", [completedAt, job.id, attemptNumber]);
+      return;
+    }
     await run(`INSERT INTO ai_proof_analyses (job_id, proof_id, proof_type, detected_store_name, detected_store_id, detected_store_confidence, submitted_store_id, source_date, source_date_confidence, overall_confidence, warnings_json, structured_json, item_count, ready_count, check_count, unknown_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(proof_id) DO UPDATE SET job_id = excluded.job_id, proof_type = excluded.proof_type, detected_store_name = excluded.detected_store_name, detected_store_id = excluded.detected_store_id, detected_store_confidence = excluded.detected_store_confidence, submitted_store_id = excluded.submitted_store_id, source_date = excluded.source_date, source_date_confidence = excluded.source_date_confidence, overall_confidence = excluded.overall_confidence, warnings_json = excluded.warnings_json, structured_json = excluded.structured_json, item_count = excluded.item_count, ready_count = excluded.ready_count, check_count = excluded.check_count, unknown_count = excluded.unknown_count, updated_at = excluded.updated_at`, [job.id, proofId, result.proof_type, result.detected_store, detectedStore?.id || null, result.detected_store_confidence, proof.default_store_id || null, result.source_date, result.source_date_confidence, result.overall_confidence, JSON.stringify(result.warnings), JSON.stringify(result), result.items.length, result.counts.high, result.counts.check, result.counts.unknown, completedAt, completedAt]);
     const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [proofId]);
     await upsertAiDrafts(proof, analysis.id, result, stores, products, completedAt);
@@ -10063,7 +10072,7 @@ async function processAiProofJob(proofId) {
     await run("UPDATE ai_proof_jobs SET status = ?, manual_requested = 0, completed_at = ?, updated_at = ? WHERE id = ?", [finalStatus, completedAt, completedAt, job.id]);
     const usage = result.provider_usage || {};
     await run("UPDATE ai_proof_attempts SET status = 'completed', prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, completed_at = ? WHERE job_id = ? AND attempt_number = ?", [usage.prompt_tokens ?? null, usage.completion_tokens ?? null, usage.total_tokens ?? null, completedAt, job.id, attemptNumber]);
-    await run("UPDATE price_import_batches SET status = CASE WHEN status = 'needs_admin_review' THEN status ELSE 'ready_for_review' END, updated_at = ? WHERE id = ?", [completedAt, proofId]);
+    await run("UPDATE price_import_batches SET status = CASE WHEN status = 'needs_admin_review' THEN status ELSE 'ready_for_review' END, updated_at = ? WHERE id = ? AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') AND COALESCE(review_status, '') NOT IN ('completed','rejected')", [completedAt, proofId]);
     await recordPriceEvent({ batchId: proofId, eventType: "AI_PREPARED", submitterUserId: proof.created_by, reason: `AI prepared ${result.items.length} draft items.`, metadata: { analysis_id: analysis.id, ready: result.counts.high, check: result.counts.check, unknown: result.counts.unknown } });
   } catch (error) {
     const current = await get("SELECT attempt_count FROM ai_proof_jobs WHERE id = ?", [job.id]);
@@ -11601,6 +11610,18 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   }
 
   const importBatch = await priceImportBatchById(row.batch_id);
+  if (isProofSubmissionBatch(importBatch)) {
+    if (TERMINAL_REJECTED_PROOF_STATUSES.has(importBatch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(importBatch.status) || ["completed", "rejected"].includes(importBatch.review_status)) {
+      const error = new Error("This proof is already closed and cannot publish another item.");
+      error.statusCode = 409;
+      throw error;
+    }
+    if (Number(importBatch.review_claimed_by) !== Number(adminUser.id) && !staffCan(adminUser, "manage")) {
+      const error = new Error(importBatch.review_claimed_by ? `Currently being reviewed by ${importBatch.review_claimed_by_username || "another worker"}.` : "Claim this proof before approving an item.");
+      error.statusCode = 409;
+      throw error;
+    }
+  }
   const submitterUserId = Number(importBatch?.created_by || row.created_by || adminUser.id);
   const isSelfApproval = submitterUserId === Number(adminUser.id) && isProofSubmissionBatch(importBatch);
   if (isSelfApproval && staffRoleForUser(adminUser) !== "owner") {
@@ -12009,6 +12030,11 @@ app.post("/api/admin/proof-submissions/:batchId/status", requireAdminAccess, req
 
   if (!nextStatus) {
     response.status(400).json({ error: "Choose a valid proof inbox action." });
+    return;
+  }
+
+  if (["reviewed_no_prices", "rejected", "duplicate"].includes(nextStatus)) {
+    response.status(409).json({ error: "Finish or reject this proof in the Review Workspace so its rows, claim, and audit history close together." });
     return;
   }
 
@@ -13233,6 +13259,18 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
     return;
   }
 
+  const proofBatch = await priceImportBatchById(existing.batch_id);
+  if (isProofSubmissionBatch(proofBatch)) {
+    if (TERMINAL_REJECTED_PROOF_STATUSES.has(proofBatch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(proofBatch.status) || ["completed", "rejected"].includes(proofBatch.review_status)) {
+      response.status(409).json({ error: "This proof is already closed." });
+      return;
+    }
+    if (Number(proofBatch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+      response.status(409).json({ error: proofBatch.review_claimed_by ? `Currently being reviewed by ${proofBatch.review_claimed_by_username || "another worker"}.` : "Claim this proof before editing an item." });
+      return;
+    }
+  }
+
   const draft = cleanImportRowDraft({
     ...existing,
     ...request.body,
@@ -13345,9 +13383,24 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
     ]
   );
 
+  if (draft.status === "removed" && isProofSubmissionBatch(proofBatch)) {
+    await run(
+      "UPDATE price_import_batches SET review_status = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_status END, review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_decision END, updated_at = ? WHERE id = ?",
+      [existing.batch_id, existing.batch_id, now, existing.batch_id]
+    );
+  }
+
+  const review = isProofSubmissionBatch(proofBatch)
+    ? await reviewSnapshotForBatchId(existing.batch_id, request.adminUser)
+    : null;
+
   response.json({
     message: "Import row saved.",
-    row: formatPriceImportRow(await priceImportRowById(rowId))
+    row: formatPriceImportRow(await priceImportRowById(rowId)),
+    proof_id: existing.batch_id,
+    review_state: review?.review_state || null,
+    approval_summary: review?.approval_summary || null,
+    completed_rows: review?.completed_rows || []
   });
 }));
 
@@ -13358,7 +13411,8 @@ app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, require
     overrideReason: request.body.override_reason
   });
 
-  response.json(result);
+  const review = await reviewSnapshotForBatchId(result.row.batch_id, request.adminUser);
+  response.json({ ...result, proof_id: result.row.batch_id, review_state: review?.review_state || null, approval_summary: review?.approval_summary || null, completed_rows: review?.completed_rows || [] });
 }));
 
 app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
@@ -13373,6 +13427,18 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
   if (existing.status === "approved") {
     response.status(400).json({ error: "Approved import rows cannot be rejected." });
     return;
+  }
+
+  const proofBatch = await priceImportBatchById(existing.batch_id);
+  if (isProofSubmissionBatch(proofBatch)) {
+    if (TERMINAL_REJECTED_PROOF_STATUSES.has(proofBatch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(proofBatch.status) || ["completed", "rejected"].includes(proofBatch.review_status)) {
+      response.status(409).json({ error: "This proof is already closed." });
+      return;
+    }
+    if (Number(proofBatch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+      response.status(409).json({ error: proofBatch.review_claimed_by ? `Currently being reviewed by ${proofBatch.review_claimed_by_username || "another worker"}.` : "Claim this proof before rejecting an item." });
+      return;
+    }
   }
 
   const rejectionReason = cleanText(request.body.rejection_reason, 80).toLowerCase();
@@ -13403,15 +13469,20 @@ app.post("/api/admin/price-import-rows/:id/reject", requireAdminAccess, requireL
       rowId
     ]
   );
-  const batch = await priceImportBatchById(existing.batch_id);
+  const batch = proofBatch || await priceImportBatchById(existing.batch_id);
   await recordPriceEvent({ batchId: existing.batch_id, rowId, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch?.created_by, reason: rejectionReason, metadata: { reviewer_note: cleanText(request.body.admin_rejection_note || "", 500) } });
   await run("UPDATE price_import_batches SET rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_status = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_status END, review_decision = CASE WHEN NOT EXISTS (SELECT 1 FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')) THEN 'ready_to_finish' ELSE review_decision END, updated_at = ? WHERE id = ?", [existing.batch_id, existing.batch_id, existing.batch_id, now, existing.batch_id]);
   const unfinished = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [existing.batch_id]);
   if (!Number(unfinished?.count || 0)) await run("UPDATE ai_proof_jobs SET status = 'human_complete', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE proof_id = ?", [now, now, existing.batch_id]);
 
+  const review = await reviewSnapshotForBatchId(existing.batch_id, request.adminUser);
   response.json({
     message: "Import row rejected.",
-    row: formatPriceImportRow(await priceImportRowById(rowId))
+    row: formatPriceImportRow(await priceImportRowById(rowId)),
+    proof_id: existing.batch_id,
+    review_state: review?.review_state || null,
+    approval_summary: review?.approval_summary || null,
+    completed_rows: review?.completed_rows || []
   });
 }));
 
@@ -13716,13 +13787,103 @@ app.post("/api/admin/analytics/missing-demand/priority", requireAdminAccess, req
   response.json({ message: "Missing price demand marked." });
 }));
 
-function plainReviewStatus(batch = {}) {
-  if (batch.review_escalated_at || batch.review_status === "needs_help") return "Needs Help";
-  if (batch.review_claimed_by && batch.review_claim_expires_at > new Date().toISOString()) return "In Review";
-  if (["proof_rejected", "rejected"].includes(batch.status)) return "Rejected";
-  if (batch.duplicate_of_batch_id) return "Duplicate";
-  if (["reviewed_no_prices", "approved", "completed"].includes(batch.status)) return "Approved";
-  return "Waiting";
+const TERMINAL_REJECTED_PROOF_STATUSES = new Set(["proof_rejected", "rejected", "duplicate"]);
+const TERMINAL_COMPLETED_PROOF_STATUSES = new Set(["reviewed_no_prices", "proof_reviewed", "completed"]);
+const RESOLVED_REVIEW_ROW_STATUSES = new Set(["approved", "rejected", "removed"]);
+
+function deriveProofReviewState({ batch = {}, job = null, analysis = null, rows = [], counts = null, now = new Date().toISOString() }) {
+  const totalRows = counts ? Number(counts.total_rows || 0) : rows.length;
+  const unresolvedRows = counts ? Number(counts.unresolved_rows || 0) : rows.filter((row) => !RESOLVED_REVIEW_ROW_STATUSES.has(row.status)).length;
+  const approvedRows = counts ? Number(counts.approved_rows || 0) : rows.filter((row) => row.status === "approved").length;
+  const rejectedRows = counts ? Number(counts.rejected_rows || 0) : rows.filter((row) => row.status === "rejected").length;
+  const activeClaim = Boolean(batch.review_claimed_by && batch.review_claim_expires_at && batch.review_claim_expires_at > now);
+  const proofRejected = TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || batch.review_status === "rejected" || batch.review_decision === "rejected";
+  const proofCompleted = TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || batch.review_status === "completed";
+  const managerHelp = !proofRejected && !proofCompleted && (batch.review_status === "needs_help" || Boolean(batch.review_escalated_at));
+  const jobStatus = job?.status || "";
+  const analysisCompleted = Boolean(analysis?.id && (analysis.updated_at || job?.completed_at));
+  const aiItemCount = analysis ? Number(analysis.item_count || 0) : null;
+  let state;
+  let label;
+  let message;
+
+  if (proofRejected) {
+    state = "REJECTED";
+    label = "Rejected";
+    message = "This proof is closed and was not accepted.";
+  } else if (proofCompleted) {
+    state = "COMPLETED";
+    label = "Completed";
+    message = "This proof review is complete.";
+  } else if (managerHelp) {
+    state = "MANAGER_HELP";
+    label = "Manager help";
+    message = batch.review_escalation_reason || "A Manager needs to review this proof.";
+  } else if (jobStatus === "waiting") {
+    state = "AI_QUEUED";
+    label = "Waiting for AI";
+    message = "Grocery Radar is preparing this proof.";
+  } else if (jobStatus === "analyzing") {
+    state = "AI_RUNNING";
+    label = "AI running";
+    message = "AI is analyzing this proof.";
+  } else if (totalRows > 0 && unresolvedRows === 0) {
+    state = "READY_TO_FINISH";
+    label = "Ready to finish";
+    message = "All items have been resolved.";
+  } else if (totalRows > 0) {
+    state = "REVIEWING";
+    label = "Ready for review";
+    message = `${unresolvedRows} item${unresolvedRows === 1 ? "" : "s"} still need a decision.`;
+  } else if (!job && !analysis) {
+    state = "AI_NOT_STARTED";
+    label = "AI not started";
+    message = "No analysis yet.";
+  } else if (analysisCompleted && aiItemCount === 0) {
+    state = "AI_ZERO_RESULTS";
+    label = "No usable items found";
+    message = "AI finished, but no usable price items were found.";
+  } else if (["ai_failed", "needs_attention"].includes(jobStatus)) {
+    state = "AI_FAILED";
+    label = "AI needs attention";
+    message = job?.last_error || "AI could not analyze this proof.";
+  } else if (analysisCompleted) {
+    state = "AI_ZERO_RESULTS";
+    label = "No usable items found";
+    message = "AI finished, but no usable price items were found.";
+  } else {
+    state = "AI_NOT_STARTED";
+    label = "AI not started";
+    message = "No analysis yet.";
+  }
+
+  const terminal = state === "COMPLETED" || state === "REJECTED";
+  return {
+    state,
+    label,
+    message,
+    total_rows: totalRows,
+    unresolved_rows: unresolvedRows,
+    resolved_rows: Math.max(0, totalRows - unresolvedRows),
+    approved_rows: approvedRows,
+    rejected_rows: rejectedRows,
+    ai_job_status: jobStatus || "not_started",
+    ai_started: Boolean(job || analysis),
+    ai_finished: analysisCompleted || Boolean(job?.completed_at),
+    ai_produced_rows: totalRows > 0,
+    resolved_store_id: analysis?.resolved_store_id || null,
+    store_resolved: Boolean(analysis?.resolved_store_id),
+    claim_active: activeClaim,
+    claimed_by: activeClaim ? batch.review_claimed_by : null,
+    claimed_by_username: activeClaim ? batch.review_claimed_by_username || "" : "",
+    claim_expires_at: activeClaim ? batch.review_claim_expires_at : "",
+    can_finish: state === "READY_TO_FINISH",
+    can_review_later: !terminal,
+    can_reject: !terminal,
+    can_run_ai: ["AI_NOT_STARTED", "AI_FAILED", "AI_ZERO_RESULTS"].includes(state),
+    is_terminal: terminal,
+    appears_in_active_inbox: !terminal
+  };
 }
 
 async function adminV2Home(user) {
@@ -13732,7 +13893,7 @@ async function adminV2Home(user) {
     get(
       `
         SELECT
-          COUNT(CASE WHEN notes LIKE ? AND status NOT IN ('proof_rejected','reviewed_no_prices','completed') THEN 1 END) AS proofs_waiting,
+          COUNT(CASE WHEN notes LIKE ? AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') AND COALESCE(review_status, '') NOT IN ('completed','rejected') THEN 1 END) AS proofs_waiting,
           COUNT(CASE WHEN review_escalated_at IS NOT NULL AND review_status = 'needs_help' THEN 1 END) AS escalations,
           (SELECT COUNT(*) FROM price_reports WHERE status = 'disputed') AS disputes
         FROM price_import_batches
@@ -13789,51 +13950,101 @@ async function adminV2Home(user) {
   };
 }
 
-async function adminV2Inbox() {
-  const batches = await all(
+async function activeProofReviewRows(options = {}) {
+  const excludeProofId = Number.parseInt(options.excludeProofId, 10);
+  const reviewerId = Number.parseInt(options.reviewerId, 10);
+  const now = new Date().toISOString();
+  const params = [`${PROOF_SUBMISSION_NOTE_PREFIX}%`];
+  const exclusionSql = Number.isInteger(excludeProofId) && excludeProofId > 0 ? "AND batches.id != ?" : "";
+  if (exclusionSql) params.push(excludeProofId);
+  const claimSql = Number.isInteger(reviewerId) && reviewerId > 0
+    ? "AND (batches.review_claimed_by IS NULL OR batches.review_claim_expires_at <= ? OR batches.review_claimed_by = ?)"
+    : "";
+  if (claimSql) params.push(now, reviewerId);
+  const aiSql = options.includePreparing === false
+    ? "AND COALESCE(jobs.status, '') NOT IN ('waiting','analyzing')"
+    : "";
+  const managerHelpSql = options.includeManagerHelp === false
+    ? "AND COALESCE(batches.review_status, '') != 'needs_help'"
+    : "";
+  return all(
     `
       SELECT batches.*, creator.username AS created_by_username, reviewer.username AS review_claimed_by_username,
              stores.name AS store_name,
-             COUNT(rows.id) AS possible_price_count
+             jobs.id AS ai_job_id, jobs.status AS ai_job_status, jobs.last_error AS ai_last_error,
+             jobs.started_at AS ai_started_at, jobs.completed_at AS ai_completed_at,
+             analyses.id AS ai_analysis_id, analyses.item_count AS ai_item_count,
+             analyses.resolved_store_id AS ai_resolved_store_id, analyses.updated_at AS ai_analysis_updated_at,
+             COUNT(rows.id) AS total_row_count,
+             SUM(CASE WHEN rows.id IS NOT NULL AND rows.status NOT IN ('approved','rejected','removed') THEN 1 ELSE 0 END) AS unresolved_row_count,
+             SUM(CASE WHEN rows.status = 'approved' THEN 1 ELSE 0 END) AS approved_row_count,
+             SUM(CASE WHEN rows.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_row_count
       FROM price_import_batches batches
       LEFT JOIN users creator ON creator.id = batches.created_by
       LEFT JOIN users reviewer ON reviewer.id = batches.review_claimed_by
       LEFT JOIN stores ON stores.id = batches.default_store_id
-      LEFT JOIN price_import_rows rows ON rows.batch_id = batches.id AND rows.status NOT IN ('removed','rejected')
+      LEFT JOIN ai_proof_jobs jobs ON jobs.proof_id = batches.id
+      LEFT JOIN ai_proof_analyses analyses ON analyses.proof_id = batches.id
+      LEFT JOIN price_import_rows rows ON rows.batch_id = batches.id
       WHERE batches.notes LIKE ?
-        AND batches.status NOT IN ('proof_rejected','reviewed_no_prices','completed')
-        AND COALESCE(batches.review_decision, '') NOT IN ('completed','rejected')
+        ${exclusionSql}
+        ${claimSql}
+        ${aiSql}
+        ${managerHelpSql}
+        AND batches.status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed')
         AND COALESCE(batches.review_status, '') NOT IN ('completed','rejected')
       GROUP BY batches.id
       ORDER BY
-        CASE WHEN batches.review_status = 'needs_help' THEN 1 WHEN batches.review_claimed_by IS NULL THEN 2 ELSE 3 END,
+        CASE WHEN batches.review_status = 'needs_help' THEN 1 WHEN batches.review_claimed_by IS NULL OR batches.review_claim_expires_at <= ? THEN 2 ELSE 3 END,
         batches.created_at ASC
       LIMIT 100
     `,
-    [`${PROOF_SUBMISSION_NOTE_PREFIX}%`]
+    [...params, now]
   );
+}
+
+function lifecycleFromInboxRow(batch) {
+  return deriveProofReviewState({
+    batch,
+    job: batch.ai_job_id ? { id: batch.ai_job_id, status: batch.ai_job_status, last_error: batch.ai_last_error, started_at: batch.ai_started_at, completed_at: batch.ai_completed_at } : null,
+    analysis: batch.ai_analysis_id ? { id: batch.ai_analysis_id, item_count: batch.ai_item_count, resolved_store_id: batch.ai_resolved_store_id, updated_at: batch.ai_analysis_updated_at } : null,
+    counts: {
+      total_rows: batch.total_row_count,
+      unresolved_rows: batch.unresolved_row_count,
+      approved_rows: batch.approved_row_count,
+      rejected_rows: batch.rejected_row_count
+    }
+  });
+}
+
+async function adminV2Inbox(options = {}) {
+  const batches = await activeProofReviewRows(options);
   const disputes = await all(
     `${reportSelectWithProduct()} WHERE pr.status = 'disputed' ORDER BY pr.submitted_at ASC LIMIT 50`
   );
   return {
     claim_window_minutes: REVIEW_CLAIM_MINUTES,
     items: [
-      ...batches.map((batch) => ({
+      ...batches.map((batch) => {
+        const lifecycle = lifecycleFromInboxRow(batch);
+        return {
         id: `receipt:${batch.id}`,
         target_type: "price_import_batch",
         target_id: batch.id,
-        type: batch.review_status === "needs_help" ? "needs_help" : "receipt",
+        type: lifecycle.state === "MANAGER_HELP" ? "needs_help" : "receipt",
         title: batch.store_name || batch.receipt_store_name || batch.batch_title || `Receipt #${batch.id}`,
         submitted_at: batch.created_at,
-        possible_price_count: batch.possible_price_count || 0,
-        status: plainReviewStatus(batch),
-        claimed_by: batch.review_claimed_by || null,
-        claimed_by_username: batch.review_claimed_by_username || "",
-        claim_expires_at: batch.review_claim_expires_at || "",
+        possible_price_count: lifecycle.unresolved_rows,
+        status: lifecycle.label,
+        review_state: lifecycle.state,
+        lifecycle,
+        claimed_by: lifecycle.claimed_by,
+        claimed_by_username: lifecycle.claimed_by_username,
+        claim_expires_at: lifecycle.claim_expires_at,
         escalation_reason: batch.review_escalation_reason || "",
-        priority: batch.review_status === "needs_help" ? 1 : 2,
+        priority: lifecycle.state === "MANAGER_HELP" ? 1 : 2,
         target_url: `/admin.html?tab=inboxTab&batch=${batch.id}`
-      })),
+      }; }),
       ...disputes.map((report) => ({
         id: `dispute:${report.id}`,
         target_type: "report",
@@ -13851,12 +14062,34 @@ async function adminV2Inbox() {
   };
 }
 
+async function findNextReviewableProof({ reviewerId, role, excludeProofId }) {
+  const batches = await activeProofReviewRows({
+    excludeProofId,
+    reviewerId,
+    includePreparing: false,
+    includeManagerHelp: ["owner", "manager"].includes(role)
+  });
+  return batches.find((batch) => lifecycleFromInboxRow(batch).appears_in_active_inbox) || null;
+}
+
 app.get("/api/admin/v2/home", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
   response.json(await adminV2Home(request.adminUser));
 }));
 
 app.get("/api/admin/v2/inbox", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
   response.json(await adminV2Inbox());
+}));
+
+app.get("/api/admin/v2/reviews/next", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const excludeProofId = Number.parseInt(request.query.exclude_proof_id, 10);
+  const role = staffRoleForUser(request.adminUser);
+  const candidate = await findNextReviewableProof({ reviewerId: request.adminUser.id, role, excludeProofId });
+  response.json({
+    proof_id: candidate?.id || null,
+    excluded_proof_id: Number.isInteger(excludeProofId) ? excludeProofId : null,
+    review_state: candidate ? lifecycleFromInboxRow(candidate) : null,
+    message: candidate ? "Next proof found." : "No more proofs waiting."
+  });
 }));
 
 app.get("/api/admin/v2/feedback", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
@@ -13874,39 +14107,37 @@ app.get("/api/admin/v2/release-notes", requireSuperAdminAccess, asyncRoute(async
   response.json({ application_version: APP_VERSION, releases: rows.map((row) => formatHomepagePatchNote(row, true)) });
 }));
 
-app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
-  const batchId = Number.parseInt(request.params.batchId, 10);
+async function reviewSnapshotForBatchId(batchId, user = null) {
   const batch = await priceImportBatchById(batchId);
-  if (!batch || !isProofSubmissionBatch(batch)) {
-    response.status(404).json({ error: "Receipt review was not found." });
-    return;
-  }
+  if (!batch || !isProofSubmissionBatch(batch)) return null;
   const rows = await addReviewHintsToImportRows(await priceImportRowsForBatchIds([batchId]));
   const formattedRows = rows.map(formatPriceImportRow);
   const ai = await aiStateForProof(batchId);
   const unresolvedRows = formattedRows.filter((row) => !["approved", "rejected", "removed"].includes(row.status));
   const readyRows = unresolvedRows.filter((row) => row.status === "ready_for_review" && row.ai_confidence === "high");
   const approvableRows = readyRows.filter((row) => ai.analysis?.resolved_store_id && row.store_id && row.item_name && Number(row.price) > 0 && !(row.ai_warnings || []).length && !row.duplicate_warning);
-  response.json({
+  const lifecycle = deriveProofReviewState({ batch, job: ai.job, analysis: ai.analysis, rows: formattedRows });
+  return {
     batch: formatPriceImportBatch(batch, unresolvedRows),
     completed_rows: formattedRows.filter((row) => ["approved", "rejected", "removed"].includes(row.status)),
     ai,
     stores: await all("SELECT id, name FROM stores WHERE active = 1 ORDER BY name"),
     approval_summary: { ready: readyRows.length, flagged: unresolvedRows.length - readyRows.length, approvable_ready: approvableRows.length, unresolved: unresolvedRows.length },
-    review_lifecycle: {
-      state: ["completed", "rejected"].includes(batch.review_status) ? batch.review_status : formattedRows.length > 0 && unresolvedRows.length === 0 ? "ready_to_finish" : formattedRows.length === 0 ? "no_items" : "reviewing",
-      total_rows: formattedRows.length,
-      resolved_rows: formattedRows.length - unresolvedRows.length,
-      unresolved_rows: unresolvedRows.length,
-      can_finish: formattedRows.length > 0 && unresolvedRows.length === 0,
-      is_final: ["completed", "rejected"].includes(batch.review_status)
-    },
+    review_state: lifecycle,
+    review_lifecycle: lifecycle,
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
-    can_review: staffCan(request.adminUser, "review"),
-    can_approve: staffCan(request.adminUser, "approve"),
-    can_manage_images: staffCan(request.adminUser, "manage"),
+    can_review: user ? staffCan(user, "review") : false,
+    can_approve: user ? staffCan(user, "approve") : false,
+    can_manage_images: user ? staffCan(user, "manage") : false,
     focus_mode_available: true
-  });
+  };
+}
+
+app.get("/api/admin/v2/reviews/:batchId", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const snapshot = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  if (!snapshot) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  response.json(snapshot);
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/re-run-ai", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
@@ -13914,6 +14145,10 @@ app.post("/api/admin/v2/reviews/:batchId/re-run-ai", requireAdminAccess, require
   const batch = await priceImportBatchById(batchId);
   if (!batch || !batch.photo_path) {
     response.status(404).json({ error: "An eligible proof image was not found." });
+    return;
+  }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) {
+    response.status(409).json({ error: "This proof is already closed." });
     return;
   }
   const settings = await aiProcessingSettings();
@@ -13940,6 +14175,7 @@ app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, 
   const analysis = await get("SELECT * FROM ai_proof_analyses WHERE proof_id = ?", [batchId]);
   const batch = await priceImportBatchById(batchId);
   if (!analysis || !batch) { response.status(404).json({ error: "AI store analysis was not found for this proof." }); return; }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) { response.status(409).json({ error: "This proof is already closed." }); return; }
   const action = cleanEnum(request.body.action, ["use_ai", "keep_submitted", "choose_store", "not_sure"], "not_sure");
   const requestedStoreId = Number.parseInt(request.body.store_id, 10);
   if (action === "choose_store" && !Number.isInteger(requestedStoreId)) { response.status(400).json({ error: "Choose an active Grocery Radar store." }); return; }
@@ -13959,12 +14195,15 @@ app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, 
   if (action === "not_sure") await run("UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = 'Store could not be resolved', updated_at = ? WHERE id = ?", [now, now, batchId]);
   await recordPriceEvent({ batchId, eventType: "STORE_RESOLVED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: action, metadata: { submitted_store_id: analysis.submitted_store_id, detected_store_id: analysis.detected_store_id, resolved_store_id: resolvedStoreId } });
   const persisted = await get("SELECT submitted_store_id, detected_store_id, resolved_store_id, store_resolution FROM ai_proof_analyses WHERE proof_id = ?", [batchId]);
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
   response.json({
     message: action === "not_sure" ? "Store left unresolved and sent for Manager help." : `Store resolved to ${resolvedStore.name}.`,
     resolved_store: resolvedStore ? { id: resolvedStore.id, name: resolvedStore.name, city: resolvedStore.city || "", state: resolvedStore.state || "" } : null,
     submitted_store_id: persisted.submitted_store_id || null,
     inherited_row_count: inheritedRowCount,
-    ai: await aiStateForProof(batchId)
+    ai: review?.ai || await aiStateForProof(batchId),
+    review_state: review?.review_state || null,
+    approval_summary: review?.approval_summary || null
   });
 }));
 
@@ -13977,6 +14216,7 @@ app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, req
     getActiveStoreIds()
   ]);
   if (!batch) { response.status(404).json({ error: "Proof review was not found." }); return; }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) { response.status(409).json({ error: "This proof is already closed." }); return; }
   if (!analysis?.resolved_store_id) { response.status(409).json({ error: "Resolve the exact price store before approving ready items." }); return; }
   const eligible = rows.filter((row) => row.status === "ready_for_review" && row.ai_confidence === "high" && row.item_name && Number(row.price) > 0 && activeStores.includes(Number(row.store_id)) && !row.duplicate_warning && !parseMetadataJson(row.ai_warnings_json).length);
   if (!eligible.length) { response.status(400).json({ error: "No high-confidence items currently meet every publication requirement." }); return; }
@@ -13984,34 +14224,38 @@ app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, req
   for (const row of eligible) {
     results.push(await approvePriceImportRow(row.id, request.adminUser, { ownerSelfApprovalOverride: request.body.owner_self_approval_override === true, overrideReason: request.body.override_reason }));
   }
-  response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results });
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, proof_id: batchId, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results, review_state: review?.review_state || null, approval_summary: review?.approval_summary || null, completed_rows: review?.completed_rows || [] });
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/complete", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
   if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
-  if (batch.review_status === "completed" && batch.review_decision === "completed") { response.json({ message: "Review was already complete.", batch_id: batchId, state: "completed" }); return; }
-  if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+  if (TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || batch.review_status === "completed") { response.json({ message: "Review was already complete.", batch_id: batchId, state: "COMPLETED" }); return; }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || batch.review_status === "rejected") { response.status(409).json({ error: "This proof is already rejected." }); return; }
+  if ((!batch.review_claimed_by || batch.review_claim_expires_at <= new Date().toISOString() || Number(batch.review_claimed_by) !== Number(request.adminUser.id)) && !staffCan(request.adminUser, "manage")) {
     response.status(403).json({ error: batch.review_claimed_by ? `Currently being reviewed by ${batch.review_claimed_by_username || "another worker"}.` : "Claim this proof before finishing its review." });
     return;
   }
-  const counts = await get("SELECT COUNT(*) AS total, SUM(CASE WHEN status NOT IN ('approved','rejected','removed') THEN 1 ELSE 0 END) AS unresolved, SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved FROM price_import_rows WHERE batch_id = ?", [batchId]);
-  if (Number(counts?.unresolved || 0) > 0) { response.status(409).json({ error: "Resolve every remaining item before finishing this review." }); return; }
-  if (Number(counts?.total || 0) === 0) { response.status(409).json({ error: "No items were reviewed. Add an item, ask for help, or reject the proof with a reason." }); return; }
+  const before = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  if (before?.review_state?.state !== "READY_TO_FINISH") { response.status(409).json({ error: `Cannot finish this proof while it is ${String(before?.review_state?.label || "not ready").toLowerCase()}.` }); return; }
+  const counts = { total: before.review_state.total_rows, approved: before.review_state.approved_rows };
   const now = new Date().toISOString();
   const finalStatus = Number(counts.approved || 0) > 0 ? "used_for_prices" : "reviewed_no_prices";
   await run("UPDATE price_import_batches SET status = ?, review_status = 'completed', review_decision = 'completed', review_completed_at = ?, review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, updated_at = ? WHERE id = ?", [finalStatus, now, now, batchId]);
   await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'completed', 'All discovered rows resolved', ?)", [batchId, request.adminUser.id, now]);
   await recordPriceEvent({ batchId, eventType: "REVIEW_COMPLETED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: "All discovered rows resolved.", metadata: { total_rows: Number(counts.total), approved_rows: Number(counts.approved || 0) } });
-  response.json({ message: "Review complete.", batch_id: batchId, state: "completed", status: finalStatus });
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  response.json({ message: "Review complete.", batch_id: batchId, state: "COMPLETED", status: finalStatus, review_state: review?.review_state || null });
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/reject", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
   if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
-  if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) { response.status(409).json({ error: "This proof is already closed." }); return; }
+  if ((!batch.review_claimed_by || batch.review_claim_expires_at <= new Date().toISOString() || Number(batch.review_claimed_by) !== Number(request.adminUser.id)) && !staffCan(request.adminUser, "manage")) {
     response.status(403).json({ error: "Only the current reviewer or a Manager can reject this proof." });
     return;
   }
@@ -14027,7 +14271,8 @@ app.post("/api/admin/v2/reviews/:batchId/reject", requireAdminAccess, requireLog
   await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'rejected', ?, ?)", [batchId, request.adminUser.id, reason, now]);
   await run("UPDATE ai_proof_jobs SET status = 'human_complete', updated_at = ? WHERE proof_id = ?", [now, batchId]);
   if (batch.created_by) await createUserNotification(batch.created_by, "proof_reviewed", "Your proof was reviewed", `Your proof was not accepted: ${reason}.`, { related_type: "proof_submission", related_id: batchId, target_tab: "accountView", target_url: `/?tab=accountView&section=contributions&proof=${batchId}` });
-  response.json({ message: "Proof rejected and removed from the review queue.", rejected_row_count: unresolved.length });
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  response.json({ message: "Proof rejected and removed from the review queue.", proof_id: batchId, rejected_row_count: unresolved.length, review_state: review?.review_state || null });
 }));
 
 app.get("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
@@ -14059,7 +14304,7 @@ app.post("/api/admin/v2/reviews/:batchId/claim", requireAdminAccess, requireLogg
       UPDATE price_import_batches
       SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = CASE WHEN review_decision = 'ready_to_finish' THEN 'ready_to_finish' ELSE 'in_review' END, updated_at = ?
       WHERE id = ? AND notes LIKE ?
-        AND status NOT IN ('proof_rejected','reviewed_no_prices','completed')
+        AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed')
         AND COALESCE(review_status, '') NOT IN ('completed','rejected')
         AND (review_claimed_by IS NULL OR review_claim_expires_at <= ? OR review_claimed_by = ?)
     `,
@@ -14081,14 +14326,19 @@ app.post("/api/admin/v2/reviews/:batchId/claim", requireAdminAccess, requireLogg
     "INSERT INTO review_task_events (batch_id, worker_user_id, event_type, created_at) VALUES (?, ?, 'claimed', ?)",
     [batchId, request.adminUser.id, nowIso]
   );
-  response.json({ message: "Receipt claimed for review.", batch: formatPriceImportBatch(await priceImportBatchById(batchId), []) });
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  response.json({ message: "Receipt claimed for review.", batch: formatPriceImportBatch(await priceImportBatchById(batchId), []), review_state: review?.review_state || null });
 }));
 
-app.post("/api/admin/v2/reviews/:batchId/release", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
+async function handleReviewRelease(request, response) {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
   if (!batch) {
     response.status(404).json({ error: "Receipt review was not found." });
+    return;
+  }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) {
+    response.status(409).json({ error: "A completed or rejected proof cannot be returned to the review queue." });
     return;
   }
   if (Number(batch.review_claimed_by) !== Number(request.adminUser.id) && !staffCan(request.adminUser, "manage")) {
@@ -14101,11 +14351,21 @@ app.post("/api/admin/v2/reviews/:batchId/release", requireAdminAccess, requireLo
     [now, batchId]
   );
   await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, created_at) VALUES (?, ?, 'released', ?)", [batchId, request.adminUser.id, now]);
-  response.json({ message: "Review saved and released." });
-}));
+  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+  response.json({ message: "Review saved for later and claim released.", proof_id: batchId, review_state: review?.review_state || null });
+}
+
+app.post("/api/admin/v2/reviews/:batchId/release", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(handleReviewRelease));
+app.post("/api/admin/v2/reviews/:batchId/review-later", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(handleReviewRelease));
 
 app.post("/api/admin/v2/reviews/:batchId/reassign", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) {
+    response.status(409).json({ error: "A completed or rejected proof cannot be reassigned." });
+    return;
+  }
   const workerId = Number.parseInt(request.body.user_id, 10);
   const worker = await get("SELECT * FROM users WHERE id = ?", [workerId]);
   if (!worker || !staffCan(worker, "review")) {
@@ -14115,7 +14375,7 @@ app.post("/api/admin/v2/reviews/:batchId/reassign", requireAdminAccess, requireL
   const now = new Date();
   const expiresAt = new Date(now.getTime() + REVIEW_CLAIM_MINUTES * 60000).toISOString();
   const result = await run(
-    "UPDATE price_import_batches SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = 'in_review', updated_at = ? WHERE id = ? AND notes LIKE ?",
+    "UPDATE price_import_batches SET review_claimed_by = ?, review_claimed_at = ?, review_claim_expires_at = ?, review_status = 'in_review', updated_at = ? WHERE id = ? AND notes LIKE ? AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') AND COALESCE(review_status, '') NOT IN ('completed','rejected')",
     [workerId, now.toISOString(), expiresAt, now.toISOString(), batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
   );
   if (!result.changes) { response.status(404).json({ error: "Receipt review was not found." }); return; }
@@ -14125,6 +14385,12 @@ app.post("/api/admin/v2/reviews/:batchId/reassign", requireAdminAccess, requireL
 
 app.post("/api/admin/v2/reviews/:batchId/escalate", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) {
+    response.status(409).json({ error: "A completed or rejected proof cannot be escalated." });
+    return;
+  }
   const reason = cleanText(request.body.reason, 500);
   if (!reason) {
     response.status(400).json({ error: "Explain what help is needed." });
@@ -14132,7 +14398,7 @@ app.post("/api/admin/v2/reviews/:batchId/escalate", requireAdminAccess, requireL
   }
   const now = new Date().toISOString();
   const result = await run(
-    "UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = ?, updated_at = ? WHERE id = ? AND notes LIKE ?",
+    "UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = ?, review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, updated_at = ? WHERE id = ? AND notes LIKE ? AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') AND COALESCE(review_status, '') NOT IN ('completed','rejected')",
     [now, reason, now, batchId, `${PROOF_SUBMISSION_NOTE_PREFIX}%`]
   );
   if (!result.changes) {

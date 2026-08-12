@@ -30,36 +30,47 @@ assert.match(refreshBody, /cards\[0\]\.before\(status\)[\s\S]*status\.focus\([\s
 assert.match(refreshBody, /review-action-status/);
 assert.match(refreshBody, /status\.focus\(\{ preventScroll: true \}\)/, "Focus must move without scrolling.");
 assert.doesNotMatch(refreshBody, /renderReceiptReview\s*\(/, "A row mutation must not rebuild the proof workspace.");
+assert.doesNotMatch(refreshBody, /fetchJson\s*\(/, "A row mutation must use the mutation response instead of triggering a later workspace refresh.");
 assert.doesNotMatch(refreshBody, /scrollIntoView|scrollTop\s*=|window\.scrollTo|requestAnimationFrame/, "A row mutation must not run a second scroll-restoration lifecycle.");
 assert.doesNotMatch(source, /captureReviewViewport/, "The failed whole-viewport restoration layer must stay removed.");
 assert.doesNotMatch(source, /querySelector\("\[data-review-row\] button:not\(\[disabled\]\)/, "Resolved actions must not focus the first row at the top of the proof.");
+
+const removeBody = functionBody("removeReviewRow", "parseAiResults");
+assert.match(removeBody, /refreshResolvedReviewRows\s*\(/, "Removing a row must apply the authoritative post-action lifecycle locally.");
+assert.doesNotMatch(removeBody, /renderReceiptReview\s*\(/, "Removing a row must not rebuild the proof workspace.");
 
 assert.match(source, /event\.preventDefault\(\)/);
 assert.match(source, /type="button" data-approve-row=/);
 assert.match(source, /type="button" data-open-reject=/);
 assert.match(source, /type="button" data-approve-ready/);
+for (const attribute of ["data-approve-row", "data-confirm-reject", "data-approve-ready", "data-store-resolution", "data-review-later", "data-finish-review", "data-reject-receipt"]) {
+  assert.match(source, new RegExp(`type="button"[^>]*${attribute}|${attribute}[^>]*type="button"`), `${attribute} must never submit a surrounding form.`);
+}
 assert.match(source, /completed_rows/);
 assert.match(source, /data-proof-reject-form/);
 assert.match(source, /data-add-review-photo/);
 assert.match(source, /data-review-completion/);
 assert.match(source, /Finish &amp; Review Next/);
+assert.match(source, /data-open-proof-review/, "Legacy importer proofs must route terminal work through the canonical Review Workspace.");
+assert.doesNotMatch(source, /data-proof-action="(?:reviewed_no_prices|duplicate|reject)"/, "Legacy proof cards must not expose competing terminal transitions.");
 
 const nextBody = functionBody("startReviewNext", "openReceiptReview");
-assert.match(nextBody, /await refreshReviewInbox\(\)/, "Review Next must select from a fresh Inbox.");
-assert.match(nextBody, /excludeBatchId/, "Review Next must exclude the proof that just closed.");
+assert.match(nextBody, /\/api\/admin\/v2\/reviews\/next/, "Review Next must use the canonical server selector.");
+assert.match(nextBody, /exclude_proof_id/, "Review Next must send the excluded proof ID to the server.");
+assert.doesNotMatch(nextBody, /adminV2InboxData\.items/, "Review Next must not scan stale client Inbox state.");
 
-const saveNextBody = functionBody("saveAndReviewNext", "finishAndReviewNext");
-assert.match(saveNextBody, /activeReviewState\?\.can_finish/);
-assert.match(saveNextBody, /finishAndReviewNext\(batchId\)/);
-assert.match(saveNextBody, /startReviewNext\(\{ excludeBatchId: batchId \}\)/);
+const reviewLaterBody = functionBody("reviewLater", "finishAndReviewNext");
+assert.match(reviewLaterBody, /\/review-later/);
+assert.match(reviewLaterBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
+assert.doesNotMatch(source, /Save &(?:amp;)? Review Next/, "The ambiguous generic action must be removed.");
 
 const finishBody = functionBody("finishAndReviewNext", "renderWorkers");
 assert.match(finishBody, /\/complete/);
-assert.match(finishBody, /startReviewNext\(\{ excludeBatchId: batchId \}\)/);
+assert.match(finishBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
 
 const rejectBody = functionBody("rejectReceipt", "approveReviewRows");
 assert.match(rejectBody, /\/reject/);
-assert.match(rejectBody, /startReviewNext\(\{ excludeBatchId: batchId \}\)/);
+assert.match(rejectBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
 assert.doesNotMatch(rejectBody, /loadAdminData\s*\(/, "Proof rejection must not refresh stale global state before choosing the next proof.");
 
 const storeResolutionBody = functionBody("resolveReviewStore", "refreshResolvedReviewRows");

@@ -160,6 +160,22 @@ async function insertProofBatch(dataDir, userId, title = "Admin V2 receipt") {
   }
 }
 
+async function insertAiJob(dataDir, proofId, status, options = {}) {
+  const now = new Date().toISOString();
+  const result = await updateTempUser(dataDir, `INSERT INTO ai_proof_jobs (proof_id, status, attempt_count, manual_requested, request_fingerprint, last_error, queued_at, started_at, completed_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`, [proofId, status, options.attemptCount || 0, `test-${proofId}`, options.lastError || null, now, options.started ? now : null, options.completed ? now : null, now]);
+  return result.lastID;
+}
+
+async function insertZeroItemAnalysis(dataDir, proofId, jobId) {
+  const now = new Date().toISOString();
+  return updateTempUser(dataDir, `INSERT INTO ai_proof_analyses (job_id, proof_id, proof_type, detected_store_name, detected_store_confidence, submitted_store_id, source_date_confidence, overall_confidence, warnings_json, structured_json, item_count, ready_count, check_count, unknown_count, created_at, updated_at) VALUES (?, ?, 'receipt_photo', '', 'unknown', 1, 'unknown', 'unknown', '[]', '{"items":[]}', 0, 0, 0, 0, ?, ?)`, [jobId, proofId, now, now]);
+}
+
+async function insertLifecycleRow(dataDir, proofId, status = "needs_edit", itemName = "Lifecycle test item") {
+  const now = new Date().toISOString();
+  return updateTempUser(dataDir, `INSERT INTO price_import_rows (batch_id, store_id, item_name, category, price, quantity, unit, proof_type, status, created_at, updated_at) VALUES (?, 1, ?, 'other', 1.99, 1, 'each', 'receipt_photo', ?, ?, ?)`, [proofId, itemName, status, now, now]);
+}
+
 async function waitForHealth(baseUrl, child) {
   const startedAt = Date.now();
 
@@ -346,6 +362,7 @@ async function main() {
     await updateTempUser(app.dataDir, "UPDATE price_import_batches SET default_store_id = ?, source_text = 'WALMART OLD HELPER TEXT' WHERE id = ?", [walmartStore.id, priorWalmartBatch]);
     await updateTempUser(app.dataDir, "INSERT INTO price_import_rows (batch_id, store_id, item_name, category, price, quantity, unit, proof_type, status, created_at, updated_at) VALUES (?, ?, 'Walmart old helper item', 'other', 9.99, 1, 'each', 'receipt_photo', 'ready_for_review', ?, ?)", [priorWalmartBatch, walmartStore.id, new Date().toISOString(), new Date().toISOString()]);
     const aiProofBatch = await insertProofBatch(app.dataDir, normalRegistration.user.id, "ALDI image submitted as Woodmans");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/claim`, {})).response.status, 200);
     const queuedAi = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/re-run-ai`, { reason: "Proof isolation acceptance test" });
     assert.equal(queuedAi.response.status, 202, JSON.stringify(queuedAi.body));
     let aiReview = null;
@@ -439,6 +456,8 @@ async function main() {
     assert.equal(editLastFlagged.response.status, 200, JSON.stringify(editLastFlagged.body));
     const approveLastFlagged = await reviewer.post(`/api/admin/price-import-rows/${flaggedRows[1].id}/approve`, {});
     assert.equal(approveLastFlagged.response.status, 200, JSON.stringify(approveLastFlagged.body));
+    assert.equal(approveLastFlagged.body.review_state.state, "READY_TO_FINISH", "The final row mutation must return authoritative ready-to-finish state without a workspace reload.");
+    assert.equal(approveLastFlagged.body.review_state.unresolved_rows, 0);
     const decisionCounts = await queryTempDb(app.dataDir, "SELECT SUM(status = 'approved') AS approved, SUM(status = 'rejected') AS rejected FROM price_import_rows WHERE batch_id = ?", [aiProofBatch]);
     assert.equal(decisionCounts.approved, 3);
     assert.equal(decisionCounts.rejected, 1);
@@ -572,10 +591,128 @@ async function main() {
     const conflictingClaim = await owner.post(`/api/admin/v2/reviews/${reviewBatchId}/claim`, {});
     assert.equal(conflictingClaim.response.status, 409);
 
+    const staleClaimId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Expired claim compatibility proof");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET review_claimed_by = ?, review_claimed_at = '2000-01-01T00:00:00.000Z', review_claim_expires_at = '2000-01-01T00:15:00.000Z', review_status = 'in_review' WHERE id = ?", [ownerLogin.body.user.id, staleClaimId]);
+    const reclaimedAfterExpiry = await reviewer.post(`/api/admin/v2/reviews/${staleClaimId}/claim`, {});
+    assert.equal(reclaimedAfterExpiry.response.status, 200, JSON.stringify(reclaimedAfterExpiry.body));
+    const renewedClaim = await queryTempDb(app.dataDir, "SELECT review_claimed_by, review_status, review_claim_expires_at FROM price_import_batches WHERE id = ?", [staleClaimId]);
+    assert.equal(renewedClaim.review_claimed_by, reviewerRegistration.user.id);
+    assert.equal(renewedClaim.review_status, "in_review");
+    assert.ok(renewedClaim.review_claim_expires_at > new Date().toISOString());
+
+    const reviewLaterFirstId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Review Later proof one");
+    const reviewLaterSecondId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Review Later proof two");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET created_at = CASE id WHEN ? THEN '2000-01-01T00:00:00.000Z' WHEN ? THEN '2000-01-02T00:00:00.000Z' ELSE created_at END WHERE id IN (?, ?)", [reviewLaterFirstId, reviewLaterSecondId, reviewLaterFirstId, reviewLaterSecondId]);
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${reviewLaterFirstId}/claim`, {})).response.status, 200);
+    const reviewLater = await reviewer.post(`/api/admin/v2/reviews/${reviewLaterFirstId}/review-later`, {});
+    assert.equal(reviewLater.response.status, 200, JSON.stringify(reviewLater.body));
+    const releasedForLater = await queryTempDb(app.dataDir, "SELECT review_status, review_claimed_by, review_claimed_at, review_claim_expires_at FROM price_import_batches WHERE id = ?", [reviewLaterFirstId]);
+    assert.equal(releasedForLater.review_status, "waiting");
+    assert.equal(releasedForLater.review_claimed_by, null);
+    assert.equal(releasedForLater.review_claimed_at, null);
+    assert.equal(releasedForLater.review_claim_expires_at, null);
+    const nextAfterLater = await reviewer.get(`/api/admin/v2/reviews/next?exclude_proof_id=${reviewLaterFirstId}`);
+    assert.equal(nextAfterLater.response.status, 200, JSON.stringify(nextAfterLater.body));
+    assert.notEqual(nextAfterLater.body.proof_id, reviewLaterFirstId, "The real next-proof SQL must never return the excluded current proof.");
+    assert.equal(nextAfterLater.body.proof_id, reviewLaterSecondId, "After leaving the oldest proof, the next eligible proof should be selected.");
+
+    const canonicalNotStartedId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical AI not started");
+    const canonicalNotStarted = await reviewer.get(`/api/admin/v2/reviews/${canonicalNotStartedId}`);
+    assert.equal(canonicalNotStarted.body.review_state.state, "AI_NOT_STARTED");
+    assert.equal(canonicalNotStarted.body.review_state.ai_started, false);
+    assert.equal(canonicalNotStarted.body.review_state.total_rows, 0);
+    assert.equal(canonicalNotStarted.body.review_state.can_finish, false);
+    assert.equal(canonicalNotStarted.body.review_state.message, "No analysis yet.");
+
+    const canonicalQueuedId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical AI queued");
+    await insertAiJob(app.dataDir, canonicalQueuedId, "waiting");
+    assert.equal((await reviewer.get(`/api/admin/v2/reviews/${canonicalQueuedId}`)).body.review_state.state, "AI_QUEUED");
+    await updateTempUser(app.dataDir, "UPDATE ai_proof_jobs SET status = 'analyzing', started_at = ?, updated_at = ? WHERE proof_id = ?", [new Date().toISOString(), new Date().toISOString(), canonicalQueuedId]);
+    assert.equal((await reviewer.get(`/api/admin/v2/reviews/${canonicalQueuedId}`)).body.review_state.state, "AI_RUNNING");
+
+    const canonicalFailedId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical AI failed");
+    await insertAiJob(app.dataDir, canonicalFailedId, "ai_failed", { started: true, completed: true, attemptCount: 1, lastError: "Unreadable test proof" });
+    const canonicalFailed = await reviewer.get(`/api/admin/v2/reviews/${canonicalFailedId}`);
+    assert.equal(canonicalFailed.body.review_state.state, "AI_FAILED");
+    assert.match(canonicalFailed.body.review_state.message, /Unreadable test proof/);
+
+    const canonicalZeroId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical AI zero results");
+    const canonicalZeroJobId = await insertAiJob(app.dataDir, canonicalZeroId, "needs_attention", { started: true, completed: true, attemptCount: 1 });
+    await insertZeroItemAnalysis(app.dataDir, canonicalZeroId, canonicalZeroJobId);
+    const canonicalZero = await reviewer.get(`/api/admin/v2/reviews/${canonicalZeroId}`);
+    assert.equal(canonicalZero.body.review_state.state, "AI_ZERO_RESULTS");
+    assert.equal(canonicalZero.body.review_state.ai_finished, true);
+    assert.match(canonicalZero.body.review_state.message, /no usable price items/i);
+    assert.notEqual(canonicalZero.body.review_state.state, canonicalNotStarted.body.review_state.state);
+
+    const canonicalReviewingId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical reviewing");
+    await insertLifecycleRow(app.dataDir, canonicalReviewingId, "needs_edit");
+    const canonicalReviewing = await reviewer.get(`/api/admin/v2/reviews/${canonicalReviewingId}`);
+    assert.equal(canonicalReviewing.body.review_state.state, "REVIEWING");
+    assert.equal(canonicalReviewing.body.review_state.unresolved_rows, 1);
+
+    const canonicalHelpId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Canonical manager help");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = 'Manager test' WHERE id = ?", [new Date().toISOString(), canonicalHelpId]);
+    assert.equal((await reviewer.get(`/api/admin/v2/reviews/${canonicalHelpId}`)).body.review_state.state, "MANAGER_HELP");
+    const canonicalInbox = await reviewer.get("/api/admin/v2/inbox");
+    assert.equal(canonicalInbox.body.items.find((item) => item.target_id === canonicalNotStartedId).status, "AI not started");
+    assert.equal(canonicalInbox.body.items.find((item) => item.target_id === canonicalZeroId).status, "No usable items found");
+    assert.equal(canonicalInbox.body.items.find((item) => item.target_id === canonicalHelpId).status, "Manager help");
+
+    const rejectionCases = [];
+    const rejectNotStarted = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state AI not started");
+    rejectionCases.push([rejectNotStarted, "AI_NOT_STARTED"]);
+    const rejectQueued = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state AI queued");
+    await insertAiJob(app.dataDir, rejectQueued, "waiting");
+    rejectionCases.push([rejectQueued, "AI_QUEUED"]);
+    const rejectRunning = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state AI running");
+    await insertAiJob(app.dataDir, rejectRunning, "analyzing", { started: true, attemptCount: 1 });
+    rejectionCases.push([rejectRunning, "AI_RUNNING"]);
+    const rejectFailed = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state AI failed");
+    await insertAiJob(app.dataDir, rejectFailed, "ai_failed", { started: true, completed: true, attemptCount: 1, lastError: "Failure test" });
+    rejectionCases.push([rejectFailed, "AI_FAILED"]);
+    const rejectZero = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state AI zero");
+    const rejectZeroJob = await insertAiJob(app.dataDir, rejectZero, "needs_attention", { started: true, completed: true, attemptCount: 1 });
+    await insertZeroItemAnalysis(app.dataDir, rejectZero, rejectZeroJob);
+    rejectionCases.push([rejectZero, "AI_ZERO_RESULTS"]);
+    const rejectReviewing = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state reviewing");
+    await insertLifecycleRow(app.dataDir, rejectReviewing, "needs_edit");
+    rejectionCases.push([rejectReviewing, "REVIEWING"]);
+    const rejectPartial = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state partial");
+    await insertLifecycleRow(app.dataDir, rejectPartial, "rejected", "Resolved item");
+    await insertLifecycleRow(app.dataDir, rejectPartial, "needs_edit", "Unresolved item");
+    rejectionCases.push([rejectPartial, "REVIEWING"]);
+    const rejectReady = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state ready to finish");
+    await insertLifecycleRow(app.dataDir, rejectReady, "rejected");
+    rejectionCases.push([rejectReady, "READY_TO_FINISH"]);
+    const rejectLegacy = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Reject state legacy zero draft");
+    await updateTempUser(app.dataDir, "UPDATE price_import_batches SET review_status = 'in_review', review_decision = 'completed', review_completed_at = ? WHERE id = ?", [new Date().toISOString(), rejectLegacy]);
+    rejectionCases.push([rejectLegacy, "AI_NOT_STARTED"]);
+
+    for (const [proofId, expectedState] of rejectionCases) {
+      assert.equal((await reviewer.post(`/api/admin/v2/reviews/${proofId}/claim`, {})).response.status, 200, `Claim failed for ${expectedState}`);
+      const beforeReject = await reviewer.get(`/api/admin/v2/reviews/${proofId}`);
+      assert.equal(beforeReject.body.review_state.state, expectedState, JSON.stringify(beforeReject.body.review_state));
+      const rejected = await reviewer.post(`/api/admin/v2/reviews/${proofId}/reject`, { reason: "invalid proof", note: `Rejected from ${expectedState}` });
+      assert.equal(rejected.response.status, 200, JSON.stringify(rejected.body));
+      assert.equal(rejected.body.review_state.state, "REJECTED");
+      const terminal = await queryTempDb(app.dataDir, "SELECT status, review_status, review_decision, review_claimed_by, review_claimed_at, review_claim_expires_at, review_completed_at FROM price_import_batches WHERE id = ?", [proofId]);
+      assert.equal(terminal.status, "proof_rejected");
+      assert.equal(terminal.review_status, "rejected");
+      assert.equal(terminal.review_decision, "rejected");
+      assert.equal(terminal.review_claimed_by, null);
+      assert.equal(terminal.review_claimed_at, null);
+      assert.equal(terminal.review_claim_expires_at, null);
+      assert.ok(terminal.review_completed_at);
+      assert.equal((await reviewer.get("/api/admin/v2/inbox")).body.items.some((item) => item.target_id === proofId), false);
+      assert.notEqual((await reviewer.get(`/api/admin/v2/reviews/next?exclude_proof_id=${proofId}`)).body.proof_id, proofId);
+    }
+
     const rejectProofBatchId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Proof rejection close test");
     assert.equal((await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/claim`, {})).response.status, 200);
     const zeroDraftReview = await reviewer.get(`/api/admin/v2/reviews/${rejectProofBatchId}`);
-    assert.equal(zeroDraftReview.body.review_lifecycle.state, "no_items");
+    assert.equal(zeroDraftReview.body.review_state.state, "AI_NOT_STARTED");
+    assert.equal(zeroDraftReview.body.review_state.message, "No analysis yet.");
     assert.equal(zeroDraftReview.body.review_lifecycle.can_finish, false);
     const blockedEmptyCompletion = await reviewer.post(`/api/admin/v2/reviews/${rejectProofBatchId}/complete`, {});
     assert.equal(blockedEmptyCompletion.response.status, 409, "A zero-draft proof must require rejection, escalation, or manual entry.");
@@ -600,7 +737,7 @@ async function main() {
       assert.equal(rejectedRow.response.status, 200, JSON.stringify(rejectedRow.body));
     }
     const readyToFinishReview = await reviewer.get(`/api/admin/v2/reviews/${completedProofBatchId}`);
-    assert.equal(readyToFinishReview.body.review_lifecycle.state, "ready_to_finish");
+    assert.equal(readyToFinishReview.body.review_state.state, "READY_TO_FINISH");
     assert.equal(readyToFinishReview.body.review_lifecycle.unresolved_rows, 0);
     assert.equal(readyToFinishReview.body.review_lifecycle.can_finish, true);
     const readyToFinishBatch = await queryTempDb(app.dataDir, "SELECT review_status, review_decision, review_claimed_by, review_completed_at FROM price_import_batches WHERE id = ?", [completedProofBatchId]);
@@ -610,11 +747,11 @@ async function main() {
     assert.equal(readyToFinishBatch.review_completed_at, null, "Row resolution alone must not falsely finalize the proof.");
     await updateTempUser(app.dataDir, "UPDATE price_import_batches SET review_status = 'in_review', review_decision = 'completed', review_completed_at = ? WHERE id = ?", [new Date().toISOString(), completedProofBatchId]);
     const legacyZeroUnresolved = await reviewer.get(`/api/admin/v2/reviews/${completedProofBatchId}`);
-    assert.equal(legacyZeroUnresolved.body.review_lifecycle.state, "ready_to_finish", "Proofs left in the old row-completed state must remain finishable after this hotfix.");
+    assert.equal(legacyZeroUnresolved.body.review_state.state, "READY_TO_FINISH", "Proofs left in the old row-completed state must remain finishable after this hotfix.");
     assert.equal(legacyZeroUnresolved.body.review_lifecycle.can_finish, true);
     const completedProof = await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/complete`, {});
     assert.equal(completedProof.response.status, 200, JSON.stringify(completedProof.body));
-    assert.equal(completedProof.body.state, "completed");
+    assert.equal(completedProof.body.state, "COMPLETED");
     assert.equal(completedProof.body.status, "reviewed_no_prices");
     const finalizedProof = await queryTempDb(app.dataDir, "SELECT status, review_status, review_decision, review_claimed_by, review_claimed_at, review_claim_expires_at, review_completed_at FROM price_import_batches WHERE id = ?", [completedProofBatchId]);
     assert.equal(finalizedProof.status, "reviewed_no_prices");
@@ -627,10 +764,22 @@ async function main() {
     const inboxAfterCompletion = await reviewer.get("/api/admin/v2/inbox");
     assert.equal(inboxAfterCompletion.body.items.some((item) => item.target_id === completedProofBatchId), false, "Completed proof must leave the active Inbox.");
     assert.equal((await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/claim`, {})).response.status, 409, "A completed proof must not be reclaimed by Review Next.");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/review-later`, {})).response.status, 409, "Review Later must not reopen a completed proof.");
+    assert.equal((await owner.post(`/api/admin/v2/reviews/${completedProofBatchId}/reassign`, { user_id: reviewerRegistration.user.id })).response.status, 409, "A completed proof must not be reassigned.");
+    assert.equal((await reviewer.post(`/api/admin/v2/reviews/${completedProofBatchId}/escalate`, { reason: "Invalid terminal transition test" })).response.status, 409, "A completed proof must not be escalated.");
+    const stillFinalizedProof = await queryTempDb(app.dataDir, "SELECT status, review_status, review_claimed_by FROM price_import_batches WHERE id = ?", [completedProofBatchId]);
+    assert.equal(stillFinalizedProof.status, "reviewed_no_prices");
+    assert.equal(stillFinalizedProof.review_status, "completed");
+    assert.equal(stillFinalizedProof.review_claimed_by, null);
     const nextWaitingProofId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Next proof after completion");
     const nextInbox = await reviewer.get("/api/admin/v2/inbox");
     assert.ok(nextInbox.body.items.some((item) => item.target_id === nextWaitingProofId), "The next waiting proof must remain selectable.");
     assert.equal(nextInbox.body.items.some((item) => item.target_id === completedProofBatchId), false);
+
+    const legacyTerminalActionId = await insertProofBatch(app.dataDir, normalRegistration.user.id, "Legacy terminal action guard");
+    const legacyTerminalAction = await owner.post(`/api/admin/proof-submissions/${legacyTerminalActionId}/status`, { action: "reviewed_no_prices" });
+    assert.equal(legacyTerminalAction.response.status, 409, "The legacy importer must not bypass canonical finish/reject transitions.");
+    assert.equal((await queryTempDb(app.dataDir, "SELECT status FROM price_import_batches WHERE id = ?", [legacyTerminalActionId])).status, "needs_admin_review");
 
     const aiDrafts = await dataEntry.post(`/api/admin/price-imports/${reviewBatchId}/parse-price-text`, {
       source_text: "Milk 2% | 1 gal | 3.49\nLarge Eggs | 12 ct | 2.89"

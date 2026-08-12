@@ -45,6 +45,10 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
           const fixedItems = JSON.parse(releases[0].fixed_json);
           assert.equal(fixedItems.filter((item) => item === "Review actions now keep your place on long proofs.").length, 1);
           assert.equal(fixedItems.filter((item) => item === "Manually choosing a store now saves and persists correctly.").length, 1);
+          assert.equal(fixedItems.filter((item) => item === "Proof review navigation no longer reopens the proof you just left.").length, 1);
+          assert.equal(fixedItems.filter((item) => item === "AI-not-started, zero-result, active-review, and completed proofs now display distinct states.").length, 1);
+          assert.equal(fixedItems.filter((item) => item === "Completing or rejecting a proof reliably removes it from the active review queue.").length, 1);
+          assert.equal(fixedItems.filter((item) => item === "Review actions no longer unexpectedly move the reviewer around the page.").length, 1);
           database.close();
           console.log("Workflow schema migration tests passed.");
         });

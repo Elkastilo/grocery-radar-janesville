@@ -1331,7 +1331,14 @@ async function initDb() {
   if (currentReleaseDraft?.status === "draft") {
     let fixedItems = [];
     try { fixedItems = JSON.parse(currentReleaseDraft.fixed_json || "[]"); } catch { fixedItems = []; }
-    for (const item of ["Review actions now keep your place on long proofs.", "Manually choosing a store now saves and persists correctly."]) {
+    for (const item of [
+      "Review actions now keep your place on long proofs.",
+      "Manually choosing a store now saves and persists correctly.",
+      "Proof review navigation no longer reopens the proof you just left.",
+      "AI-not-started, zero-result, active-review, and completed proofs now display distinct states.",
+      "Completing or rejecting a proof reliably removes it from the active review queue.",
+      "Review actions no longer unexpectedly move the reviewer around the page."
+    ]) {
       if (!fixedItems.includes(item)) fixedItems.push(item);
     }
     await run("UPDATE homepage_patch_notes SET fixed_json = ?, updated_at = ? WHERE id = ? AND status = 'draft'", [JSON.stringify(fixedItems), now, currentReleaseDraft.id]);
@@ -1365,7 +1372,11 @@ async function initDb() {
         "Rejected proofs leave the review queue correctly.",
         "Approving items no longer jumps reviewers back to the top of the page.",
         "Review actions now keep your place on long proofs.",
-        "Manually choosing a store now saves and persists correctly."
+        "Manually choosing a store now saves and persists correctly.",
+        "Proof review navigation no longer reopens the proof you just left.",
+        "AI-not-started, zero-result, active-review, and completed proofs now display distinct states.",
+        "Completing or rejecting a proof reliably removes it from the active review queue.",
+        "Review actions no longer unexpectedly move the reviewer around the page."
       ]),
       JSON.stringify([
         "Some products still need real product photos.",

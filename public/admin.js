@@ -812,16 +812,17 @@ async function refreshReviewInbox() {
 }
 
 async function startReviewNext(options = {}) {
-  await refreshReviewInbox();
-  const role = adminSession.staff_role || adminSession.admin_role;
-  const candidate = (adminV2InboxData.items || []).find((item) => item.target_type === "price_import_batch" && Number(item.target_id) !== Number(options.excludeBatchId || 0) && (!item.claimed_by || Number(item.claimed_by) === Number(adminSession.id || adminSession.user?.id)) && (item.type !== "needs_help" || ["owner","manager"].includes(role)));
-  if (!candidate) {
+  const excludedId = Number(options.excludeProofId || options.excludeBatchId || 0);
+  const baseQuery = adminQuery();
+  const next = await fetchJson(`/api/admin/v2/reviews/next${baseQuery || "?"}${baseQuery ? "&" : ""}exclude_proof_id=${encodeURIComponent(excludedId || "")}`);
+  if (!next.proof_id) {
+    await refreshReviewInbox();
     setMessage(inboxMessage, "No more proofs waiting.", "success");
     openAdminTab("inboxTab");
     return;
   }
   openAdminTab("inboxTab");
-  await openReceiptReview(candidate.target_id);
+  await openReceiptReview(next.proof_id);
 }
 
 async function openReceiptReview(batchId) {
@@ -888,8 +889,12 @@ function renderReceiptReview(data, options = {}) {
   const readyCount = Number(summary.ready || 0);
   const approvableReady = Number(summary.approvable_ready || 0);
   const completedRows = data.completed_rows || [];
-  const lifecycle = data.review_lifecycle || { state: rows.length ? "reviewing" : "no_items", total_rows: rows.length + completedRows.length, unresolved_rows: rows.length, can_finish: false };
+  const lifecycle = data.review_state || data.review_lifecycle || { state: "AI_NOT_STARTED", total_rows: rows.length + completedRows.length, unresolved_rows: rows.length, can_finish: false, label: "AI not started", message: "No analysis yet." };
   activeReviewState = { batchId: Number(batch.id), phase: lifecycle.state, ...lifecycle };
+  const reviewing = lifecycle.state === "REVIEWING";
+  const readyToFinish = lifecycle.state === "READY_TO_FINISH";
+  const aiWaiting = lifecycle.state === "AI_QUEUED" || lifecycle.state === "AI_RUNNING";
+  const showManualFallback = ["AI_NOT_STARTED", "AI_FAILED", "AI_ZERO_RESULTS", "REVIEWING"].includes(lifecycle.state);
   const submittedStore = batch.proof_store_name || batch.receipt_store_name || "Not selected";
   const detectedStore = analysis.detected_retailer || analysis.detected_store_name || "Not determined";
   const candidateIds = new Set((analysis.store_candidates || []).map((store) => Number(store.id)));
@@ -906,13 +911,14 @@ function renderReceiptReview(data, options = {}) {
         <dl><div><dt>Submitted</dt><dd>${escapeHtml(formatDate(batch.created_at))}</dd></div><div><dt>Submitted by</dt><dd>${escapeHtml(batch.created_by_username || "Community member")}</dd></div></dl>
       </section>
       <section class="receipt-items-panel">
-        <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong>${escapeHtml(aiJobLabel(jobStatus))}</strong></div><button class="quiet-button" type="button" data-rerun-ai>${ai.job ? "Re-run AI" : "Run AI"}</button></div>
-        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div>${resolvedStore ? `<p class="success" data-store-resolution-confirmation>Store resolved to ${escapeHtml(resolvedStore.name)} ✓</p>` : ""}</section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
-        <div class="items-summary"><div><h3><span data-review-remaining>${rows.length}</span> remaining</h3><span><span data-review-ready>${readyCount}</span> ready · <span data-review-flagged>${flaggedCount}</span> need review</span></div><div class="card-actions"><button class="secondary-button" type="button" data-toggle-ready ${flaggedCount ? "" : "hidden"}>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>${data.can_approve ? `<button class="primary-button" type="button" data-approve-ready ${approvableReady ? "" : "hidden"}>Approve All <span data-approvable-ready>${approvableReady}</span> Ready</button>` : ""}</div></div>
-        <div id="receiptEditableRows">${rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve, data.can_manage_images)).join("") || (lifecycle.total_rows ? "" : '<div class="empty-state" data-no-review-items>No draft items yet. Add an item, ask for help, or reject this proof with a reason.</div>')}</div>
-        <section class="review-completion-state" data-review-completion ${lifecycle.can_finish ? "" : "hidden"}><strong>Review complete</strong><p>Every discovered item has been approved, rejected, or removed.</p><button class="primary-button" type="button" data-finish-review>Finish &amp; Review Next</button></section>
+        <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong data-review-state-label>${escapeHtml(lifecycle.label || aiJobLabel(jobStatus))}</strong><p class="field-help" data-review-state-message>${escapeHtml(lifecycle.message || "")}</p></div>${lifecycle.can_run_ai ? `<button class="quiet-button" type="button" data-rerun-ai>${ai.job ? "Re-run AI" : "Run AI"}</button>` : ""}</div>
+        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div>${resolvedStore ? `<p class="success" data-store-resolution-confirmation>Resolved store: ${escapeHtml(resolvedStore.name)} ✓</p>` : ""}</section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
+        <div class="items-summary" data-items-summary ${reviewing ? "" : "hidden"}><div><h3><span data-review-remaining>${rows.length}</span> remaining</h3><span><span data-review-ready>${readyCount}</span> ready · <span data-review-flagged>${flaggedCount}</span> need review</span></div><div class="card-actions"><button class="secondary-button" type="button" data-toggle-ready ${flaggedCount ? "" : "hidden"}>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>${data.can_approve ? `<button class="primary-button" type="button" data-approve-ready ${approvableReady ? "" : "hidden"}>Approve All <span data-approvable-ready>${approvableReady}</span> Ready</button>` : ""}</div></div>
+        <div id="receiptEditableRows">${reviewing ? rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve, data.can_manage_images)).join("") : ""}</div>
+        <section class="review-completion-state" data-review-completion ${readyToFinish ? "" : "hidden"}><strong>Review complete</strong><p>All items have been resolved.</p><button class="primary-button" type="button" data-finish-review>Finish &amp; Review Next</button></section>
+        <section class="review-state-guidance" data-review-guidance ${reviewing || readyToFinish ? "hidden" : ""}><strong>${escapeHtml(lifecycle.label || "Review status")}</strong><p>${escapeHtml(lifecycle.message || "")}</p></section>
         <details class="completed-review-items" data-completed-items ${completedRows.length ? "" : "hidden"}><summary>Show completed (<span data-completed-count>${completedRows.length}</span>)</summary><div data-completed-list>${completedRows.map(completedReviewRowMarkup).join("")}</div></details>
-        <details><summary>Manual fallbacks</summary><p class="field-help">If AI cannot finish, paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
+        <details data-manual-fallback ${showManualFallback ? "" : "hidden"}><summary>Manual review</summary><p class="field-help">Paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
         <div class="review-actions">
           <button class="quiet-button" type="button" data-help-reason="Receipt image cannot be read">Can't Read</button>
           <button class="quiet-button" type="button" data-help-reason="Possible duplicate receipt">Duplicate</button>
@@ -920,7 +926,7 @@ function renderReceiptReview(data, options = {}) {
           <button class="secondary-button" type="button" data-help-reason="Manager review requested">Needs Manager Help</button>
           <button class="danger-button" type="button" data-open-proof-reject>Reject Proof</button>
           ${data.can_approve ? "" : '<span class="warning">Data Entry can save drafts but cannot publish prices.</span>'}
-          <button class="primary-button" type="button" data-save-next ${lifecycle.state === "no_items" ? "hidden" : ""}>${lifecycle.can_finish ? "Finish &amp; Review Next" : "Save &amp; Review Next"}</button>
+          <button class="quiet-button" type="button" data-review-later ${lifecycle.can_review_later && !readyToFinish ? "" : "hidden"}>${aiWaiting ? "Return to Inbox" : "Review Later"}</button>
         </div>
         <div class="receipt-reject-form" data-proof-reject-form hidden><label><span>Why reject this proof?</span><select name="proof_rejection_reason">${["proof unreadable","wrong store/source","duplicate proof","not enough price information","invalid proof","out of date","private/sensitive information","other"].map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional reviewer note</span><input name="proof_rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-reject-receipt>Reject proof and close task</button><button class="quiet-button" type="button" data-cancel-proof-reject>Cancel</button></div></div>
       </section>
@@ -954,7 +960,7 @@ function renderReceiptReview(data, options = {}) {
   receiptReviewWorkspace.querySelector("[data-cancel-proof-reject]")?.addEventListener("click", () => { receiptReviewWorkspace.querySelector("[data-proof-reject-form]").hidden = true; });
   receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
   receiptReviewWorkspace.querySelector("[data-approve-ready]")?.addEventListener("click", (event) => { event.preventDefault(); approveReadyRows(batch.id, Number(receiptReviewWorkspace.querySelector("[data-approvable-ready]")?.textContent || 0)); });
-  receiptReviewWorkspace.querySelector("[data-save-next]")?.addEventListener("click", () => saveAndReviewNext(batch.id));
+  receiptReviewWorkspace.querySelector("[data-review-later]")?.addEventListener("click", () => reviewLater(batch.id));
   receiptReviewWorkspace.querySelector("[data-finish-review]")?.addEventListener("click", () => finishAndReviewNext(batch.id));
   receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
 }
@@ -968,7 +974,10 @@ async function rerunAi(batchId) {
   try {
     const data = await fetchJson(`/api/admin/v2/reviews/${batchId}/re-run-ai${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason: "Staff requested a fresh proof analysis." }) });
     setMessage(inboxMessage, data.message, "success");
-    window.setTimeout(() => openReceiptReview(batchId), 1200);
+    window.setTimeout(async () => {
+      try { renderReceiptReview(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`)); }
+      catch (error) { setMessage(inboxMessage, error.message, "error"); }
+    }, 1200);
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
@@ -988,7 +997,8 @@ async function resolveReviewStore(batchId, action) {
       const unresolvedHeading = unresolvedSection?.querySelector("h4");
       if (unresolvedHeading) unresolvedHeading.textContent = "⚠ Resolve price store";
       unresolvedSection?.querySelector("[data-store-resolution-confirmation]")?.remove();
-      updateReviewSummary(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+      updateReviewSummary(data);
+      applyReviewLifecycle(data);
       setMessage(inboxMessage, data.message, "success");
       return;
     }
@@ -1007,7 +1017,8 @@ async function resolveReviewStore(batchId, action) {
       section.append(confirmation);
     }
     if (confirmation) confirmation.textContent = `Resolved store: ${savedStore.name} ✓`;
-    updateReviewSummary(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+    updateReviewSummary(data);
+    applyReviewLifecycle(data);
     setMessage(inboxMessage, `Store resolved to ${savedStore.name}.`, "success");
   } catch (error) {
     console.error("Store resolution failed", { batchId, action, message: error.message });
@@ -1035,24 +1046,36 @@ function updateReviewSummary(review) {
 }
 
 function applyReviewLifecycle(review) {
-  const lifecycle = review.review_lifecycle || {};
-  activeReviewState = { batchId: Number(review.batch?.id), phase: lifecycle.state || "reviewing", ...lifecycle };
+  const lifecycle = review.review_state || review.review_lifecycle || review || {};
+  activeReviewState = { batchId: Number(review.proof_id || review.batch?.id || activeReviewState?.batchId), phase: lifecycle.state || "REVIEWING", ...lifecycle };
   const completion = receiptReviewWorkspace.querySelector("[data-review-completion]");
   if (completion) completion.hidden = !lifecycle.can_finish;
-  const saveNext = receiptReviewWorkspace.querySelector("[data-save-next]");
-  if (saveNext) {
-    saveNext.hidden = lifecycle.state === "no_items";
-    saveNext.textContent = lifecycle.can_finish ? "Finish & Review Next" : "Save & Review Next";
+  const itemsSummary = receiptReviewWorkspace.querySelector("[data-items-summary]");
+  if (itemsSummary) itemsSummary.hidden = lifecycle.state !== "REVIEWING";
+  const guidance = receiptReviewWorkspace.querySelector("[data-review-guidance]");
+  if (guidance) {
+    guidance.hidden = ["REVIEWING", "READY_TO_FINISH"].includes(lifecycle.state);
+    const strong = guidance.querySelector("strong");
+    const paragraph = guidance.querySelector("p");
+    if (strong) strong.textContent = lifecycle.label || "Review status";
+    if (paragraph) paragraph.textContent = lifecycle.message || "";
   }
+  const stateLabel = receiptReviewWorkspace.querySelector("[data-review-state-label]");
+  const stateMessage = receiptReviewWorkspace.querySelector("[data-review-state-message]");
+  if (stateLabel) stateLabel.textContent = lifecycle.label || lifecycle.state || "Review status";
+  if (stateMessage) stateMessage.textContent = lifecycle.message || "";
+  const reviewLaterButton = receiptReviewWorkspace.querySelector("[data-review-later]");
+  if (reviewLaterButton) reviewLaterButton.hidden = !lifecycle.can_review_later || lifecycle.state === "READY_TO_FINISH";
 }
 
-async function refreshResolvedReviewRows(batchId, resolvedRowIds, confirmationText) {
-  const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+async function refreshResolvedReviewRows(batchId, resolvedRowIds, confirmationText, review) {
   const cards = resolvedRowIds.map((rowId) => receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`)).filter(Boolean);
   if (cards.length) {
     const status = document.createElement("div");
     status.className = "review-action-status";
     status.tabIndex = -1;
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
     status.textContent = confirmationText;
     cards[0].before(status);
     status.focus({ preventScroll: true });
@@ -1114,15 +1137,16 @@ function openReviewPhotoDialog(batchId, productId, productName) {
 async function approveReviewRow(batchId, rowId) {
   const payload = { pin: getPin() };
   try {
+    let result;
     try {
-      await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      result = await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     } catch (error) {
       if (!/Owner confirmation is required/i.test(error.message) || !window.confirm("You submitted this proof yourself. Use the Owner operational override and create an audit record?")) throw error;
       payload.owner_self_approval_override = true;
       payload.override_reason = "Owner confirmed operational self-approval in Receipt Review.";
-      await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      result = await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
-    await refreshResolvedReviewRows(batchId, [rowId], "Approved");
+    await refreshResolvedReviewRows(batchId, [rowId], "Approved", result);
     setMessage(inboxMessage, "Item approved.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
@@ -1132,8 +1156,8 @@ async function rejectReviewRow(batchId, rowId) {
   const reason = row?.querySelector('[name="rejection_reason"]')?.value || "";
   const note = row?.querySelector('[name="rejection_note"]')?.value || "";
   try {
-    await fetchJson(`/api/admin/price-import-rows/${rowId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), rejection_reason: reason, admin_rejection_note: note }) });
-    await refreshResolvedReviewRows(batchId, [rowId], `Rejected · ${titleCase(reason)}`);
+    const result = await fetchJson(`/api/admin/price-import-rows/${rowId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), rejection_reason: reason, admin_rejection_note: note }) });
+    await refreshResolvedReviewRows(batchId, [rowId], `Rejected · ${titleCase(reason)}`, result);
     setMessage(inboxMessage, "Item rejected. Its reason and reviewer were recorded.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
@@ -1150,7 +1174,7 @@ async function approveReadyRows(batchId, count) {
       payload.override_reason = "Owner confirmed bulk ready-item self-approval in Receipt Review.";
       result = await fetchJson(`/api/admin/v2/reviews/${batchId}/approve-ready${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
-    await refreshResolvedReviewRows(batchId, result.approved_row_ids || [], `${result.approved_count} ready item${result.approved_count === 1 ? "" : "s"} approved`);
+    await refreshResolvedReviewRows(batchId, result.approved_row_ids || [], `${result.approved_count} ready item${result.approved_count === 1 ? "" : "s"} approved`, result);
     setMessage(inboxMessage, `${result.approved_count} ready item${result.approved_count === 1 ? "" : "s"} approved. Flagged items were left for review.`, "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
@@ -1167,6 +1191,7 @@ async function releaseAndExitReview(batchId) {
   try { await fetchJson(`/api/admin/v2/reviews/${batchId}/release${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); } catch (error) { /* An expired claim should not trap the worker. */ }
   activeReviewState = null;
   receiptReviewWorkspace.hidden = true;
+  try { await refreshReviewInbox(); } catch (error) { setMessage(inboxMessage, error.message, "error"); }
   openAdminTab("inboxTab");
 }
 
@@ -1182,8 +1207,9 @@ async function saveReviewRow(rowElement) {
 async function removeReviewRow(rowId) {
   if (!window.confirm("Remove this draft item from the receipt?")) return;
   try {
-    await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "removed" }) });
-    document.querySelector(`[data-review-row="${rowId}"]`)?.remove();
+    const result = await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "removed" }) });
+    await refreshResolvedReviewRows(result.proof_id, [rowId], "Draft removed", result);
+    setMessage(inboxMessage, "Draft removed from active review.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
@@ -1217,7 +1243,7 @@ async function rejectReceipt(batchId) {
     await fetchJson(`/api/admin/v2/reviews/${batchId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason, note }) });
     activeReviewState = { batchId: Number(batchId), phase: "rejected" };
     receiptReviewWorkspace.hidden = true;
-    await startReviewNext({ excludeBatchId: batchId });
+    await startReviewNext({ excludeProofId: batchId });
   } catch (error) { setMessage(inboxMessage, error.message || "Could not reject this proof. Please try again.", "error"); }
 }
 
@@ -1239,16 +1265,15 @@ async function approveReviewRows(batch) {
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
-async function saveAndReviewNext(batchId) {
-  for (const row of receiptReviewWorkspace.querySelectorAll('[data-review-row]:not([data-row-status="approved"]):not([data-row-status="rejected"]):not([data-row-status="removed"])')) await saveReviewRow(row);
-  if (activeReviewState?.can_finish) {
-    await finishAndReviewNext(batchId);
-    return;
+async function reviewLater(batchId) {
+  try {
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/review-later${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+    activeReviewState = null;
+    receiptReviewWorkspace.hidden = true;
+    await startReviewNext({ excludeProofId: batchId });
+  } catch (error) {
+    setMessage(inboxMessage, error.message || "Could not save this proof for later.", "error");
   }
-  await fetchJson(`/api/admin/v2/reviews/${batchId}/release${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
-  activeReviewState = null;
-  receiptReviewWorkspace.hidden = true;
-  await startReviewNext({ excludeBatchId: batchId });
 }
 
 async function finishAndReviewNext(batchId) {
@@ -1257,9 +1282,9 @@ async function finishAndReviewNext(batchId) {
     await fetchJson(`/api/admin/v2/reviews/${batchId}/complete${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
     activeReviewState = { batchId: Number(batchId), phase: "completed" };
     receiptReviewWorkspace.hidden = true;
-    await startReviewNext({ excludeBatchId: batchId });
+    await startReviewNext({ excludeProofId: batchId });
   } catch (error) {
-    activeReviewState = { ...(activeReviewState || {}), phase: "ready_to_finish" };
+    activeReviewState = { ...(activeReviewState || {}), phase: "READY_TO_FINISH" };
     setMessage(inboxMessage, error.message || "Could not finish this proof. Please try again.", "error");
   }
 }
@@ -4503,13 +4528,11 @@ function renderProofInbox() {
         ${proofUrl ? `<a class="quiet-button" href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener">Open proof image</a>` : '<p class="inline-help">No image uploaded. Use the source link before creating rows.</p>'}
         ${ocrText}
         <div class="card-actions">
+          <button class="primary-button" type="button" data-open-proof-review="${batch.id}">Open Review Workspace</button>
           <button class="secondary-button" type="button" data-proof-status="${batch.id}" data-proof-action="accept_for_review">Accept for review</button>
           <button class="primary-button" type="button" data-proof-create-row="${batch.id}">Create price row from proof</button>
-          <button class="secondary-button" type="button" data-proof-status="${batch.id}" data-proof-action="reviewed_no_prices">Reviewed, no prices added</button>
-          <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="duplicate">Mark duplicate</button>
           <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="needs_clearer_photo">Needs clearer photo</button>
           <button class="quiet-button" type="button" data-proof-status="${batch.id}" data-proof-action="needs_source_link">Needs source link</button>
-          <button class="danger-button" type="button" data-proof-status="${batch.id}" data-proof-action="reject">Reject proof</button>
         </div>
       </article>
     `;
@@ -4525,6 +4548,13 @@ function renderProofInbox() {
 
   for (const button of proofInboxList.querySelectorAll("[data-proof-create-row]")) {
     button.addEventListener("click", () => startPriceRowFromProof(button.dataset.proofCreateRow));
+  }
+
+  for (const button of proofInboxList.querySelectorAll("[data-open-proof-review]")) {
+    button.addEventListener("click", () => {
+      openAdminTab("inboxTab");
+      openReceiptReview(button.dataset.openProofReview);
+    });
   }
 
   for (const button of proofInboxList.querySelectorAll("[data-proof-status]")) {
