@@ -13933,16 +13933,30 @@ app.post("/api/admin/v2/reviews/:batchId/store-resolution", requireAdminAccess, 
   if (!analysis || !batch) { response.status(404).json({ error: "AI store analysis was not found for this proof." }); return; }
   const action = cleanEnum(request.body.action, ["use_ai", "keep_submitted", "choose_store", "not_sure"], "not_sure");
   const requestedStoreId = Number.parseInt(request.body.store_id, 10);
+  if (action === "choose_store" && !Number.isInteger(requestedStoreId)) { response.status(400).json({ error: "Choose an active Grocery Radar store." }); return; }
   const requestedResolutionId = action === "use_ai" ? analysis.detected_store_id : action === "keep_submitted" ? analysis.submitted_store_id : action === "choose_store" ? requestedStoreId : null;
-  const resolvedStore = requestedResolutionId ? await get("SELECT id FROM stores WHERE id = ? AND active = 1", [requestedResolutionId]) : null;
+  const resolvedStore = requestedResolutionId ? await get("SELECT id, name, city, state FROM stores WHERE id = ? AND active = 1", [requestedResolutionId]) : null;
   const resolvedStoreId = resolvedStore?.id || null;
   if (action !== "not_sure" && !resolvedStoreId) { response.status(400).json({ error: "The selected active store is unavailable." }); return; }
   const now = new Date().toISOString();
-  await run("UPDATE ai_proof_analyses SET resolved_store_id = ?, store_resolution = ?, updated_at = ? WHERE proof_id = ?", [resolvedStoreId, action, now, batchId]);
-  if (resolvedStoreId) await run("UPDATE price_import_rows SET store_id = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [resolvedStoreId, request.adminUser.id, now, batchId]);
+  const savedAnalysis = await run("UPDATE ai_proof_analyses SET resolved_store_id = ?, store_resolution = ?, updated_at = ? WHERE proof_id = ?", [resolvedStoreId, action, now, batchId]);
+  if (!savedAnalysis.changes) { console.error("Store resolution did not update an analysis", { batchId, action, requestedStoreId }); response.status(500).json({ error: "Could not save store. Please try again." }); return; }
+  let inheritedRowCount = 0;
+  if (resolvedStoreId) {
+    const inherited = await run("UPDATE price_import_rows SET store_id = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [resolvedStoreId, request.adminUser.id, now, batchId]);
+    inheritedRowCount = inherited.changes || 0;
+    await run("UPDATE price_import_batches SET review_status = CASE WHEN review_status = 'needs_help' THEN 'in_review' ELSE review_status END, review_escalated_at = NULL, review_escalation_reason = '', updated_at = ? WHERE id = ?", [now, batchId]);
+  }
   if (action === "not_sure") await run("UPDATE price_import_batches SET review_status = 'needs_help', review_escalated_at = ?, review_escalation_reason = 'Store could not be resolved', updated_at = ? WHERE id = ?", [now, now, batchId]);
   await recordPriceEvent({ batchId, eventType: "STORE_RESOLVED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: action, metadata: { submitted_store_id: analysis.submitted_store_id, detected_store_id: analysis.detected_store_id, resolved_store_id: resolvedStoreId } });
-  response.json({ message: action === "not_sure" ? "Store sent for Manager help." : "Store decision saved.", ai: await aiStateForProof(batchId) });
+  const persisted = await get("SELECT submitted_store_id, detected_store_id, resolved_store_id, store_resolution FROM ai_proof_analyses WHERE proof_id = ?", [batchId]);
+  response.json({
+    message: action === "not_sure" ? "Store left unresolved and sent for Manager help." : `Store resolved to ${resolvedStore.name}.`,
+    resolved_store: resolvedStore ? { id: resolvedStore.id, name: resolvedStore.name, city: resolvedStore.city || "", state: resolvedStore.state || "" } : null,
+    submitted_store_id: persisted.submitted_store_id || null,
+    inherited_row_count: inheritedRowCount,
+    ai: await aiStateForProof(batchId)
+  });
 }));
 
 app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), asyncRoute(async (request, response) => {

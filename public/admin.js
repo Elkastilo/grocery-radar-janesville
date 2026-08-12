@@ -897,7 +897,7 @@ function renderReceiptReview(data) {
       </section>
       <section class="receipt-items-panel">
         <div class="ai-analysis-summary"><div><h3>AI analysis</h3><strong>${escapeHtml(aiJobLabel(jobStatus))}</strong></div><button class="quiet-button" type="button" data-rerun-ai>${ai.job ? "Re-run AI" : "Run AI"}</button></div>
-        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div></section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
+        ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div>${resolvedStore ? `<p class="success" data-store-resolution-confirmation>Store resolved to ${escapeHtml(resolvedStore.name)} ✓</p>` : ""}</section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
         <div class="items-summary"><div><h3><span data-review-remaining>${rows.length}</span> remaining</h3><span><span data-review-ready>${readyCount}</span> ready · <span data-review-flagged>${flaggedCount}</span> need review</span></div><div class="card-actions"><button class="secondary-button" type="button" data-toggle-ready ${flaggedCount ? "" : "hidden"}>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>${data.can_approve ? `<button class="primary-button" type="button" data-approve-ready ${approvableReady ? "" : "hidden"}>Approve All <span data-approvable-ready>${approvableReady}</span> Ready</button>` : ""}</div></div>
         <div id="receiptEditableRows">${rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve, data.can_manage_images)).join("") || '<div class="empty-state" data-review-complete>Receipt complete. <button class="primary-button" type="button" data-next-proof>Next Proof</button></div>'}</div>
         <details class="completed-review-items" data-completed-items ${completedRows.length ? "" : "hidden"}><summary>Show completed (<span data-completed-count>${completedRows.length}</span>)</summary><div data-completed-list>${completedRows.map(completedReviewRowMarkup).join("")}</div></details>
@@ -925,14 +925,14 @@ function renderReceiptReview(data) {
   });
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-open-reject]")) button.addEventListener("click", () => { button.closest("[data-review-row]").querySelector("[data-reject-form]").hidden = false; });
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-cancel-reject]")) button.addEventListener("click", () => { button.closest("[data-reject-form]").hidden = true; });
-  for (const button of receiptReviewWorkspace.querySelectorAll("[data-approve-row]")) button.addEventListener("click", () => approveReviewRow(batch.id, button.dataset.approveRow));
-  for (const button of receiptReviewWorkspace.querySelectorAll("[data-confirm-reject]")) button.addEventListener("click", () => rejectReviewRow(batch.id, button.dataset.confirmReject));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-approve-row]")) button.addEventListener("click", (event) => { event.preventDefault(); approveReviewRow(batch.id, button.dataset.approveRow); });
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-confirm-reject]")) button.addEventListener("click", (event) => { event.preventDefault(); rejectReviewRow(batch.id, button.dataset.confirmReject); });
   bindReviewImageActions(batch.id);
   receiptReviewWorkspace.querySelector("[data-parse-ai]")?.addEventListener("click", () => parseAiResults(batch.id));
   receiptReviewWorkspace.querySelector("[data-add-manual-row]")?.addEventListener("click", () => addManualReviewRow(batch.id));
   receiptReviewWorkspace.querySelector("[data-rerun-ai]")?.addEventListener("click", () => rerunAi(batch.id));
   receiptReviewWorkspace.querySelector("[data-exit-review]")?.addEventListener("click", () => releaseAndExitReview(batch.id));
-  for (const button of receiptReviewWorkspace.querySelectorAll("[data-store-resolution]")) button.addEventListener("click", () => resolveReviewStore(batch.id, button.dataset.storeResolution));
+  for (const button of receiptReviewWorkspace.querySelectorAll("[data-store-resolution]")) button.addEventListener("click", (event) => { event.preventDefault(); resolveReviewStore(batch.id, button.dataset.storeResolution); });
   receiptReviewWorkspace.querySelector("[data-toggle-ready]")?.addEventListener("click", (event) => {
     const hiding = !receiptReviewWorkspace.classList.contains("show-flagged-only");
     receiptReviewWorkspace.classList.toggle("show-flagged-only", hiding);
@@ -942,7 +942,7 @@ function renderReceiptReview(data) {
   receiptReviewWorkspace.querySelector("[data-open-proof-reject]")?.addEventListener("click", () => { receiptReviewWorkspace.querySelector("[data-proof-reject-form]").hidden = false; });
   receiptReviewWorkspace.querySelector("[data-cancel-proof-reject]")?.addEventListener("click", () => { receiptReviewWorkspace.querySelector("[data-proof-reject-form]").hidden = true; });
   receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
-  receiptReviewWorkspace.querySelector("[data-approve-ready]")?.addEventListener("click", () => approveReadyRows(batch.id, approvableReady));
+  receiptReviewWorkspace.querySelector("[data-approve-ready]")?.addEventListener("click", (event) => { event.preventDefault(); approveReadyRows(batch.id, Number(receiptReviewWorkspace.querySelector("[data-approvable-ready]")?.textContent || 0)); });
   receiptReviewWorkspace.querySelector("[data-save-next]")?.addEventListener("click", () => saveAndReviewNext(batch.id));
   receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
   receiptReviewWorkspace.querySelector("[data-next-proof]")?.addEventListener("click", startReviewNext);
@@ -963,22 +963,49 @@ async function rerunAi(batchId) {
 
 async function resolveReviewStore(batchId, action) {
   try {
-    const storeId = receiptReviewWorkspace.querySelector("[data-resolved-store]")?.value || null;
+    const storeSelect = receiptReviewWorkspace.querySelector("[data-resolved-store]");
+    const storeId = storeSelect?.value || null;
     if (action === "choose_store" && !storeId) {
       setMessage(inboxMessage, "Choose the exact Grocery Radar store first.", "warning");
       return;
     }
     const data = await fetchJson(`/api/admin/v2/reviews/${batchId}/store-resolution${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), action, store_id: storeId }) });
-    setMessage(inboxMessage, data.message, "success");
-    await openReceiptReview(batchId);
-  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+    if (action === "not_sure") {
+      storeSelect.value = "";
+      const unresolvedSection = storeSelect.closest(".store-comparison");
+      unresolvedSection?.classList.add("has-mismatch");
+      const unresolvedHeading = unresolvedSection?.querySelector("h4");
+      if (unresolvedHeading) unresolvedHeading.textContent = "⚠ Resolve price store";
+      unresolvedSection?.querySelector("[data-store-resolution-confirmation]")?.remove();
+      updateReviewSummary(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+      setMessage(inboxMessage, data.message, "success");
+      return;
+    }
+    const savedStore = data.resolved_store;
+    if (!savedStore?.id) throw new Error("The server did not return the saved store.");
+    storeSelect.value = String(savedStore.id);
+    const section = storeSelect.closest(".store-comparison");
+    section?.classList.remove("has-mismatch");
+    const heading = section?.querySelector("h4");
+    if (heading) heading.textContent = "Store resolved";
+    let confirmation = section?.querySelector("[data-store-resolution-confirmation]");
+    if (!confirmation && section) {
+      confirmation = document.createElement("p");
+      confirmation.dataset.storeResolutionConfirmation = "";
+      confirmation.className = "success";
+      section.append(confirmation);
+    }
+    if (confirmation) confirmation.textContent = `Store resolved to ${savedStore.name} ✓`;
+    updateReviewSummary(await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`));
+    setMessage(inboxMessage, `Store resolved to ${savedStore.name}.`, "success");
+  } catch (error) {
+    console.error("Store resolution failed", { batchId, action, message: error.message });
+    setMessage(inboxMessage, "Could not save store. Please try again.", "error");
+  }
 }
 
-async function refreshResolvedReviewRows(batchId, resolvedRowIds) {
-  const scrollTop = window.scrollY;
+function updateReviewSummary(review) {
   const flaggedOnly = receiptReviewWorkspace.classList.contains("show-flagged-only");
-  const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
-  for (const rowId of resolvedRowIds) receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`)?.remove();
   const summary = review.approval_summary || {};
   const remaining = Number(summary.unresolved || 0);
   const ready = Number(summary.ready || 0);
@@ -993,11 +1020,32 @@ async function refreshResolvedReviewRows(batchId, resolvedRowIds) {
   if (toggle) { toggle.hidden = !flagged; toggle.textContent = flaggedOnly ? `View all ${remaining}` : `Review ${flagged} flagged item${flagged === 1 ? "" : "s"}`; }
   const approveReady = receiptReviewWorkspace.querySelector("[data-approve-ready]");
   if (approveReady) approveReady.hidden = !approvable;
+  return { remaining, ready, flagged, approvable };
+}
+
+function captureReviewViewport(resolvedRowIds) {
+  const resolvedIds = new Set(resolvedRowIds.map(String));
+  const cards = [...receiptReviewWorkspace.querySelectorAll("[data-review-row]")];
+  const affectedIndex = cards.findIndex((card) => resolvedIds.has(card.dataset.reviewRow));
+  const nextCard = cards.slice(Math.max(0, affectedIndex + 1)).find((card) => !resolvedIds.has(card.dataset.reviewRow));
+  const previousCard = cards.slice(0, Math.max(0, affectedIndex)).reverse().find((card) => !resolvedIds.has(card.dataset.reviewRow));
+  const focusCard = nextCard || previousCard || null;
+  const scrollElement = document.scrollingElement || document.documentElement;
+  return { scrollElement, scrollTop: scrollElement.scrollTop, focusRowId: focusCard?.dataset.reviewRow || "" };
+}
+
+async function refreshResolvedReviewRows(batchId, resolvedRowIds) {
+  const viewport = captureReviewViewport(resolvedRowIds);
+  const review = await fetchJson(`/api/admin/v2/reviews/${batchId}${adminQuery()}`);
+  receiptReviewWorkspace.classList.add("is-mutating");
+  for (const rowId of resolvedRowIds) receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`)?.remove();
+  const { remaining } = updateReviewSummary(review);
   const completed = review.completed_rows || [];
   const completedBox = receiptReviewWorkspace.querySelector("[data-completed-items]");
   if (completedBox) {
     completedBox.hidden = !completed.length;
-    setText("[data-completed-count]", completed.length);
+    const completedCount = completedBox.querySelector("[data-completed-count]");
+    if (completedCount) completedCount.textContent = completed.length;
     const list = completedBox.querySelector("[data-completed-list]");
     if (list) list.innerHTML = completed.map(completedReviewRowMarkup).join("");
   }
@@ -1007,8 +1055,14 @@ async function refreshResolvedReviewRows(batchId, resolvedRowIds) {
     rowsBox.querySelector("[data-next-proof]")?.addEventListener("click", startReviewNext);
   }
   window.requestAnimationFrame(() => {
-    window.scrollTo({ top: scrollTop, behavior: "auto" });
-    receiptReviewWorkspace.querySelector("[data-review-row] button:not([disabled]), [data-next-proof]")?.focus({ preventScroll: true });
+    viewport.scrollElement.scrollTop = viewport.scrollTop;
+    const focusCard = viewport.focusRowId ? receiptReviewWorkspace.querySelector(`[data-review-row="${viewport.focusRowId}"]`) : null;
+    (focusCard?.querySelector("button:not([disabled])") || receiptReviewWorkspace.querySelector("[data-next-proof]"))?.focus({ preventScroll: true });
+    viewport.scrollElement.scrollTop = viewport.scrollTop;
+    window.requestAnimationFrame(() => {
+      viewport.scrollElement.scrollTop = viewport.scrollTop;
+      receiptReviewWorkspace.classList.remove("is-mutating");
+    });
   });
 }
 

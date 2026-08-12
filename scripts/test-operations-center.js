@@ -375,6 +375,21 @@ async function main() {
     assert.equal(JSON.stringify(priorReview.body).includes("Bananas"), false);
 
     const analysisId = aiReview.ai.analysis.id;
+    await updateTempUser(app.dataDir, "UPDATE ai_proof_analyses SET detected_store_name = 'unknown', detected_store_id = NULL, submitted_store_id = 1, resolved_store_id = NULL, store_resolution = '' WHERE id = ?", [analysisId]);
+    await updateTempUser(app.dataDir, "UPDATE price_import_rows SET store_id = NULL WHERE batch_id = ?", [aiProofBatch]);
+    const chooseAldiDespiteUnknown = await reviewer.post(`/api/admin/v2/reviews/${aiProofBatch}/store-resolution`, { action: "choose_store", store_id: String(aldiStore.id) });
+    assert.equal(chooseAldiDespiteUnknown.response.status, 200, JSON.stringify(chooseAldiDespiteUnknown.body));
+    assert.equal(chooseAldiDespiteUnknown.body.resolved_store.id, aldiStore.id);
+    assert.equal(chooseAldiDespiteUnknown.body.resolved_store.name, "ALDI Janesville");
+    assert.equal(chooseAldiDespiteUnknown.body.submitted_store_id, 1);
+    const persistedAldiResolution = await queryTempDb(app.dataDir, "SELECT submitted_store_id, resolved_store_id, store_resolution FROM ai_proof_analyses WHERE id = ?", [analysisId]);
+    assert.equal(persistedAldiResolution.submitted_store_id, 1, "Original submitted Woodman's store must remain unchanged.");
+    assert.equal(persistedAldiResolution.resolved_store_id, aldiStore.id);
+    assert.equal(persistedAldiResolution.store_resolution, "choose_store");
+    assert.equal((await queryTempDb(app.dataDir, "SELECT default_store_id FROM price_import_batches WHERE id = ?", [aiProofBatch])).default_store_id, 1);
+    const reloadedAldiResolution = await reviewer.get(`/api/admin/v2/reviews/${aiProofBatch}`);
+    assert.equal(reloadedAldiResolution.body.ai.analysis.resolved_store_id, aldiStore.id);
+    assert.ok(reloadedAldiResolution.body.batch.rows.every((row) => row.store_id === aldiStore.id));
     await updateTempUser(app.dataDir, "UPDATE ai_proof_analyses SET detected_store_name = 'Kwik Trip / Kwik Star', detected_store_id = NULL, submitted_store_id = 1, resolved_store_id = NULL, store_resolution = '' WHERE id = ?", [analysisId]);
     await updateTempUser(app.dataDir, "UPDATE price_import_rows SET store_id = NULL WHERE batch_id = ?", [aiProofBatch]);
     const nowForFlagged = new Date().toISOString();

@@ -82,6 +82,7 @@
 .inbox-card-main { flex-direction: column; gap: 0.25rem; min-width: 0; }
 .plain-status { font-weight: 900; color: #334155; }
 .receipt-review-workspace { margin-top: 1rem; }
+.receipt-review-workspace.is-mutating { overflow-anchor: none; }
 .receipt-review-layout { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1fr); gap: 1rem; }
 .receipt-proof-panel,
 .receipt-items-panel { padding: 1rem; border-radius: 1rem; background: #fff; border: 1px solid #dbe6df; }

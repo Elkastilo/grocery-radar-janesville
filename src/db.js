@@ -1327,6 +1327,16 @@ async function initDb() {
     ]
   );
 
+  const currentReleaseDraft = await get("SELECT id, fixed_json, status FROM homepage_patch_notes WHERE version_label = ?", [`v${APP_VERSION}`]);
+  if (currentReleaseDraft?.status === "draft") {
+    let fixedItems = [];
+    try { fixedItems = JSON.parse(currentReleaseDraft.fixed_json || "[]"); } catch { fixedItems = []; }
+    for (const item of ["Review actions now keep your place on long proofs.", "Manually choosing a store now saves and persists correctly."]) {
+      if (!fixedItems.includes(item)) fixedItems.push(item);
+    }
+    await run("UPDATE homepage_patch_notes SET fixed_json = ?, updated_at = ? WHERE id = ? AND status = 'draft'", [JSON.stringify(fixedItems), now, currentReleaseDraft.id]);
+  }
+
   await run(
     `
       INSERT INTO homepage_patch_notes (
@@ -1353,7 +1363,9 @@ async function initDb() {
       JSON.stringify([
         "Rejected items no longer remain in the active review list.",
         "Rejected proofs leave the review queue correctly.",
-        "Approving items no longer jumps reviewers back to the top of the page."
+        "Approving items no longer jumps reviewers back to the top of the page.",
+        "Review actions now keep your place on long proofs.",
+        "Manually choosing a store now saves and persists correctly."
       ]),
       JSON.stringify([
         "Some products still need real product photos.",
