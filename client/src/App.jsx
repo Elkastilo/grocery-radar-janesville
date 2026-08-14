@@ -1436,7 +1436,7 @@ function DealsScreen({ arena, loading, error, openProduct, reload, onControlsCha
   const routeTitle = { home: 'Savings across every store', drops: 'Price Drops', showdown: 'Janesville Store Showdown', categories: "Who's cheaper by category?" }[section] || 'Savings across every store'
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
     <ScreenTitle eyebrow="Janesville price arena" title={routeTitle} subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
-    {section === 'home' ? <section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <button key={id} type="button" onClick={() => onSectionChange(id)} className="min-h-40 rounded-2xl bg-white p-5 text-left shadow-soft ring-1 ring-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-black">{title}</p><p className="mt-2 font-semibold text-slate-600">{body}</p><span className="mt-4 block font-black text-emerald-700">Open page →</span></button>)}</section> : null}
+    {section === 'home' ? <section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className="min-h-40 rounded-2xl bg-white p-5 text-left shadow-soft ring-1 ring-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-black">{title}</p><p className="mt-2 font-semibold text-slate-600">{body}</p><span className="mt-4 block font-black text-emerald-700">Open page →</span></a>)}</section> : null}
     {section !== 'home' ? <>
     <section className="mb-5 grid gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100 sm:grid-cols-2 lg:grid-cols-5">
       <label className="font-black text-slate-700">Time window<select className="field mt-1" value={controls.window} onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
@@ -1445,7 +1445,7 @@ function DealsScreen({ arena, loading, error, openProduct, reload, onControlsCha
       <label className="font-black text-slate-700">Category<select className="field mt-1" value={controls.category} onChange={(event) => onControlsChange({ category: event.target.value })}><option value="">All categories</option>{categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></label>
       <label className="font-black text-slate-700">Price-drop order<select className="field mt-1" value={controls.sort} onChange={(event) => onControlsChange({ sort: event.target.value })}><option value="newest">Newest</option><option value="percent">Biggest % drop</option><option value="dollars">Biggest dollar savings</option><option value="ending">Ending soon</option></select></label>
     </section>
-    <nav className="mb-5 flex flex-wrap gap-2" aria-label="Savings pages">{[['home','Savings Home'],['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <button key={id} type="button" aria-current={section === id ? 'page' : undefined} onClick={() => onSectionChange(id)} className={`min-h-12 rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</button>)}</nav>
+    <nav className="mb-5 flex flex-wrap gap-2" aria-label="Savings pages">{[['home','Savings Home'],['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} aria-current={section === id ? 'page' : undefined} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className={`flex min-h-12 items-center rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</a>)}</nav>
     {loading ? <LoadingCard label="Calculating current verified comparisons..." /> : null}
     {error ? <ApiError message={error} onRetry={reload} /> : null}
     {!loading && section === 'drops' ? <section><SectionHeader title="What got cheaper around Janesville?" />{drops.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drops.map((drop) => <article key={`${drop.type}-${drop.report.id}`} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="text-xs font-black uppercase text-emerald-700">{drop.label}</p><h2 className="mt-2 text-xl font-black">{drop.report.product_name}</h2><p className="font-bold text-slate-500">{drop.report.store_name}</p><p className="mt-3 text-sm font-bold text-slate-500">Was {money(drop.previous_price)}</p><p className="text-3xl font-black text-emerald-700">Now {money(drop.current_price)}</p><p className="mt-1 font-black">↓ {money(drop.dollar_drop)} / {drop.percent_drop}%</p><PromotionDetails report={drop.report} /><button type="button" onClick={() => openProduct(drop.report.product_id)} className="mt-4 min-h-11 w-full rounded-xl bg-slate-100 font-black">Compare stores</button></article>)}</div> : <EmptyState title="No verified price drops yet" body="A drop appears only after Grocery Radar has a legitimate comparable previous price." icon={Tag} />}</section> : null}
@@ -2724,10 +2724,15 @@ function BottomNav({ active, openScreen }) {
           const Icon = item.icon
           const selected = active === item.id
           return (
-            <button
+            <a
               key={item.id}
-              type="button"
-              onClick={() => openScreen(item.id)}
+              href={publicPathFor(item.id)}
+              aria-current={selected ? 'page' : undefined}
+              onClick={(event) => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                event.preventDefault()
+                openScreen(item.id)
+              }}
               className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-center text-[10px] font-black leading-tight sm:text-xs ${
                 selected ? 'bg-emerald-100 text-emerald-800' : 'text-slate-500'
               }`}
@@ -2736,7 +2741,7 @@ function BottomNav({ active, openScreen }) {
                 <Icon className="h-6 w-6" />
               </span>
               {item.label}
-            </button>
+            </a>
           )
         })}
       </div>

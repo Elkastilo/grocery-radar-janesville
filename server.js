@@ -7430,6 +7430,40 @@ async function sendAdminApp(request, response) {
     return;
   }
 
+  if (request.path === "/admin.html") {
+    const tabPaths = {
+      dashboardTab: "/admin",
+      inboxTab: "/admin/inbox",
+      attentionCenterTab: "/admin/attention",
+      productToolsTab: "/admin/products",
+      storesTab: "/admin/stores",
+      workersTab: "/admin/workers",
+      advancedTab: "/admin/advanced",
+      operationsTab: "/admin/operations",
+      pricesTab: "/admin/prices",
+      priceImporterTab: "/admin/imports",
+      reviewTab: "/admin/reports"
+    };
+    const tab = cleanText(request.query.tab, 80) || "dashboardTab";
+    const filter = cleanText(request.query.filter, 80);
+    const recordId = Number.parseInt(request.query.product || request.query.report || request.query.batch, 10);
+    let target = tabPaths[tab] || "/admin";
+    if (tab === "attentionCenterTab" && filter) target = `/admin/attention/${encodeURIComponent(filter.replaceAll("_", "-"))}`;
+    else if (tab === "productToolsTab" && Number.isInteger(recordId)) target = `/admin/products/${recordId}`;
+    else if (tab === "pricesTab" && Number.isInteger(recordId)) target = `/admin/prices/reports/${recordId}`;
+    else if (tab === "inboxTab" && Number.isInteger(recordId)) target = `/admin/inbox/${recordId}`;
+    else {
+      const params = new URLSearchParams();
+      for (const [name, value] of [["filter", filter], ["report", request.query.report], ["product", request.query.product], ["batch", request.query.batch], ["user", request.query.user], ["storeRequest", request.query.storeRequest], ["suggestion", request.query.suggestion]]) {
+        const safeValue = cleanText(value, 80);
+        if (safeValue) params.set(name, safeValue);
+      }
+      if (params.size) target += `?${params.toString()}`;
+    }
+    response.redirect(308, target);
+    return;
+  }
+
   response.sendFile(path.join(PUBLIC_DIR, "admin.html"));
 }
 

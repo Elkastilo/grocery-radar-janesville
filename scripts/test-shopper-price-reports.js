@@ -79,9 +79,22 @@ async function main() {
     const notification = await get(persisted, "SELECT related_type,related_id,target_url,is_read FROM notifications WHERE admin_only=1 AND related_type='price_issue_report' ORDER BY id DESC LIMIT 1");
     assert.deepEqual(notification, { related_type: "price_issue_report", related_id: createdBody.issue_id, target_url: `/admin/attention/reported-price/${createdBody.issue_id}`, is_read: 0 });
     await close(persisted);
+    const notificationApi = await owner.get("/api/admin/notifications");
+    assert.equal(notificationApi.response.status, 200);
+    const priceAlert = notificationApi.body.notifications.recent_admin_notifications.find((item) => item.related_type === "price_issue_report" && Number(item.related_id) === Number(createdBody.issue_id));
+    assert.ok(priceAlert, "The same API used by the Admin bell must return the new shopper report notification.");
+    assert.equal(priceAlert.target_url, `/admin/attention/reported-price/${createdBody.issue_id}`);
+    assert.match(priceAlert.title, /Price report: Price changed — Shopper Report Cola/);
+    assert.match(priceAlert.message, new RegExp(stores[0].name));
+    assert.equal(priceAlert.is_read, false);
+    assert.ok(notificationApi.body.notifications.unread_admin_notifications >= 1);
 
     const duplicate = await fetch(`${app.baseUrl}/api/price-reports/${aldi.lastID}/issues`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "price changed", note: "A second shopper saw it." }) }).then(async (response) => ({ status: response.status, body: await response.json() }));
     assert.equal(duplicate.status, 200); assert.equal(duplicate.body.issue_id, createdBody.issue_id); assert.equal(duplicate.body.consolidated, true);
+    const duplicateDb = openDb(app.dataDir);
+    assert.deepEqual(await get(duplicateDb, "SELECT duplicate_count FROM price_issue_reports WHERE id = ?", [createdBody.issue_id]), { duplicate_count: 2 });
+    assert.equal((await get(duplicateDb, "SELECT COUNT(*) AS count FROM notifications WHERE admin_only = 1 AND related_type = 'price_issue_report' AND related_id = ?", [createdBody.issue_id])).count, 1, "A consolidated duplicate remains visible on the issue without creating a second bell alert.");
+    await close(duplicateDb);
 
     const walmartIssue = await fetch(`${app.baseUrl}/api/price-reports/${walmart.lastID}/issues`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "wrong store", note: "This is the Walmart card." }) }).then((response) => response.json());
     const walmartDetail = await owner.get(`/api/admin/price-issues/${walmartIssue.issue_id}`);
@@ -137,6 +150,11 @@ async function main() {
     const adminSource = fs.readFileSync(path.join(ROOT, "public/admin.js"), "utf8");
     assert.match(adminSource, /\/admin\/attention\/\$\{encodeURIComponent\(attentionRouteSlug\(options\.filter\)\)\}\/\$\{encodeURIComponent\(options\.attentionRecordId\)\}/);
     assert.match(adminSource, /openPriceIssueDetail\(id\)/); assert.match(adminSource, /Dismiss Report/); assert.match(adminSource, /Expire Promotion &amp; resolve/); assert.match(adminSource, /Move \/ Correct Store & resolve/);
+    assert.match(adminSource, /adminNotificationBell\?\.addEventListener\("click", async \(\) =>/);
+    assert.match(adminSource, /await refreshAdminAlerts\(\{ force: true \}\)/, "Opening the bell must fetch current server truth before showing notifications.");
+    assert.match(adminSource, /adminBellCount\.textContent = String\(unread\); adminBellCount\.hidden = unread === 0/, "The visible bell badge must show the current unread count.");
+    assert.match(adminSource, /window\.addEventListener\("focus", \(\) => \{\s*refreshAdminAlerts\(\{ refreshAttention: true \}\)/, "Returning to Admin must refresh bell and actionable Attention counts.");
+    assert.match(adminSource, /<a class="notification-list-button[^`]+href="\$\{escapeHtml\(targetUrl\)\}"[^`]+Review report →/, "Notification UI must expose the dedicated report route as a semantic href.");
   } finally { await stopServer(app); }
   console.log("Shopper price-report persistence, exact linkage, moderation, correction, dismissal, notification, privacy, routing, and failure tests passed.");
 }

@@ -156,6 +156,9 @@ let adminV2InboxData = { items: [] };
 let adminV2WorkersData = { workers: [] };
 let adminV2FeedbackData = { feedback: [] };
 let adminV2AnnouncementsData = { announcements: [] };
+let adminNotificationSummary = {};
+let adminAlertRefreshPromise = null;
+let lastAdminAlertRefreshAt = 0;
 let activeInboxFilter = "all";
 let activeReviewState = null;
 const reviewRowSaveQueues = new Map();
@@ -373,7 +376,10 @@ function renderAdminSessionStatus() {
 
 function switchAdminTab(tabId) {
   for (const button of document.querySelectorAll("[data-admin-tab]")) {
-    button.classList.toggle("is-active", button.dataset.adminTab === tabId);
+    const active = button.dataset.adminTab === tabId;
+    button.classList.toggle("is-active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   }
 
   for (const panel of document.querySelectorAll(".admin-panel")) {
@@ -427,7 +433,7 @@ function highlightAdminTarget(options = {}) {
 }
 
 function openAdminTab(tabId, options = {}) {
-  if (options.updateHistory) updateAdminRoute(tabId, options, options.replaceHistory ? "replace" : "push");
+  if (options.updateHistory !== false) updateAdminRoute(tabId, options, options.replaceHistory ? "replace" : "push");
   pendingAdminRoute = options;
   adminHistoryFilter = options.filter || "";
   switchAdminTab(tabId);
@@ -496,7 +502,7 @@ function adminRouteUrl(tabId, options = {}) {
   if (tabId === "pricesTab" && options.reportId) return `/admin/prices/reports/${encodeURIComponent(options.reportId)}`;
   const path = adminTabPaths[tabId] || "/admin/not-found";
   const params = new URLSearchParams();
-  const routeFields = [["filter", options.filter], ["report", options.reportId], ["product", options.productId], ["batch", options.priceImportBatchId]];
+  const routeFields = [["filter", options.filter], ["report", options.reportId], ["product", options.productId], ["batch", options.priceImportBatchId], ["user", options.userId], ["storeRequest", options.storeRequestId], ["suggestion", options.suggestionId]];
   for (const [name, value] of routeFields) if (value !== undefined && value !== null && String(value)) params.set(name, String(value));
   return `${path}${params.toString() ? `?${params.toString()}` : ""}`;
 }
@@ -543,9 +549,47 @@ async function markAdminNotificationRead(notificationId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin: getPin() })
     });
+    await refreshAdminAlerts({ force: true });
   } catch (error) {
     // Notification read state should not block routing.
   }
+}
+
+function applyAdminNotificationSummary(summary = {}) {
+  adminNotificationSummary = summary;
+  const unread = Number(summary.unread_admin_notifications || summary.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
+  updateAdminBellUnreadCount(unread);
+  renderAdminNotificationPanel(summary);
+  if (document.querySelector("#dashboardTab")?.classList.contains("is-active")) renderDashboard(summary, adminV2HomeData);
+}
+
+function updateAdminBellUnreadCount(unreadValue) {
+  const unread = Math.max(0, Number(unreadValue || 0));
+  if (adminBellCount) { adminBellCount.textContent = String(unread); adminBellCount.hidden = unread === 0; }
+  if (adminNotificationBell) {
+    adminNotificationBell.classList.toggle("has-unread", unread > 0);
+    adminNotificationBell.setAttribute("aria-label", unread ? `Open notifications, ${unread} unread` : "Open notifications");
+  }
+}
+
+async function refreshAdminAlerts(options = {}) {
+  const now = Date.now();
+  if (!options.force && now - lastAdminAlertRefreshAt < 10000) return adminNotificationSummary;
+  if (adminAlertRefreshPromise) return adminAlertRefreshPromise;
+  adminAlertRefreshPromise = (async () => {
+    const role = adminSession.staff_role || adminSession.admin_role || (adminSession.is_super_admin ? "owner" : adminSession.is_admin ? "manager" : "user");
+    const shouldRefreshAttention = options.refreshAttention && ["owner", "manager"].includes(role);
+    const [notificationData, commandCenter] = await Promise.all([
+      fetchJson(`/api/admin/notifications${adminQuery()}`),
+      shouldRefreshAttention ? fetchJson(`/api/admin/operations/command-center${adminQuery()}`) : Promise.resolve(null)
+    ]);
+    lastAdminAlertRefreshAt = Date.now();
+    if (commandCenter) operationsCommandData = commandCenter;
+    applyAdminNotificationSummary(notificationData.notifications || {});
+    if (commandCenter && document.querySelector("#attentionCenterTab")?.classList.contains("is-active")) renderAttentionCenter();
+    return adminNotificationSummary;
+  })().finally(() => { adminAlertRefreshPromise = null; });
+  return adminAlertRefreshPromise;
 }
 
 function optionRows(options, selected = "") {
@@ -708,12 +752,13 @@ async function loadAdminData() {
   adminV2WorkersData = v2Workers || { workers: [] };
   adminV2FeedbackData = v2Feedback || { feedback: [] };
   adminV2AnnouncementsData = v2Announcements || { announcements: [] };
+  adminNotificationSummary = notificationData.notifications || {};
   renderAdminSessionStatus();
 
   populatePriceIntakeControls();
-  renderDashboard(notificationData.notifications, adminV2HomeData);
+  renderDashboard(adminNotificationSummary, adminV2HomeData);
   renderAttentionCenter();
-  renderAdminNotificationPanel(notificationData.notifications);
+  renderAdminNotificationPanel(adminNotificationSummary);
   renderInbox();
   renderWorkers();
   renderV2Feedback();
@@ -771,8 +816,7 @@ function renderDashboard(notifications = {}, home = null) {
     for (const button of adminNotifications.querySelectorAll("[data-shift-home]")) button.addEventListener("click", () => updateShift(button.dataset.shiftHome));
     adminNotifications.querySelector("[data-open-home-notifications]")?.addEventListener("click", () => adminNotificationBell?.click());
     const unread = Number(notifications.unread_admin_notifications || notifications.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
-    if (adminBellCount) adminBellCount.textContent = `${unread} unread`;
-    adminNotificationBell?.classList.toggle("has-unread", unread > 0);
+    updateAdminBellUnreadCount(unread);
     return;
   }
   const lastDiagnostic = notifications.last_email_diagnostic;
@@ -936,12 +980,13 @@ async function loadAttentionDetails(key, label = "Attention queue", options = {}
     const itemMarkup = items.map((item) => {
       const openId = key === "substitute_uncertain" ? item.source_product_id : key === "reported_price" ? item.id : item.price_report_id || item.id;
       const showOpen = key !== "upc_conflict";
-      return `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${key === "reported_price" && item.public_note ? `<span>Shopper note: ${escapeHtml(item.public_note)}</span>` : ""}${item.count ? `<span>${Number(item.count)} similar report${Number(item.count) === 1 ? "" : "s"}</span>` : ""}${item.created_at ? `<span>Submitted ${escapeHtml(formatDate(item.created_at))}</span>` : item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions">${showOpen ? `<button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">${key === "reported_price" ? "Review" : "Open record"}</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`;
+      const openHref = attentionRecordHref(key, openId);
+      return `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${key === "reported_price" && item.public_note ? `<span>Shopper note: ${escapeHtml(item.public_note)}</span>` : ""}${item.count ? `<span>${Number(item.count)} similar report${Number(item.count) === 1 ? "" : "s"}</span>` : ""}${item.created_at ? `<span>Submitted ${escapeHtml(formatDate(item.created_at))}</span>` : item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions">${showOpen ? openHref ? `<a class="secondary-button" href="${escapeHtml(openHref)}" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">${key === "reported_price" ? "Review" : "Open record"}</a>` : `<button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">${key === "reported_price" ? "Review" : "Open record"}</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`;
     }).join("");
     if (append) attentionCenterDetails.insertAdjacentHTML("beforeend", itemMarkup);
     else attentionCenterDetails.innerHTML = itemMarkup || '<div class="empty-state">No items currently need this review.</div>';
     if (data.has_more) attentionCenterDetails.insertAdjacentHTML("beforeend", `<div class="card-actions"><button class="secondary-button" type="button" data-attention-load-more="${shown}">Load more</button></div>`);
-    for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId)); }
+    for (const link of attentionCenterDetails.querySelectorAll("[data-attention-open]:not([data-bound])")) { link.dataset.bound = "true"; link.addEventListener("click", (event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); openAttentionRecord(link.dataset.attentionOpen, link.dataset.attentionId); }); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label)); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label)); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-substitute-decision]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveSubstitute(button.dataset.sourceProduct, button.dataset.targetProduct, button.dataset.substituteDecision, key, label)); }
@@ -950,6 +995,15 @@ async function loadAttentionDetails(key, label = "Attention queue", options = {}
     attentionQueueStatus.textContent = "This queue could not be loaded.";
     attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
   } finally { attentionCenterDetails.setAttribute("aria-busy", "false"); }
+}
+
+function attentionRecordHref(key, id) {
+  if (key === "reported_price") return `/admin/attention/reported-price/${encodeURIComponent(id)}`;
+  if (["proofs_ready", "manager_help", "possible_duplicate_proof", "ai_zero_results"].includes(key)) return `/admin/inbox/${encodeURIComponent(id)}`;
+  if (["missing_current_price", "missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product", "family_missing", "substitute_uncertain"].includes(key)) return `/admin/products/${encodeURIComponent(id)}`;
+  if (key === "package_mismatch") return `/admin/prices/reports/${encodeURIComponent(id)}`;
+  if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) return `/admin/operations?filter=${encodeURIComponent(key)}`;
+  return "";
 }
 
 async function resolveSubstitute(sourceId, targetId, decision, key, label) {
@@ -1119,10 +1173,12 @@ function inboxItems() {
 function renderAdminNotificationPanel(notifications = {}) {
   if (!adminV2NotificationPanel) return;
   const rows = notifications.recent_admin_notifications || [];
-  adminV2NotificationPanel.innerHTML = `<div class="admin-panel-heading"><h2>Notifications</h2><button class="quiet-button" type="button" data-close-notifications aria-label="Close notifications">Close</button></div><div class="admin-list">${rows.length ? rows.map((item) => `<button class="notification-list-button ${item.is_read ? "" : "is-unread"}" type="button" data-panel-notification="${item.id}" data-target-url="${escapeHtml(item.target_url || "")}" data-target-tab="${escapeHtml(item.target_tab || "dashboardTab")}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.message)} · ${escapeHtml(formatDate(item.created_at))}</span></button>`).join("") : '<div class="empty-state">No admin notifications yet.</div>'}</div>`;
+  adminV2NotificationPanel.innerHTML = `<div class="admin-panel-heading"><h2>Notifications</h2><button class="quiet-button" type="button" data-close-notifications aria-label="Close notifications">Close</button></div><div class="admin-list">${rows.length ? rows.map((item) => { const targetUrl = String(item.target_url || "").startsWith("/admin") ? item.target_url : adminRouteUrl(item.target_tab || "dashboardTab"); return `<a class="notification-list-button ${item.is_read ? "" : "is-unread"}" href="${escapeHtml(targetUrl)}" data-panel-notification="${item.id}" data-target-url="${escapeHtml(targetUrl)}" data-target-tab="${escapeHtml(item.target_tab || "dashboardTab")}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.message)} · ${escapeHtml(formatDate(item.created_at))}</span><span class="notification-open-affordance" aria-hidden="true">Review report →</span></a>`; }).join("") : '<div class="empty-state">No admin notifications yet.</div>'}</div>`;
   adminV2NotificationPanel.querySelector("[data-close-notifications]")?.addEventListener("click", closeAdminNotifications);
   for (const button of adminV2NotificationPanel.querySelectorAll("[data-panel-notification]")) {
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", async (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
       await markAdminNotificationRead(button.dataset.panelNotification);
       closeAdminNotifications();
       if (button.dataset.targetUrl?.startsWith("/admin/attention/reported-price/")) {
@@ -6498,8 +6554,12 @@ async function submitBulkProductImages(event) {
 }
 
 function setupAdminTabs() {
-  for (const button of document.querySelectorAll("[data-admin-tab]")) {
-    button.addEventListener("click", () => goToAdminTab(button.dataset.adminTab));
+  for (const link of document.querySelectorAll("[data-admin-tab]")) {
+    link.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      goToAdminTab(link.dataset.adminTab);
+    });
   }
   for (const button of document.querySelectorAll("[data-jump-tab]")) {
     button.addEventListener("click", () => goToAdminTab(button.dataset.jumpTab));
@@ -6542,14 +6602,20 @@ function parseAdminRoute() {
   const report = path.match(/^\/admin\/prices\/reports\/(\d+)$/);
   if (report) return { tabId: "pricesTab", reportId: report[1] };
   const tabId = Object.entries(adminTabPaths).find(([, routePath]) => routePath === path)?.[0];
-  if (tabId) return { tabId, filter: params.get("filter") || "", reportId: params.get("report") || "" };
+  if (tabId) return { tabId, filter: params.get("filter") || "", reportId: params.get("report") || "", productId: params.get("product") || "", priceImportBatchId: params.get("batch") || "", userId: params.get("user") || "", storeRequestId: params.get("storeRequest") || "", suggestionId: params.get("suggestion") || "" };
   return { tabId: "adminNotFoundTab" };
+}
+
+function normalizeLegacyAdminLocation() {
+  if (window.location.pathname.replace(/\/$/, "") !== "/admin.html") return false;
+  const route = parseAdminRoute();
+  updateAdminRoute(route.tabId, route, "replace");
+  return true;
 }
 
 function applyAdminInitialRoute(options = {}) {
   const route = parseAdminRoute();
-  openAdminTab(route.tabId, { ...route, focusQueue: false, focusRoute: options.focusRoute !== false });
-  if (route.legacy) updateAdminRoute(route.tabId, route, "replace");
+  openAdminTab(route.tabId, { ...route, focusQueue: false, focusRoute: options.focusRoute !== false, updateHistory: false });
   if (route.tabId === "inboxTab" && route.priceImportBatchId) openReceiptReview(route.priceImportBatchId, { updateHistory: false });
 }
 
@@ -6604,10 +6670,26 @@ for (const button of inboxFilters?.querySelectorAll("[data-inbox-filter]") || []
     renderInbox();
   });
 }
-adminNotificationBell?.addEventListener("click", () => {
+adminNotificationBell?.addEventListener("click", async () => {
   if (!adminV2NotificationPanel) return;
-  adminV2NotificationPanel.hidden = !adminV2NotificationPanel.hidden;
+  const opening = adminV2NotificationPanel.hidden;
+  if (opening) {
+    adminV2NotificationPanel.innerHTML = '<div class="empty-state" role="status">Refreshing notifications…</div>';
+    adminV2NotificationPanel.hidden = false;
+    adminNotificationBell.setAttribute("aria-expanded", "true");
+    try { await refreshAdminAlerts({ force: true }); }
+    catch (error) { adminV2NotificationPanel.innerHTML = `<div class="empty-state">${escapeHtml(error.message)} <button class="quiet-button" type="button" data-notification-retry>Try Again</button></div>`; adminV2NotificationPanel.querySelector("[data-notification-retry]")?.addEventListener("click", () => adminNotificationBell.click()); }
+    return;
+  }
+  adminV2NotificationPanel.hidden = true;
   adminNotificationBell.setAttribute("aria-expanded", String(!adminV2NotificationPanel.hidden));
+});
+
+window.addEventListener("focus", () => {
+  refreshAdminAlerts({ refreshAttention: true }).catch(() => {});
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshAdminAlerts({ refreshAttention: true }).catch(() => {});
 });
 
 priceImportProofInput.addEventListener("change", () => renderPriceImportUploadPreview(priceImportProofInput.files));
@@ -6630,4 +6712,5 @@ for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]"))
 
 pinInput.value = localStorage.getItem("groceryRadarAdminPin") || "";
 
+normalizeLegacyAdminLocation();
 boot().catch((error) => setAdminMessage(error.message, "error"));

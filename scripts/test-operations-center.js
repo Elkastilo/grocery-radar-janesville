@@ -1070,8 +1070,11 @@ async function main() {
     assert.equal(blockedAdminPage.response.status, 403);
 
     const adminPage = await owner.get("/admin.html");
-    assert.equal(adminPage.response.status, 200);
-    assert.match(String(adminPage.body), /Operations Center/);
+    assert.equal(adminPage.response.status, 308);
+    assert.equal(adminPage.response.headers.get("location"), "/admin");
+    const cleanAdminPage = await owner.get("/admin");
+    assert.equal(cleanAdminPage.response.status, 200);
+    assert.match(String(cleanAdminPage.body), /Operations Center/);
 
     const categories = await normal.get("/api/feedback/categories");
     assert.equal(categories.response.status, 200);

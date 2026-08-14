@@ -14,7 +14,7 @@
         <div id="adminSessionStatus" class="admin-session-status" aria-live="polite"></div>
       </div>
       <div class="admin-header-actions">
-        <button id="adminNotificationBell" class="notification-bell" type="button" aria-label="Open notifications" aria-expanded="false">🔔<span id="adminBellCount" class="visually-hidden">0 unread</span></button>
+        <button id="adminNotificationBell" class="notification-bell" type="button" aria-label="Open notifications" aria-expanded="false">🔔<span id="adminBellCount" class="tab-count-badge" hidden>0</span></button>
         <a class="admin-link" href="/">Back to app</a>
       </div>
       <div id="adminV2NotificationPanel" class="admin-notification-panel" hidden aria-label="Admin notifications"></div>
@@ -23,13 +23,13 @@
     <main class="admin-shell">
       <aside class="admin-sidebar" aria-label="Admin sections">
         <div class="admin-nav-group"><span>Work</span>
-          <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Home</button>
-          <button class="admin-tab" type="button" data-admin-tab="inboxTab">Inbox</button>
-          <button class="admin-tab" type="button" data-admin-tab="attentionCenterTab" data-manager-only>Attention Center</button>
-          <button class="admin-tab" type="button" data-admin-tab="productToolsTab" data-manager-only>Products</button>
-          <button class="admin-tab" type="button" data-admin-tab="storesTab" data-manager-only>Stores</button>
-          <button id="workersNavButton" class="admin-tab" type="button" data-admin-tab="workersTab">Workers</button>
-          <button class="admin-tab" type="button" data-admin-tab="advancedTab" data-manager-only>Advanced</button>
+          <a class="admin-tab is-active" href="/admin" data-admin-tab="dashboardTab">Home</a>
+          <a class="admin-tab" href="/admin/inbox" data-admin-tab="inboxTab">Inbox</a>
+          <a class="admin-tab" href="/admin/attention" data-admin-tab="attentionCenterTab" data-manager-only>Attention Center</a>
+          <a class="admin-tab" href="/admin/products" data-admin-tab="productToolsTab" data-manager-only>Products</a>
+          <a class="admin-tab" href="/admin/stores" data-admin-tab="storesTab" data-manager-only>Stores</a>
+          <a id="workersNavButton" class="admin-tab" href="/admin/workers" data-admin-tab="workersTab">Workers</a>
+          <a class="admin-tab" href="/admin/advanced" data-admin-tab="advancedTab" data-manager-only>Advanced</a>
         </div>
       </aside>
 

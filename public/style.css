@@ -410,6 +410,7 @@ button {
 }
 
 .admin-tab {
+  display: block;
   min-height: 42px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -417,6 +418,7 @@ button {
   color: var(--ink);
   font-weight: 900;
   text-align: left;
+  text-decoration: none;
   padding: 9px 10px;
 }
 
@@ -2721,6 +2723,7 @@ button:disabled {
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   padding: 10px 12px;
 }
 

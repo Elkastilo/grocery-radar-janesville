@@ -8,6 +8,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const sqlite3 = require("sqlite3").verbose();
+const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
 const OWNER_EMAIL = "juricbu@gmail.com";
@@ -89,6 +90,12 @@ async function main() {
     const owner = new Client(app.baseUrl);
     const login = await owner.post("/api/auth/login", { email: OWNER_EMAIL, password: OWNER_PASSWORD });
     assert.equal(login.response.status, 200, login.body);
+    const legacyAdmin = await owner.get("/admin.html");
+    assert.equal(legacyAdmin.response.status, 308);
+    assert.equal(legacyAdmin.response.headers.get("location"), "/admin");
+    const legacyAttention = await owner.get("/admin.html?tab=attentionCenterTab&filter=missing_photo");
+    assert.equal(legacyAttention.response.status, 308);
+    assert.equal(legacyAttention.response.headers.get("location"), "/admin/attention/missing-photo");
     const adminPaths = ["/admin", "/admin/inbox", "/admin/attention", "/admin/attention/missing-photo", "/admin/attention/missing-current-price", "/admin/attention/missing-upc", "/admin/attention/stale-price", "/admin/attention/location-unresolved", "/admin/attention/family-missing", "/admin/attention/substitute-uncertain", "/admin/attention/reported-price/123", "/admin/products", "/admin/stores", "/admin/workers", "/admin/advanced"];
     for (const pathname of adminPaths) {
       const result = await owner.get(pathname);
@@ -103,12 +110,41 @@ async function main() {
     assert.equal(attentionJson.queue.href, "/admin/attention/missing-photo");
 
     const adminSource = fs.readFileSync(path.join(ROOT, "public/admin.js"), "utf8");
+    const adminHtml = fs.readFileSync(path.join(ROOT, "public/admin.html"), "utf8");
     const publicSource = fs.readFileSync(path.join(ROOT, "client/src/routes.js"), "utf8");
     assert.match(adminSource, /window\.addEventListener\("popstate"/);
     assert.match(adminSource, /attentionKeyFromSlug/);
     assert.match(adminSource, /attentionRecordId: attention\[2\] \|\| ""/);
-    assert.match(adminSource, /updateAdminRoute\(route\.tabId, route, "replace"\)/, "Legacy Admin URLs must normalize with replaceState.");
+    assert.match(adminSource, /normalizeLegacyAdminLocation\(\);\s*boot\(\)/, "Legacy Admin URL normalization must happen before asynchronous boot data loads.");
+    for (const [label, href] of [["Home", "/admin"], ["Inbox", "/admin/inbox"], ["Attention Center", "/admin/attention"], ["Products", "/admin/products"], ["Stores", "/admin/stores"]]) {
+      assert.match(adminHtml, new RegExp(`<a[^>]+href="${href.replaceAll("/", "\\/")}"[^>]*>${label}<\\/a>`), `${label} must be a semantic route link.`);
+    }
+    assert.match(adminSource, /href="\$\{escapeHtml\(item\.href\)\}" data-load-attention/, "Attention cards must retain their canonical semantic href.");
+    assert.match(adminSource, /href="\$\{escapeHtml\(openHref\)\}" data-attention-open/, "Attention records must retain semantic record hrefs.");
+    const routingStart = adminSource.indexOf("const adminTabPaths =");
+    const routingEnd = adminSource.indexOf("function openAttentionQueue", routingStart);
+    assert.ok(routingStart >= 0 && routingEnd > routingStart, "Admin routing functions must be available for the pathname harness.");
+    const browserUrl = new URL("https://thegroceryradar.com/admin/attention");
+    const browserWindow = {
+      location: browserUrl,
+      history: {
+        state: {},
+        pushState(state, _title, url) { this.state = state; const next = new URL(url, browserUrl.origin); browserUrl.pathname = next.pathname; browserUrl.search = next.search; },
+        replaceState(state, _title, url) { this.state = state; const next = new URL(url, browserUrl.origin); browserUrl.pathname = next.pathname; browserUrl.search = next.search; }
+      }
+    };
+    const routeContext = { window: browserWindow, URLSearchParams, encodeURIComponent };
+    vm.runInNewContext(`${adminSource.slice(routingStart, routingEnd)}\nglobalThis.testRoutes = { updateAdminRoute };`, routeContext);
+    for (const key of ["missing_current_price", "missing_photo", "missing_upc", "stale_price", "reported_price"]) {
+      routeContext.testRoutes.updateAdminRoute("attentionCenterTab", { filter: key });
+      assert.equal(browserWindow.location.pathname, `/admin/attention/${key.replaceAll("_", "-")}`, `${key} click navigation must mutate the browser pathname.`);
+    }
+    routeContext.testRoutes.updateAdminRoute("attentionCenterTab", { filter: "reported_price", attentionRecordId: 12 });
+    assert.equal(browserWindow.location.pathname, "/admin/attention/reported-price/12");
     assert.match(fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8"), /window\.addEventListener\('popstate'/);
+    const appSource = fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8");
+    assert.match(appSource, /<a\s+key=\{item\.id\}\s+href=\{publicPathFor\(item\.id\)\}/, "Public bottom navigation must expose real route hrefs.");
+    assert.match(appSource, /href=\{publicPathFor\('deals', \{ savingsSection: id \}\)\}/, "Savings destinations must expose real route hrefs.");
     for (const source of [adminSource, publicSource]) assert.doesNotMatch(source, /params\.set\(["'](?:pin|token|submissionToken|auth|session|api_key|AI_API_KEY)["']/i, "Routing must never serialize secrets.");
   } finally { await stopServer(app); }
   console.log("Public/Admin routes, deep-link fallbacks, API isolation, filters, legacy compatibility, and URL security tests passed.");
