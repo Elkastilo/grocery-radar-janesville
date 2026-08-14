@@ -17,11 +17,11 @@ const database = new sqlite3.Database(path.join(dataDir, "grocery_radar.sqlite")
 database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows) => {
   if (error) throw error;
   const names = new Set(rows.map((row) => row.name));
-  for (const name of ["price_provenance_events", "quality_reviews", "quality_review_reports", "quality_review_helpful_votes", "ai_processing_settings", "ai_proof_jobs", "ai_proof_analyses", "ai_proof_attempts", "product_images", "catalog_import_batches", "catalog_import_rows", "catalog_import_images", "product_normalization_rules", "user_release_reads", "submission_outcomes", "bulk_intake_batches", "bulk_intake_items", "product_image_upload_batches", "product_image_upload_items", "admin_dashboard_visits", "search_demand", "search_aliases", "category_nodes", "product_barcodes", "product_barcode_conflicts", "product_merge_events", "product_duplicate_decisions", "price_corrections", "price_issue_reports", "source_freshness_settings"]) assert.ok(names.has(name), name);
+  for (const name of ["price_provenance_events", "quality_reviews", "quality_review_reports", "quality_review_helpful_votes", "ai_processing_settings", "ai_proof_jobs", "ai_proof_analyses", "ai_proof_attempts", "product_images", "catalog_import_batches", "catalog_import_rows", "catalog_import_images", "product_normalization_rules", "user_release_reads", "submission_outcomes", "bulk_intake_batches", "bulk_intake_items", "product_image_upload_batches", "product_image_upload_items", "admin_dashboard_visits", "search_demand", "search_aliases", "category_nodes", "product_barcodes", "product_barcode_conflicts", "product_merge_events", "product_duplicate_decisions", "price_corrections", "price_issue_reports", "source_freshness_settings", "product_families", "product_family_members", "product_substitutions", "price_arena_settings"]) assert.ok(names.has(name), name);
   database.all("PRAGMA table_info(price_reports)", (columnError, columns) => {
     if (columnError) throw columnError;
     const columnNames = new Set(columns.map((column) => column.name));
-    for (const name of ["submitted_by_user_id", "source_import_batch_id", "source_import_row_id", "source_date", "review_completed_at", "freshness_status", "comparison_price", "comparison_unit", "estimated_item_price", "approximate_item_weight", "package_price", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text"]) assert.ok(columnNames.has(name), name);
+    for (const name of ["submitted_by_user_id", "source_import_batch_id", "source_import_row_id", "source_date", "review_completed_at", "freshness_status", "comparison_price", "comparison_unit", "estimated_item_price", "approximate_item_weight", "package_price", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "location_verification_status", "applicable_city", "applicable_state", "applicable_store_id", "location_evidence_text"]) assert.ok(columnNames.has(name), name);
     database.all("PRAGMA table_info(price_import_rows)", (rowError, rowColumns) => {
       if (rowError) throw rowError;
       const rowColumnNames = new Set(rowColumns.map((column) => column.name));
@@ -36,7 +36,11 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
       database.all("PRAGMA table_info(products)", (productError, productColumns) => {
         if (productError) throw productError;
         const productColumnNames = new Set(productColumns.map((column) => column.name));
-        for (const name of ["variant", "upc", "description", "default_storage_condition", "category_node_id", "subcategory"]) assert.ok(productColumnNames.has(name), name);
+        for (const name of ["variant", "upc", "description", "default_storage_condition", "category_node_id", "subcategory", "generic_product_type", "product_attributes_json"]) assert.ok(productColumnNames.has(name), name);
+      database.all("PRAGMA table_info(price_import_batches)", (batchError, batchColumns) => {
+        if (batchError) throw batchError;
+        const batchColumnNames = new Set(batchColumns.map((column) => column.name));
+        for (const name of ["location_verification_status", "applicable_store_id", "location_evidence_text"]) assert.ok(batchColumnNames.has(name), name);
         database.all("SELECT version_label, status, published_at, fixed_json FROM homepage_patch_notes WHERE version_label = 'v0.9.4'", (releaseError, releases) => {
           if (releaseError) throw releaseError;
           assert.equal(releases.length, 1);
@@ -52,14 +56,19 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
           database.get("SELECT status,published_at FROM homepage_patch_notes WHERE version_label = 'v0.9.6'", (operationsReleaseError, operationsRelease) => {
             if (operationsReleaseError) throw operationsReleaseError;
             assert.deepEqual(operationsRelease, { status: "draft", published_at: null });
+            database.get("SELECT status,published_at FROM homepage_patch_notes WHERE version_label = 'v0.9.7'", (arenaReleaseError, arenaRelease) => {
+              if (arenaReleaseError) throw arenaReleaseError;
+              assert.deepEqual(arenaRelease, { status: "draft", published_at: null });
             database.get("SELECT COUNT(*) AS count FROM source_freshness_settings", (freshnessError, freshness) => {
               if (freshnessError) throw freshnessError;
               assert.ok(freshness.count >= 4);
               database.close();
               console.log("Workflow schema migration tests passed.");
             });
+            });
           });
         });
+      });
       });
       });
       });

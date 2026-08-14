@@ -812,12 +812,20 @@ async function loadAttentionDetails(key, label = "Attention queue") {
   try {
     const data = await fetchJson(`/api/admin/operations/attention?category=${encodeURIComponent(key)}${adminQuery("&")}`);
     const items = data.items || [];
-    attentionCenterDetails.innerHTML = items.length ? items.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions"><button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${item.price_report_id || item.id}">Open</button>${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`).join("") : '<div class="empty-state">No matching records remain in this queue.</div>';
+    attentionCenterDetails.innerHTML = items.length ? items.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions"><button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${item.price_report_id || item.id}">Open</button>${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`).join("") : '<div class="empty-state">No matching records remain in this queue.</div>';
     for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]")) button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId));
     for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-price-issue]")) button.addEventListener("click", () => resolvePriceIssue(button.dataset.resolvePriceIssue, key, label));
     for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]")) button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label));
     for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]")) button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label));
+    for (const button of attentionCenterDetails.querySelectorAll("[data-substitute-decision]")) button.addEventListener("click", () => resolveSubstitute(button.dataset.sourceProduct, button.dataset.targetProduct, button.dataset.substituteDecision, key, label));
   } catch (error) { attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`; }
+}
+
+async function resolveSubstitute(sourceId, targetId, decision, key, label) {
+  try {
+    const data = await fetchJson(`/api/admin/substitutions/${sourceId}/${targetId}/decision${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), decision, confidence: decision === "confirm" ? "high" : "medium", reasons: ["Human reviewed product family and comparable use"] }) });
+    setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label);
+  } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
 }
 
 async function resolveUpcConflict(conflictId, key, label) {
@@ -836,10 +844,20 @@ async function resolvePriceIssue(issueId, key, label) {
 }
 
 function openAttentionRecord(key, id) {
+  if (key === "location_unresolved") { resolveArenaLocation(id); return; }
   if (["missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product"].includes(key)) openAdminTab("productToolsTab", { productId: id, filter: key });
   else if (key === "reported_price") openAdminTab("pricesTab", { filter: "reported", reportId: id });
   else if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) openAdminTab("operationsTab", { filter: key });
   else openAdminTab("priceImporterTab", { priceImportRowId: id, filter: key });
+}
+
+async function resolveArenaLocation(reportId) {
+  const storeId = window.prompt("Verified active Janesville store ID:"); if (!storeId) return;
+  const evidence = window.prompt("Describe the visible Janesville location evidence:"); if (!evidence) return;
+  try {
+    const data = await fetchJson(`/api/admin/prices/${reportId}/location${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "verified_exact_store", store_id: Number(storeId), evidence_note: evidence }) });
+    setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails("location_unresolved", "Location needs review");
+  } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
 }
 
 async function loadDuplicateProductCandidates() {

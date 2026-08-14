@@ -1448,6 +1448,80 @@ async function initDb() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS product_families (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      category TEXT,
+      category_node_id INTEGER,
+      generic_product_type TEXT NOT NULL,
+      key_attributes_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (category_node_id) REFERENCES category_nodes(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_family_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      family_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL UNIQUE,
+      member_attributes_json TEXT NOT NULL DEFAULT '{}',
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      source TEXT NOT NULL DEFAULT 'staff',
+      human_confirmed INTEGER NOT NULL DEFAULT 0,
+      confirmed_by INTEGER,
+      confirmed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (family_id) REFERENCES product_families(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (confirmed_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_substitutions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_product_id INTEGER NOT NULL,
+      target_product_id INTEGER NOT NULL,
+      substitution_type TEXT NOT NULL,
+      confidence TEXT NOT NULL DEFAULT 'low',
+      reasons_json TEXT NOT NULL DEFAULT '[]',
+      safety_warnings_json TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL DEFAULT 'rule_suggestion',
+      status TEXT NOT NULL DEFAULT 'suggested',
+      reviewed_by INTEGER,
+      reviewed_at TEXT,
+      review_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(source_product_id, target_product_id),
+      CHECK(source_product_id != target_product_id),
+      FOREIGN KEY (source_product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (target_product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS price_arena_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      minimum_broad_products INTEGER NOT NULL DEFAULT 20,
+      minimum_broad_categories INTEGER NOT NULL DEFAULT 3,
+      no_clear_leader_margin INTEGER NOT NULL DEFAULT 1,
+      history_window_days INTEGER NOT NULL DEFAULT 30,
+      updated_by INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS user_login_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -1600,6 +1674,42 @@ async function initDb() {
       now
     ]
   );
+
+  await run(
+    `INSERT INTO homepage_patch_notes (
+      version_label, title, summary, added_json, changed_json, fixed_json,
+      known_issues_json, next_focus_json, release_date, internal_commit_hash,
+      status, published_at, created_at, updated_at
+    )
+    SELECT 'v0.9.7', 'Janesville Price Arena',
+      'All-store verified price competition, transparent basket optimization, price drops, and human-confirmed substitutes.',
+      ?, ?, '[]', ?, '[]', NULL, '', 'draft', NULL, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = 'v0.9.7')`,
+    [
+      JSON.stringify([
+        "Every active Janesville store can compete across comparable grocery prices.",
+        "Product pages compare verified prices across all available stores.",
+        "Store Showdown, category comparisons, and one-store or multi-store basket plans.",
+        "Smart Substitutes and verified price drops across Janesville retailers."
+      ]),
+      JSON.stringify([
+        "Store rankings show coverage and never assume missing prices.",
+        "Conditional coupon and loyalty prices remain clearly labeled.",
+        "Substitutes are explicitly distinguished from identical products.",
+        "My List optimization and substitution preferences work without shopper accounts."
+      ]),
+      JSON.stringify([
+        "Store comparison quality improves as more Janesville prices are added.",
+        "Some substitutes require human confirmation.",
+        "Some stores may initially have limited coverage.",
+        "Browser QA may still require manual Firefox verification."
+      ]),
+      now,
+      now
+    ]
+  );
+
+  await run("INSERT OR IGNORE INTO price_arena_settings (id, minimum_broad_products, minimum_broad_categories, no_clear_leader_margin, history_window_days, updated_at) VALUES (1, 20, 3, 1, 30, ?)", [now]);
 
   const currentReleaseDraft = await get("SELECT id, fixed_json, status FROM homepage_patch_notes WHERE version_label = ?", [`v${APP_VERSION}`]);
   if (currentReleaseDraft?.status === "draft") {
@@ -1896,6 +2006,13 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_status ON price_issue_reports(status, updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_price ON price_issue_reports(price_report_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_rate ON price_issue_reports(rate_limit_bucket_hash, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_families_category ON product_families(category, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_family_members_family ON product_family_members(family_id, human_confirmed)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_substitutions_source ON product_substitutions(source_product_id, status, confidence)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_substitutions_target ON product_substitutions(target_product_id, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_reports_arena_product_store ON price_reports(product_id, store_id, status, price_type, source_date)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_reports_arena_store_date ON price_reports(store_id, status, reviewed_at, submitted_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_reports_arena_location ON price_reports(location_verification_status, status, store_id, product_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_user_time ON user_login_events(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_time ON user_login_events(created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_user_time ON email_verification_events(user_id, created_at)");
@@ -2051,6 +2168,11 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "promotion_conditions", "TEXT");
   await addColumnIfMissing("price_reports", "promotion_schedule_text", "TEXT");
   await addColumnIfMissing("price_reports", "display_offer_text", "TEXT");
+  await addColumnIfMissing("price_reports", "location_verification_status", "TEXT NOT NULL DEFAULT 'legacy_unknown'");
+  await addColumnIfMissing("price_reports", "applicable_city", "TEXT");
+  await addColumnIfMissing("price_reports", "applicable_state", "TEXT");
+  await addColumnIfMissing("price_reports", "applicable_store_id", "INTEGER");
+  await addColumnIfMissing("price_reports", "location_evidence_text", "TEXT");
   await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 
@@ -2098,6 +2220,8 @@ async function migrateProductsTable() {
   await addColumnIfMissing("products", "updated_at", "TEXT");
   await addColumnIfMissing("products", "category_node_id", "INTEGER");
   await addColumnIfMissing("products", "subcategory", "TEXT");
+  await addColumnIfMissing("products", "generic_product_type", "TEXT");
+  await addColumnIfMissing("products", "product_attributes_json", "TEXT NOT NULL DEFAULT '{}'");
   await run(
     "UPDATE products SET created_at = COALESCE(NULLIF(created_at, ''), ?), updated_at = COALESCE(NULLIF(updated_at, ''), ?) WHERE created_at IS NULL OR created_at = '' OR updated_at IS NULL OR updated_at = ''",
     [new Date().toISOString(), new Date().toISOString()]
@@ -2179,6 +2303,9 @@ async function migratePriceImportBatchesTable() {
   await addColumnIfMissing("price_import_batches", "escalated_item_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_batches", "anonymous_tracking_token_hash", "TEXT");
   await addColumnIfMissing("price_import_batches", "bulk_intake_batch_id", "INTEGER");
+  await addColumnIfMissing("price_import_batches", "location_verification_status", "TEXT NOT NULL DEFAULT 'legacy_unknown'");
+  await addColumnIfMissing("price_import_batches", "applicable_store_id", "INTEGER");
+  await addColumnIfMissing("price_import_batches", "location_evidence_text", "TEXT");
   await addColumnIfMissing("price_import_batches", "known_valid_from_date", "TEXT");
   await addColumnIfMissing("price_import_batches", "known_valid_through_date", "TEXT");
   await addColumnIfMissing("price_import_batches", "updated_at", "TEXT");

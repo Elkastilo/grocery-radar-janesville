@@ -565,6 +565,8 @@ async function main() {
     assert.equal(draftBatch.response.status, 201, JSON.stringify(draftBatch.body));
     assert.equal(draftBatch.body.batch.rows.length, 1);
     const draftRowId = draftBatch.body.batch.rows[0].id;
+    const locationResolution = await ownerClient.post(`/api/admin/price-import-batches/${draftBatch.body.batch.id}/location`, { store_id: woodmans.id, evidence_note: "Fixture explicitly establishes the Janesville Woodman's location." });
+    assert.equal(locationResolution.response.status, 200, JSON.stringify(locationResolution.body));
 
     const browseWithDraft = await ownerClient.get("/api/browse");
     assert.equal(approvedReportCountForItem(browseWithDraft.body, "Milk"), 0);
@@ -588,6 +590,8 @@ async function main() {
       source_title: "Temporary integration test ad duplicate",
       source_text: "$2.99 Milk 1 gal"
     });
+    const duplicateLocationResolution = await ownerClient.post(`/api/admin/price-import-batches/${duplicateBatch.body.batch.id}/location`, { store_id: woodmans.id, evidence_note: "Fixture explicitly establishes the Janesville Woodman's location." });
+    assert.equal(duplicateLocationResolution.response.status, 200, JSON.stringify(duplicateLocationResolution.body));
     assert.equal(duplicateBatch.response.status, 201, JSON.stringify(duplicateBatch.body));
     assert.equal(duplicateBatch.body.batch.rows.length, 1);
     const duplicateApprove = await ownerClient.post("/api/admin/price-import-rows/bulk", {

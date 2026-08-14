@@ -50,6 +50,16 @@ const {
 } = require("./src/email");
 const { calculateUnitPrice, formatUnitPrice } = require("./src/unitPrice");
 const {
+  priceValue: arenaPriceValue,
+  isConditionalOffer,
+  productComparison,
+  storeLeaderboard,
+  categoryLeaderboards,
+  optimizeBasket,
+  dietaryConflicts,
+  sizeCompatible
+} = require("./src/priceArena");
+const {
   POINTS,
   REWARD_RULES,
   TRUST_LEVELS,
@@ -538,6 +548,11 @@ function formatReport(row) {
     promotion_conditions: row.promotion_conditions || "",
     promotion_schedule_text: row.promotion_schedule_text || "",
     display_offer_text: row.display_offer_text || "",
+    location_verification_status: row.location_verification_status || "legacy_unknown",
+    applicable_city: row.applicable_city || "",
+    applicable_state: row.applicable_state || "",
+    applicable_store_id: row.applicable_store_id || null,
+    location_evidence_text: row.location_evidence_text || "",
     review_started_at: row.review_started_at || "",
     review_completed_at: row.review_completed_at || row.reviewed_at || "",
     freshness_status: freshnessForPrice(row),
@@ -593,6 +608,12 @@ function formatPublicReport(row) {
   delete report.ingredient_info_url;
   delete report.allergen_note;
   delete report.admin_safety_note;
+  const locationVerified = ["verified_exact_store", "verified_market", "not_required"].includes(report.location_verification_status);
+  delete report.location_verification_status;
+  delete report.applicable_city;
+  delete report.applicable_state;
+  delete report.applicable_store_id;
+  delete report.location_evidence_text;
   delete report.product_status;
   delete report.dispute_count;
 
@@ -606,6 +627,7 @@ function formatPublicReport(row) {
     purchased_at: isReceiptProof ? report.source_date : "",
     verified_at: report.review_completed_at || report.reviewed_at,
     trust_label: report.status === "approved" ? "Verified by Grocery Radar" : "",
+    location_verified: locationVerified,
     trust_explanation: "A human reviewer checked the submitted proof. Personal receipt details and reviewer identity remain private."
   };
 }
@@ -1217,6 +1239,7 @@ function publicPriceEligibilitySql(alias = "pr") {
     AND (${alias}.valid_from_date IS NULL OR ${alias}.valid_from_date = '' OR date(${alias}.valid_from_date) <= date('${janesvilleToday}'))
     AND (${alias}.valid_through_date IS NULL OR ${alias}.valid_through_date = '' OR date(${alias}.valid_through_date) >= date('${janesvilleToday}'))
     AND (${alias}.expires_at IS NULL OR ${alias}.expires_at = '' OR COALESCE(${alias}.price_type, 'regular') != 'regular' OR datetime(${alias}.expires_at) >= datetime('now'))
+    AND ((COALESCE(${alias}.proof_type, '') != 'store_page' AND NULLIF(${alias}.source_url, '') IS NULL) OR COALESCE(${alias}.location_verification_status, '') IN ('verified_exact_store','verified_market'))
     AND (COALESCE(${alias}.price_type, 'regular') NOT IN ('one_day_sale','digital_coupon','paper_coupon') OR (NULLIF(${alias}.valid_from_date, '') IS NOT NULL AND NULLIF(${alias}.valid_through_date, '') IS NOT NULL))
     AND datetime(COALESCE(NULLIF(${alias}.source_date, ''), NULLIF(${alias}.source_checked_at, ''), NULLIF(${alias}.reviewed_at, ''), ${alias}.submitted_at)) >= datetime('now', CASE ${alias}.proof_type WHEN 'receipt_photo' THEN '-${receiptDays} days' WHEN 'shelf_tag_photo' THEN '-${shelfDays} days' WHEN 'weekly_ad' THEN '-${adDays} days' ELSE '-${defaultDays} days' END)
   `;
@@ -1726,6 +1749,8 @@ function formatProduct(row) {
     variant: row.variant || "",
     upc: row.upc || "",
     description: row.description || "",
+    generic_product_type: row.generic_product_type || "",
+    product_attributes: parseMetadataJson(row.product_attributes_json),
     common_aliases: row.common_aliases || "",
     aliases: String(row.common_aliases || "")
       .split(",")
@@ -2178,7 +2203,10 @@ function reportSelectWithProduct() {
       users.username AS username,
       products.display_name AS product_display_name,
       products.status AS product_status,
-      products.default_size_text AS product_default_size_text
+      products.default_size_text AS product_default_size_text,
+      products.default_unit AS product_default_unit,
+      products.generic_product_type AS generic_product_type,
+      products.product_attributes_json AS product_attributes_json
     FROM price_reports pr
     JOIN stores ON stores.id = pr.store_id
     JOIN users ON users.id = pr.user_id
@@ -7438,7 +7466,12 @@ app.get("/api/stores/:id", asyncRoute(async (request, response) => {
     const bestHere = publicReports.filter((report) => Number(report.product_id) === Number(product.id)).sort((left, right) => Number(left.comparison_price ?? left.unit_price ?? left.price) - Number(right.comparison_price ?? right.unit_price ?? right.price))[0];
     return bestHere ? { ...product, best_price: bestHere.comparison_price ?? bestHere.unit_price ?? bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.primary_price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label } : product;
   });
-  response.json({ store: { ...store, current_price_count: reports.length }, products, reports: publicReports, category_counts: categoryCounts });
+  const week = arenaDateWindow("week");
+  const [competitionRows, drops] = await Promise.all([arenaCurrentRows({ window: week }), arenaPriceDrops({ window: week, storeId })]);
+  const leaderboard = storeLeaderboard(competitionRows, await arenaSettings(), "all");
+  const storeRank = leaderboard.rankings.findIndex((entry) => Number(entry.store_id) === storeId);
+  const categoryResults = categoryLeaderboards(competitionRows, {}, "all").map((category) => ({ category: category.category, rank: category.rankings.findIndex((entry) => Number(entry.store_id) === storeId), entry: category.rankings.find((entry) => Number(entry.store_id) === storeId) })).filter((entry) => entry.rank >= 0).sort((left, right) => left.rank - right.rank || right.entry.lowest_count - left.entry.lowest_count);
+  response.json({ store: { ...store, current_price_count: reports.length }, products, reports: publicReports, category_counts: categoryCounts, scorecard: { window: week, price_drops: drops.length, lowest_count: storeRank >= 0 ? leaderboard.rankings[storeRank].lowest_count : 0, tied_lowest_count: storeRank >= 0 ? leaderboard.rankings[storeRank].tied_lowest_count : 0, comparison_rank: storeRank >= 0 ? storeRank + 1 : null, comparable_products: leaderboard.comparable_product_count, threshold_met: leaderboard.threshold_met, strongest_observed_category: categoryResults[0]?.category || null, disclaimer: "Observed from current comparable Grocery Radar prices; this is not a universal store rating." } });
 }));
 
 app.post("/api/analytics/event", asyncRoute(async (request, response) => {
@@ -9198,6 +9231,189 @@ async function priceHistoryForProduct(product) {
   return { sufficient_history: true, observation_count: observations.length, distinct_date_count: distinctDates, window_days: DEAL_HISTORY_WINDOW_DAYS, recent_typical_price: Number(typical.toFixed(2)), current_price: currentValue, difference_percent: differencePercent, recent_low: values[0], recent_high: values.at(-1), label, observations: observations.slice(-24), comparability: { unit: targetUnit || "report unit", size_text: targetSize || "compatible report size" } };
 }
 
+function arenaDateWindow(value = "week") {
+  const today = localDateFor();
+  const atNoon = new Date(`${today}T12:00:00.000Z`);
+  const shift = (days) => { const date = new Date(atNoon); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); };
+  if (value === "today") return { key: "today", start_date: today, end_date: today, label: today };
+  if (value === "last7") return { key: "last7", start_date: shift(-6), end_date: today, label: `${shift(-6)}–${today}` };
+  const mondayOffset = (atNoon.getUTCDay() + 6) % 7;
+  return { key: "week", start_date: shift(-mondayOffset), end_date: shift(6 - mondayOffset), label: `${shift(-mondayOffset)}–${shift(6 - mondayOffset)}` };
+}
+
+async function activeJanesvilleArenaStores() {
+  return all("SELECT id, name, address, city, state FROM stores WHERE active = 1 AND lower(trim(city)) = 'janesville' AND lower(trim(state)) IN ('wi','wisconsin') ORDER BY name");
+}
+
+function arenaReportPublicRow(row) {
+  const formatted = formatPublicReport(row);
+  return {
+    ...formatted,
+    observed_at: row.observed_at || formatted.source_date || formatted.reviewed_at || formatted.submitted_at,
+    product_name: row.product_display_name || formatted.item_name,
+    product_size_text: row.product_default_size_text || formatted.size_text,
+    product_attributes: parseMetadataJson(row.product_attributes_json),
+    generic_product_type: row.generic_product_type || "",
+    is_conditional: isConditionalOffer(formatted)
+  };
+}
+
+async function arenaCurrentRows(options = {}) {
+  const filters = [
+    "products.status = 'active'",
+    "stores.active = 1",
+    "lower(trim(stores.city)) = 'janesville'",
+    "lower(trim(stores.state)) IN ('wi','wisconsin')",
+    publicPriceEligibilitySql("pr"),
+    "COALESCE(users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated')",
+    "(NULLIF(products.default_unit, '') IS NULL OR lower(COALESCE(NULLIF(pr.comparison_unit,''),pr.unit)) = lower(products.default_unit))",
+    "(NULLIF(products.default_size_text,'') IS NULL OR (NULLIF(pr.size_text,'') IS NOT NULL AND lower(trim(pr.size_text)) = lower(trim(products.default_size_text))))"
+  ];
+  const params = [];
+  if (options.productId) { filters.push("pr.product_id = ?"); params.push(Number(options.productId)); }
+  if (Array.isArray(options.productIds) && options.productIds.length) {
+    const productIds = [...new Set(options.productIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 100);
+    if (productIds.length) { filters.push(`pr.product_id IN (${productIds.map(() => "?").join(",")})`); params.push(...productIds); }
+  }
+  if (options.category) { filters.push("products.category = ?"); params.push(cleanText(options.category, 40).toLowerCase()); }
+  if (options.storeId) { filters.push("pr.store_id = ?"); params.push(Number(options.storeId)); }
+  if (options.window) { filters.push("date(COALESCE(NULLIF(pr.source_date,''),NULLIF(pr.reviewed_at,''),pr.submitted_at)) BETWEEN date(?) AND date(?)"); params.push(options.window.start_date, options.window.end_date); }
+  const rows = await all(`${reportSelectWithProduct()}
+    WHERE ${filters.join(" AND ")}
+    ORDER BY pr.product_id, pr.store_id, COALESCE(pr.comparison_price,pr.unit_price,pr.price), datetime(COALESCE(NULLIF(pr.source_date,''),NULLIF(pr.reviewed_at,''),pr.submitted_at)) DESC`, params);
+  return rows.map((row) => arenaReportPublicRow({ ...row, observed_at: row.source_date || row.reviewed_at || row.submitted_at }));
+}
+
+async function arenaSettings() {
+  return (await get("SELECT minimum_broad_products, minimum_broad_categories, no_clear_leader_margin, history_window_days FROM price_arena_settings WHERE id = 1")) || { minimum_broad_products: 20, minimum_broad_categories: 3, no_clear_leader_margin: 1, history_window_days: 30 };
+}
+
+async function arenaPriceDrops(options = {}) {
+  const window = options.window || arenaDateWindow("week");
+  const current = await arenaCurrentRows({ category: options.category, storeId: options.storeId });
+  const currentBest = new Map();
+  for (const row of current) {
+    if (options.mode === "unconditional" && row.is_conditional) continue;
+    const key = `${row.product_id}:${row.store_id}`;
+    if (!currentBest.has(key) || arenaPriceValue(row) < arenaPriceValue(currentBest.get(key))) currentBest.set(key, row);
+  }
+  const historyWindowDays = Number((await arenaSettings()).history_window_days || 30);
+  const historyRows = currentBest.size ? await all(`${reportSelectWithProduct()}
+    WHERE products.status = 'active' AND stores.active = 1
+      AND lower(trim(stores.city)) = 'janesville' AND lower(trim(stores.state)) IN ('wi','wisconsin')
+      AND pr.status IN ('approved','expired')
+      AND date(COALESCE(NULLIF(pr.source_date,''),NULLIF(pr.reviewed_at,''),pr.submitted_at)) >= date(?, '-' || ? || ' days')
+      AND ((COALESCE(pr.proof_type,'') != 'store_page' AND NULLIF(pr.source_url,'') IS NULL) OR pr.location_verification_status IN ('verified_exact_store','verified_market'))
+    ORDER BY datetime(COALESCE(NULLIF(pr.source_date,''),NULLIF(pr.reviewed_at,''),pr.submitted_at)) DESC`, [window.end_date, historyWindowDays]) : [];
+  const historyByKey = new Map();
+  for (const historyRow of historyRows) {
+    const key = `${historyRow.product_id}:${historyRow.store_id}`;
+    if (!historyByKey.has(key)) historyByKey.set(key, []);
+    historyByKey.get(key).push(historyRow);
+  }
+  const drops = [];
+  for (const row of currentBest.values()) {
+    const currentValue = arenaPriceValue(row);
+    const declaredPrevious = Number(row.regular_price);
+    if (Number.isFinite(declaredPrevious) && declaredPrevious > currentValue) {
+      drops.push({ type: "retailer_declared", label: "Retailer price drop", report: row, previous_price: declaredPrevious, current_price: currentValue, dollar_drop: Number((declaredPrevious - currentValue).toFixed(2)), percent_drop: Number(((declaredPrevious - currentValue) / declaredPrevious * 100).toFixed(1)), observed_at: row.observed_at });
+      continue;
+    }
+    const previous = (historyByKey.get(`${row.product_id}:${row.store_id}`) || []).find((candidate) => candidate.id !== row.id
+      && String(candidate.source_date || candidate.reviewed_at || candidate.submitted_at) < String(row.observed_at)
+      && String(candidate.comparison_unit || candidate.unit || "").toLowerCase() === String(row.comparison_unit || row.unit || "").toLowerCase()
+      && (!["each","count","ct","pack"].includes(String(row.comparison_unit || row.unit || "").toLowerCase()) || String(candidate.size_text || "").toLowerCase() === String(row.size_text || "").toLowerCase()));
+    const previousValue = previous ? arenaPriceValue(previous) : null;
+    if (previousValue != null && previousValue > currentValue && String(row.observed_at).slice(0, 10) >= window.start_date) drops.push({ type: "observed", label: "Price dropped since last verified observation", report: row, previous_price: previousValue, current_price: currentValue, dollar_drop: Number((previousValue - currentValue).toFixed(2)), percent_drop: Number(((previousValue - currentValue) / previousValue * 100).toFixed(1)), observed_at: row.observed_at });
+  }
+  const sort = options.sort || "newest";
+  drops.sort((a, b) => sort === "percent" ? b.percent_drop - a.percent_drop : sort === "dollars" ? b.dollar_drop - a.dollar_drop : sort === "ending" ? String(a.report.valid_through_date || "9999-12-31").localeCompare(String(b.report.valid_through_date || "9999-12-31")) : String(b.observed_at).localeCompare(String(a.observed_at)));
+  return drops;
+}
+
+async function publicSubstitutesForProduct(productId, mode = "all") {
+  const source = await get("SELECT id, display_name, default_size_text, default_unit, product_attributes_json FROM products WHERE id = ? AND status = 'active'", [productId]);
+  if (!source) return [];
+  const relations = await all(`SELECT substitutions.*, targets.display_name AS target_name, targets.default_size_text AS target_size_text, targets.default_unit AS target_unit, targets.product_attributes_json AS target_attributes_json
+    FROM product_substitutions substitutions JOIN products targets ON targets.id = substitutions.target_product_id
+    WHERE substitutions.source_product_id = ? AND substitutions.status IN ('confirmed','alternative_only') AND substitutions.confidence IN ('high','medium') AND targets.status = 'active' ORDER BY CASE substitutions.confidence WHEN 'high' THEN 1 ELSE 2 END, targets.display_name`, [productId]);
+  const stores = await activeJanesvilleArenaStores();
+  const targetIds = relations.map((relation) => Number(relation.target_product_id));
+  const allRows = await arenaCurrentRows({ productIds: [productId, ...targetIds] });
+  const sourceComparison = productComparison(allRows.filter((row) => Number(row.product_id) === Number(productId)), stores, mode);
+  const sourcePrice = sourceComparison.cheapest_price;
+  const output = [];
+  for (const relation of relations) {
+    const conflicts = dietaryConflicts(source.product_attributes_json, relation.target_attributes_json);
+    const compatibleSize = sizeCompatible(source, { default_size_text: relation.target_size_text, default_unit: relation.target_unit });
+    if (conflicts.length || !compatibleSize) continue;
+    const comparison = productComparison(allRows.filter((row) => Number(row.product_id) === Number(relation.target_product_id)), stores, mode);
+    if (!comparison.cheapest_price) continue;
+    const savings = sourcePrice == null ? null : Number((sourcePrice - comparison.cheapest_price).toFixed(2));
+    output.push({ id: relation.id, product_id: relation.target_product_id, product_name: relation.target_name, size_text: relation.target_size_text || "", substitution_type: relation.status === "alternative_only" ? "alternative" : relation.substitution_type, confidence: relation.confidence, reasons: parseMetadataJson(relation.reasons_json), safety_warnings: [...parseMetadataJson(relation.safety_warnings_json), ...conflicts], size_comparable: compatibleSize, cheapest: comparison.stores[0] || null, potential_savings: savings != null && savings > 0 ? savings : null, same_product: false });
+  }
+  return output;
+}
+
+app.get("/api/savings/products/:id/comparison", asyncRoute(async (request, response) => {
+  await refreshExpiredReports();
+  const productId = Number.parseInt(request.params.id, 10); const mode = request.query.mode === "unconditional" ? "unconditional" : "all";
+  const product = await getProductById(productId); if (!product) { response.status(404).json({ error: "Product was not found." }); return; }
+  const stores = await activeJanesvilleArenaStores();
+  const rows = await arenaCurrentRows({ productId: product.id });
+  response.json({ product: formatPublicProduct(product), comparison: productComparison(rows, stores, mode), coverage: { eligible_janesville_stores: stores.length, compared_stores: new Set(rows.map((row) => row.store_id)).size }, methodology: "Only current, verified, comparable prices from active Janesville stores are included. Missing store prices are not ranked." });
+}));
+
+app.get("/api/savings/price-drops", asyncRoute(async (request, response) => {
+  const window = arenaDateWindow(cleanText(request.query.window || "week", 20)); const mode = request.query.mode === "unconditional" ? "unconditional" : "all";
+  const drops = await arenaPriceDrops({ window, mode, category: request.query.category, storeId: request.query.store_id, sort: request.query.sort });
+  response.json({ window, mode, total: drops.length, drops: drops.slice(0, Math.min(100, Math.max(1, Number(request.query.limit) || 50))), methodology: "Retailer-declared drops and Grocery Radar observed decreases are labeled separately." });
+}));
+
+app.get("/api/savings/store-showdown", asyncRoute(async (request, response) => {
+  const window = arenaDateWindow(cleanText(request.query.window || "week", 20)); const mode = request.query.mode === "unconditional" ? "unconditional" : "all"; const settings = await arenaSettings();
+  const stores = await activeJanesvilleArenaStores(); const rows = await arenaCurrentRows({ window, category: request.query.category }); const leaderboard = storeLeaderboard(rows, settings, mode);
+  const byId = new Map(leaderboard.rankings.map((entry) => [Number(entry.store_id), entry]));
+  response.json({ window, mode, eligible_store_count: stores.length, leaderboard: { ...leaderboard, rankings: stores.map((store) => ({ store_id: store.id, store_name: store.name, current_price_count: byId.get(Number(store.id))?.current_price_count || 0, lowest_count: byId.get(Number(store.id))?.lowest_count || 0, tied_lowest_count: byId.get(Number(store.id))?.tied_lowest_count || 0, category_count: byId.get(Number(store.id))?.category_count || 0 })).sort((a, b) => b.lowest_count - a.lowest_count || b.tied_lowest_count - a.tied_lowest_count || a.store_name.localeCompare(b.store_name)) }, disclaimer: "Based on products currently verified in Grocery Radar. Coverage varies by store; this is not a claim that one store is universally cheapest." });
+}));
+
+app.get("/api/savings/categories", asyncRoute(async (request, response) => {
+  const window = arenaDateWindow(cleanText(request.query.window || "week", 20)); const mode = request.query.mode === "unconditional" ? "unconditional" : "all";
+  response.json({ window, mode, categories: categoryLeaderboards(await arenaCurrentRows({ window }), await arenaSettings(), mode), methodology: "Every eligible comparable product in the selected category and window is included." });
+}));
+
+app.get("/api/savings/categories/:category/basket", asyncRoute(async (request, response) => {
+  const category = cleanText(request.params.category, 40).toLowerCase(); const mode = request.query.mode === "unconditional" ? "unconditional" : "all";
+  const stores = await activeJanesvilleArenaStores(); const rows = await arenaCurrentRows({ category });
+  const storeSets = new Map(); for (const row of rows) { if (!storeSets.has(row.product_id)) storeSets.set(row.product_id, new Set()); storeSets.get(row.product_id).add(Number(row.store_id)); }
+  const items = [...storeSets.entries()].filter(([, storeIds]) => storeIds.size >= 2).slice(0, 50).map(([productId]) => ({ product_id: Number(productId), quantity: 1 }));
+  if (!items.length) { response.json({ category, mode, product_count: 0, store_coverage: [], comparable_subset: { product_count: 0, stores: [] }, message: "Limited comparison data for this category." }); return; }
+  const result = optimizeBasket(items, rows, stores, 1, mode); const storeMap = new Map(stores.map((store) => [Number(store.id), store.name]));
+  response.json({ category, mode, product_count: items.length, store_coverage: result.store_coverage.map((plan) => ({ ...plan, store_name: storeMap.get(Number(plan.store_ids[0])) || "Store" })), comparable_subset: result.comparable_subset, methodology: "Every eligible comparable product in the category dataset is included; partial totals disclose matched counts." });
+}));
+
+app.post("/api/savings/basket", asyncRoute(async (request, response) => {
+  const incoming = Array.isArray(request.body.items) ? request.body.items : [];
+  const items = incoming.map((item) => ({ product_id: Number(item.product_id), quantity: Math.max(1, Number(item.quantity || 1)), item_name: cleanText(item.item_name, 160) })).filter((item) => Number.isInteger(item.product_id) && item.product_id > 0).slice(0, 100);
+  if (!items.length) { response.status(400).json({ error: "Add at least one catalog product to compare." }); return; }
+  const mode = request.body.mode === "unconditional" ? "unconditional" : "all"; const stores = await activeJanesvilleArenaStores(); const rows = await arenaCurrentRows({ productIds: items.map((item) => item.product_id) });
+  const result = optimizeBasket(items, rows, stores, request.body.max_stores || "any", mode);
+  const storeMap = new Map(stores.map((store) => [Number(store.id), store.name]));
+  const decorate = (plan) => plan ? { ...plan, stores: plan.store_ids.map((id) => ({ id, name: storeMap.get(Number(id)) || "Store" })) } : null;
+  response.json({ ...result, selected: decorate(result.selected), best_one_store: decorate(result.best_one_store), best_two_stores: decorate(result.best_two_stores), cheapest_any_store: decorate(result.cheapest_any_store), store_coverage: result.store_coverage.map(decorate), comparable_subset: { ...result.comparable_subset, stores: result.comparable_subset.stores.map(decorate) }, methodology: "Plans use current verified prices only. Partial totals are never ranked as if missing products were included." });
+}));
+
+app.get("/api/savings/products/:id/substitutes", asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.params.id, 10); const product = await getProductById(productId); if (!product) { response.status(404).json({ error: "Product was not found." }); return; }
+  response.json({ product: formatPublicProduct(product), substitutes: await publicSubstitutesForProduct(product.id, request.query.mode === "unconditional" ? "unconditional" : "all"), methodology: "Substitutes are not identical products. Only human-confirmed high/medium relationships are public; unknown dietary compatibility is never claimed." });
+}));
+
+app.get("/api/savings/overview", asyncRoute(async (request, response) => {
+  const window = arenaDateWindow(cleanText(request.query.window || "week", 20)); const mode = request.query.mode === "unconditional" ? "unconditional" : "all"; const settings = await arenaSettings(); const stores = await activeJanesvilleArenaStores(); const rows = await arenaCurrentRows({ window, category: request.query.category });
+  const leaderboard = storeLeaderboard(rows, settings, mode);
+  response.json({ window, mode, eligible_stores: stores, leaderboard, categories: categoryLeaderboards(rows, settings, mode).slice(0, 12), price_drops: (await arenaPriceDrops({ window, mode, category: request.query.category, storeId: request.query.store_id, sort: request.query.sort || "newest" })).slice(0, 50), homepage_module_eligible: leaderboard.threshold_met, disclaimer: "All active Janesville stores participate automatically when comparable verified data exists. Missing prices are not treated as higher prices." });
+}));
+
 app.get("/api/products/:id", asyncRoute(async (request, response) => {
   await refreshExpiredReports();
 
@@ -9223,7 +9439,7 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
       WHERE pr.product_id = ?
         AND ${publicPriceEligibilitySql("pr")}
         AND (NULLIF(products.default_unit, '') IS NULL OR lower(COALESCE(NULLIF(pr.comparison_unit, ''), pr.unit)) = lower(products.default_unit))
-        AND (lower(COALESCE(NULLIF(pr.comparison_unit, ''), pr.unit)) NOT IN ('each','package') OR NULLIF(products.default_size_text, '') IS NULL OR NULLIF(pr.size_text, '') IS NULL OR lower(pr.size_text) = lower(products.default_size_text))
+        AND (NULLIF(products.default_size_text, '') IS NULL OR NULLIF(pr.size_text, '') IS NULL OR lower(trim(pr.size_text)) = lower(trim(products.default_size_text)))
         AND COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')
       ORDER BY
         stores.name ASC,
@@ -9262,6 +9478,8 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     store_groups: storeGroups,
     quality: await publicQualitySummary(resolvedProductId, null, request.session?.userId || null),
     price_history: await priceHistoryForProduct(product),
+    store_comparison: productComparison(await arenaCurrentRows({ productId: resolvedProductId }), await activeJanesvilleArenaStores(), "all"),
+    substitutes: await publicSubstitutesForProduct(resolvedProductId, "all"),
     redirected_from_product_id: resolvedProductId !== productId ? productId : null,
     allergy_warning: "Always check the package label before buying or eating."
   });
@@ -12016,6 +12234,21 @@ async function approvedReceiptCleanupReport() {
   };
 }
 
+async function locationResolutionForImportRow(row, cleanReport) {
+  const requiresVerification = cleanReport.proof_type === "store_page" || Boolean(String(row.source_url || "").trim());
+  const store = await get("SELECT id, city, state FROM stores WHERE id = ? AND active = 1", [cleanReport.store_id]);
+  if (!requiresVerification) return { status: "not_required", city: store?.city || "", state: store?.state || "", store_id: store?.id || null, evidence: "Physical/local proof with human-resolved store." };
+  const [analysis, batch] = await Promise.all([
+    get("SELECT resolved_store_id, store_resolution FROM ai_proof_analyses WHERE proof_id = ?", [row.batch_id]),
+    get("SELECT location_verification_status, applicable_store_id, location_evidence_text FROM price_import_batches WHERE id = ?", [row.batch_id])
+  ]);
+  const isJanesville = store && String(store.city || "").trim().toLowerCase() === "janesville" && ["wi", "wisconsin"].includes(String(store.state || "").trim().toLowerCase());
+  const verifiedByAiReview = Number(analysis?.resolved_store_id) === Number(cleanReport.store_id);
+  const verifiedByManualImportReview = batch?.location_verification_status === "verified_exact_store" && Number(batch?.applicable_store_id) === Number(cleanReport.store_id);
+  const verified = isJanesville && (verifiedByAiReview || verifiedByManualImportReview);
+  return { status: verified ? "verified_exact_store" : "needs_review", city: verified ? store.city : "", state: verified ? store.state : "", store_id: verified ? store.id : null, evidence: verified ? (batch?.location_evidence_text || `Human store resolution: ${analysis?.store_resolution || "resolved exact store"}.`) : "Online source location was not established for the selected Janesville store." };
+}
+
 async function approvePriceImportRow(rowId, adminUser, options = {}) {
   if (!adminUser) {
     const error = new Error("Approving imported prices requires a logged-in admin account.");
@@ -12110,6 +12343,12 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
     throw error;
   }
   const cleanReport = validateReport(importRowToReportBody(row), validStoreIds);
+  const locationResolution = await locationResolutionForImportRow(row, cleanReport);
+  if (locationResolution.status === "needs_review") {
+    const error = new Error("LOCATION NEEDS REVIEW: establish the exact Janesville store or applicable Janesville market before publication.");
+    error.statusCode = 409;
+    throw error;
+  }
   const unitPrice = calculateUnitPrice(cleanReport.price, cleanReport.quantity, cleanReport.unit);
   const submittedAt = new Date().toISOString();
   const productId = await resolveReportProductId(cleanReport, adminUser.id);
@@ -12236,6 +12475,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         source_title,
         source_domain,
         source_checked_at,
+        location_verification_status,
+        applicable_city,
+        applicable_state,
+        applicable_store_id,
+        location_evidence_text,
         verification_count,
         dispute_count,
         status,
@@ -12249,7 +12493,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         submitted_at,
         expires_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       reportOwnerUserId,
@@ -12298,6 +12542,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       row.source_title || "",
       row.source_domain || sourceDomainFromUrl(row.source_url || ""),
       row.source_checked_at || submittedAt,
+      locationResolution.status,
+      locationResolution.city,
+      locationResolution.state,
+      locationResolution.store_id,
+      locationResolution.evidence,
       submittedAt,
       adminUser.id,
       importBatch?.review_claimed_at || submittedAt,
@@ -18098,6 +18347,11 @@ async function attentionCenterSummary() {
     get("SELECT created_at FROM backup_runs WHERE status = 'success' ORDER BY created_at DESC LIMIT 1")
   ]);
   const lifecycleCounts = activeReviewRows.reduce((counts, batch) => { const state = lifecycleFromInboxRow(batch).state; counts[state] = (counts[state] || 0) + 1; return counts; }, {});
+  const arenaAttention = await get(`SELECT
+    (SELECT COUNT(*) FROM price_reports reports WHERE reports.status = 'approved' AND (COALESCE(reports.proof_type,'') = 'store_page' OR NULLIF(reports.source_url,'') IS NOT NULL) AND reports.location_verification_status NOT IN ('verified_exact_store','verified_market')) AS location_unresolved,
+    (SELECT COUNT(*) FROM products product WHERE product.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_family_members member WHERE member.product_id = product.id AND member.human_confirmed = 1)) AS family_missing,
+    ((SELECT COUNT(*) FROM product_substitutions WHERE status = 'suggested' OR confidence = 'low') + (SELECT COUNT(*) FROM product_family_members first JOIN product_family_members second ON second.family_id = first.family_id AND second.product_id != first.product_id WHERE first.human_confirmed = 1 AND second.human_confirmed = 1 AND NOT EXISTS (SELECT 1 FROM product_substitutions existing WHERE existing.source_product_id = first.product_id AND existing.target_product_id = second.product_id))) AS substitute_uncertain,
+    (SELECT COUNT(*) FROM price_reports reports JOIN products product ON product.id = reports.product_id WHERE reports.status = 'approved' AND NULLIF(product.default_unit,'') IS NOT NULL AND NULLIF(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit),'') IS NOT NULL AND lower(product.default_unit) != lower(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit))) AS package_mismatch`);
   const disk = diskHealth();
   const backupWarning = !lastBackup || Date.now() - Date.parse(lastBackup.created_at) > 7 * 86400000;
   const groups = {
@@ -18115,7 +18369,9 @@ async function attentionCenterSummary() {
       attentionEntry("missing_sale_date", "Missing sale date", prices?.missing_date, "needs_action", "attentionCenterTab", "missing_sale_date"),
       attentionEntry("promotion_conditions", "Promotion conditions unclear", prices?.conditions_unclear, "needs_action", "attentionCenterTab", "promotion_conditions"),
       attentionEntry("stale_price", "Stale price", prices?.stale, "cleanup", "attentionCenterTab", "stale_price"),
-      attentionEntry("reported_price", "Reported incorrect price", prices?.reported, "needs_action", "attentionCenterTab", "reported_price")
+      attentionEntry("reported_price", "Reported incorrect price", prices?.reported, "needs_action", "attentionCenterTab", "reported_price"),
+      attentionEntry("location_unresolved", "Location needs review", arenaAttention?.location_unresolved, "needs_action", "attentionCenterTab", "location_unresolved"),
+      attentionEntry("package_mismatch", "Comparison package mismatch", arenaAttention?.package_mismatch, "needs_action", "attentionCenterTab", "package_mismatch")
     ],
     products: [
       attentionEntry("missing_current_price", "Missing current price", products?.missing_price, "cleanup", "productToolsTab", "missing_current_price"),
@@ -18125,7 +18381,9 @@ async function attentionCenterSummary() {
       attentionEntry("missing_upc", "Missing UPC", products?.missing_upc, "cleanup", "productToolsTab", "missing_upc"),
       attentionEntry("upc_conflict", "UPC assignment conflict", products?.upc_conflicts, "needs_action", "attentionCenterTab", "upc_conflict"),
       attentionEntry("possible_duplicate_product", "Possible duplicate product", products?.possible_duplicates, "cleanup", "attentionCenterTab", "possible_duplicate_product"),
-      attentionEntry("unmatched_catalog", "Unmatched catalog item", products?.unmatched_catalog, "needs_action", "attentionCenterTab", "unmatched_catalog")
+      attentionEntry("unmatched_catalog", "Unmatched catalog item", products?.unmatched_catalog, "needs_action", "attentionCenterTab", "unmatched_catalog"),
+      attentionEntry("family_missing", "Product family missing", arenaAttention?.family_missing, "cleanup", "attentionCenterTab", "family_missing"),
+      attentionEntry("substitute_uncertain", "Substitute relationship uncertain", arenaAttention?.substitute_uncertain, "needs_action", "attentionCenterTab", "substitute_uncertain")
     ],
     import_ai: [
       attentionEntry("failed_import", "Failed bulk import item", imports?.failed_import_items, "needs_action", "attentionCenterTab", "failed_import"),
@@ -18171,6 +18429,17 @@ async function attentionItems(key, limit = 100) {
     unmatched_catalog: "SELECT rows.id, rows.product_name AS title, rows.warnings_json AS detail, rows.updated_at FROM catalog_import_rows rows WHERE rows.status = 'draft' AND rows.suggested_product_id IS NULL AND rows.duplicate_product_id IS NULL AND rows.warnings_json != '[]' ORDER BY rows.updated_at DESC LIMIT ?",
     missing_sale_date: "SELECT rows.id, rows.item_name AS title, 'Promotion date requires review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') IN ('one_day_sale','digital_coupon','paper_coupon') AND (NULLIF(rows.valid_from_date,'') IS NULL OR NULLIF(rows.valid_through_date,'') IS NULL) ORDER BY rows.updated_at DESC LIMIT ?",
     promotion_conditions: "SELECT rows.id, rows.item_name AS title, 'Promotion conditions require review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') != 'regular' AND NULLIF(rows.promotion_conditions,'') IS NULL ORDER BY rows.updated_at DESC LIMIT ?",
+    location_unresolved: "SELECT reports.id, products.display_name AS title, stores.name || ' · online location applicability not verified' AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND (COALESCE(reports.proof_type,'') = 'store_page' OR NULLIF(reports.source_url,'') IS NOT NULL) AND reports.location_verification_status NOT IN ('verified_exact_store','verified_market') ORDER BY reports.submitted_at DESC LIMIT ?",
+    package_mismatch: "SELECT reports.id, products.display_name AS title, COALESCE(reports.size_text,'No report size') || ' ↔ ' || COALESCE(products.default_size_text,'No catalog size') AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id WHERE reports.status = 'approved' AND NULLIF(products.default_unit,'') IS NOT NULL AND NULLIF(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit),'') IS NOT NULL AND lower(products.default_unit) != lower(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit)) ORDER BY reports.submitted_at DESC LIMIT ?",
+    family_missing: "SELECT products.id, products.display_name AS title, 'Human-confirmed product family is missing' AS detail, products.updated_at FROM products WHERE products.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_family_members members WHERE members.product_id = products.id AND members.human_confirmed = 1) ORDER BY products.updated_at DESC LIMIT ?",
+    substitute_uncertain: `SELECT * FROM (
+      SELECT substitutions.id, substitutions.source_product_id, substitutions.target_product_id, sources.display_name || ' → ' || targets.display_name AS title, substitutions.confidence || ' · human substitute decision required' AS detail, substitutions.updated_at
+      FROM product_substitutions substitutions JOIN products sources ON sources.id = substitutions.source_product_id JOIN products targets ON targets.id = substitutions.target_product_id WHERE substitutions.status = 'suggested' OR substitutions.confidence = 'low'
+      UNION ALL
+      SELECT -(first.product_id * 1000000 + second.product_id) AS id, first.product_id, second.product_id, sources.display_name || ' → ' || targets.display_name AS title, 'Same confirmed product family · human substitute decision required' AS detail, families.updated_at
+      FROM product_family_members first JOIN product_family_members second ON second.family_id = first.family_id AND second.product_id != first.product_id JOIN product_families families ON families.id = first.family_id JOIN products sources ON sources.id = first.product_id JOIN products targets ON targets.id = second.product_id
+      WHERE first.human_confirmed = 1 AND second.human_confirmed = 1 AND NOT EXISTS (SELECT 1 FROM product_substitutions existing WHERE existing.source_product_id = first.product_id AND existing.target_product_id = second.product_id)
+    ) ORDER BY updated_at DESC LIMIT ?`,
     system_error: "SELECT id, error_type AS title, message AS detail, created_at AS updated_at FROM operations_errors WHERE status = 'open' AND severity IN ('error','critical') ORDER BY created_at DESC LIMIT ?"
   };
   if (key === "possible_duplicate_product") return all("SELECT MIN(id) AS id, GROUP_CONCAT(display_name, ' ↔ ') AS title, COUNT(*) || ' matching catalog records' AS detail, MAX(updated_at) AS updated_at FROM products WHERE status = 'active' GROUP BY lower(canonical_name), lower(COALESCE(preferred_brand,'')), lower(COALESCE(default_size_text,'')) HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC LIMIT ?", [safeLimit]);
@@ -18405,6 +18674,92 @@ app.post("/api/admin/operations/failed-jobs/:type/:id/retry", requireAdminAccess
     await run("UPDATE bulk_intake_items SET status = 'queued', error_message = '', updated_at = ? WHERE id = ?", [now, id]); response.status(202).json({ message: "Failed batch item requeued without restarting successful items." }); return;
   }
   response.status(400).json({ error: "Retry type is not supported." });
+}));
+
+app.get("/api/admin/price-arena/settings", requireSuperAdminAccess, asyncRoute(async (request, response) => response.json({ settings: await arenaSettings() })));
+
+app.post("/api/admin/price-arena/settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const minimumProducts = Math.min(500, Math.max(2, Number.parseInt(request.body.minimum_broad_products, 10) || 20));
+  const minimumCategories = Math.min(20, Math.max(1, Number.parseInt(request.body.minimum_broad_categories, 10) || 3));
+  const leaderMargin = Math.min(20, Math.max(0, Number.parseInt(request.body.no_clear_leader_margin, 10) || 1));
+  const historyDays = Math.min(365, Math.max(7, Number.parseInt(request.body.history_window_days, 10) || 30));
+  const now = new Date().toISOString();
+  await run("UPDATE price_arena_settings SET minimum_broad_products = ?, minimum_broad_categories = ?, no_clear_leader_margin = ?, history_window_days = ?, updated_by = ?, updated_at = ? WHERE id = 1", [minimumProducts, minimumCategories, leaderMargin, historyDays, request.adminUser.id, now]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRICE_ARENA_SETTINGS_UPDATED", affectedType: "price_arena_settings", affectedId: 1, metadata: { minimumProducts, minimumCategories, leaderMargin, historyDays } });
+  response.json({ message: "Price Arena evidence thresholds updated.", settings: await arenaSettings() });
+}));
+
+app.post("/api/admin/price-import-batches/:id/location", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.id, 10); const storeId = Number.parseInt(request.body.store_id, 10);
+  const [batch, store] = await Promise.all([get("SELECT id FROM price_import_batches WHERE id = ?", [batchId]), get("SELECT id, name, city, state FROM stores WHERE id = ? AND active = 1", [storeId])]);
+  if (!batch) { response.status(404).json({ error: "Import batch was not found." }); return; }
+  const isJanesville = store && String(store.city || "").trim().toLowerCase() === "janesville" && ["wi","wisconsin"].includes(String(store.state || "").trim().toLowerCase());
+  if (!isJanesville) { response.status(409).json({ error: "Only a verified active Janesville store can be assigned to this online import." }); return; }
+  const evidence = cleanText(request.body.evidence_note, 500); if (!evidence) { response.status(400).json({ error: "Describe the visible Janesville location evidence." }); return; }
+  const now = new Date().toISOString();
+  await run("BEGIN IMMEDIATE");
+  try {
+    await run("UPDATE price_import_batches SET default_store_id = ?, location_verification_status = 'verified_exact_store', applicable_store_id = ?, location_evidence_text = ?, updated_at = ? WHERE id = ?", [store.id, store.id, evidence, now, batchId]);
+    await run("UPDATE price_import_rows SET store_id = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [store.id, request.adminUser.id, now, batchId]);
+    await run("COMMIT");
+  } catch (error) { await run("ROLLBACK"); throw error; }
+  await recordPriceEvent({ batchId, eventType: "IMPORT_LOCATION_RESOLVED", actorUserId: request.adminUser.id, reason: evidence, metadata: { store_id: store.id, city: store.city, state: store.state } });
+  response.json({ message: "Online import verified for the selected Janesville store.", batch_id: batchId, store: { id: store.id, name: store.name } });
+}));
+
+app.post("/api/admin/prices/:id/location", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const reportId = Number.parseInt(request.params.id, 10); const report = await get("SELECT * FROM price_reports WHERE id = ?", [reportId]);
+  if (!report) { response.status(404).json({ error: "Price was not found." }); return; }
+  const status = cleanText(request.body.status, 40);
+  if (!["verified_exact_store", "verified_market", "needs_review"].includes(status)) { response.status(400).json({ error: "Choose a valid location resolution." }); return; }
+  const store = await get("SELECT id, city, state FROM stores WHERE id = ? AND active = 1", [Number(request.body.store_id || report.store_id)]);
+  const isJanesville = store && String(store.city).toLowerCase() === "janesville" && ["wi", "wisconsin"].includes(String(store.state).toLowerCase());
+  if (status !== "needs_review" && !isJanesville) { response.status(409).json({ error: "Only a verified active Janesville store or market can enter Janesville comparisons." }); return; }
+  const note = cleanText(request.body.evidence_note, 500); if (status !== "needs_review" && !note) { response.status(400).json({ error: "Describe the visible location evidence." }); return; }
+  const now = new Date().toISOString();
+  await run("UPDATE price_reports SET store_id = CASE WHEN ? = 'needs_review' THEN store_id ELSE ? END, location_verification_status = ?, applicable_city = ?, applicable_state = ?, applicable_store_id = ?, location_evidence_text = ?, last_edited_by = ?, last_edited_at = ? WHERE id = ?", [status, store?.id || report.store_id, status, status === "needs_review" ? "" : store.city, status === "needs_review" ? "" : store.state, status === "needs_review" ? null : store.id, note, request.adminUser.id, now, reportId]);
+  await recordPriceEvent({ reportId, eventType: "LOCATION_RESOLVED", actorUserId: request.adminUser.id, submitterUserId: report.submitted_by_user_id || report.user_id, reason: note, metadata: { status, previous_store_id: report.store_id, store_id: status === "needs_review" ? null : store.id } });
+  response.json({ message: status === "needs_review" ? "Price held for location review." : "Janesville applicability verified.", report_id: reportId, location_verification_status: status });
+}));
+
+app.post("/api/admin/product-families", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const displayName = cleanText(request.body.display_name, 120); const genericType = cleanText(request.body.generic_product_type || displayName, 120).toLowerCase();
+  if (!displayName || !genericType) { response.status(400).json({ error: "Family name and generic product type are required." }); return; }
+  const slug = normalizeProductName(request.body.slug || displayName).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); const now = new Date().toISOString();
+  const result = await run("INSERT INTO product_families (slug, display_name, category, generic_product_type, key_attributes_json, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET display_name = excluded.display_name, category = excluded.category, generic_product_type = excluded.generic_product_type, key_attributes_json = excluded.key_attributes_json, updated_at = excluded.updated_at", [slug, displayName, cleanText(request.body.category, 40).toLowerCase(), genericType, JSON.stringify(request.body.key_attributes || {}), request.adminUser.id, now, now]);
+  const family = await get("SELECT * FROM product_families WHERE slug = ?", [slug]); response.status(result.lastID ? 201 : 200).json({ message: "Product family saved.", family });
+}));
+
+app.post("/api/admin/product-families/:id/members", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const familyId = Number.parseInt(request.params.id, 10); const productId = Number.parseInt(request.body.product_id, 10); const now = new Date().toISOString();
+  const [family, product] = await Promise.all([get("SELECT id FROM product_families WHERE id = ? AND status = 'active'", [familyId]), get("SELECT id FROM products WHERE id = ? AND status = 'active'", [productId])]);
+  if (!family || !product) { response.status(404).json({ error: "Active family or product was not found." }); return; }
+  await run("INSERT INTO product_family_members (family_id, product_id, member_attributes_json, confidence, source, human_confirmed, confirmed_by, confirmed_at, created_at, updated_at) VALUES (?, ?, ?, 'high', 'staff', 1, ?, ?, ?, ?) ON CONFLICT(product_id) DO UPDATE SET family_id = excluded.family_id, member_attributes_json = excluded.member_attributes_json, confidence = 'high', source = 'staff', human_confirmed = 1, confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at, updated_at = excluded.updated_at", [familyId, productId, JSON.stringify(request.body.attributes || {}), request.adminUser.id, now, now, now]);
+  response.json({ message: "Product family membership confirmed." });
+}));
+
+app.get("/api/admin/substitutions", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const status = cleanText(request.query.status || "suggested", 30);
+  const stored = await all(`SELECT substitutions.*, sources.display_name AS source_name, targets.display_name AS target_name FROM product_substitutions substitutions JOIN products sources ON sources.id = substitutions.source_product_id JOIN products targets ON targets.id = substitutions.target_product_id WHERE substitutions.status = ? ORDER BY substitutions.updated_at DESC LIMIT 200`, [status]);
+  const familyCandidates = status === "suggested" ? await all(`SELECT a.product_id AS source_product_id, source.display_name AS source_name, b.product_id AS target_product_id, target.display_name AS target_name, families.display_name AS family_name, a.member_attributes_json AS source_attributes_json, b.member_attributes_json AS target_attributes_json
+    FROM product_family_members a JOIN product_family_members b ON b.family_id = a.family_id AND b.product_id != a.product_id JOIN product_families families ON families.id = a.family_id JOIN products source ON source.id = a.product_id JOIN products target ON target.id = b.product_id
+    WHERE a.human_confirmed = 1 AND b.human_confirmed = 1 AND source.status = 'active' AND target.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_substitutions existing WHERE existing.source_product_id = a.product_id AND existing.target_product_id = b.product_id) ORDER BY families.display_name, source.display_name LIMIT 200`) : [];
+  response.json({ substitutions: stored.map((row) => ({ ...row, reasons: parseMetadataJson(row.reasons_json), safety_warnings: parseMetadataJson(row.safety_warnings_json) })), family_candidates: familyCandidates });
+}));
+
+app.post("/api/admin/substitutions/:sourceId/:targetId/decision", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const sourceId = Number.parseInt(request.params.sourceId, 10); const targetId = Number.parseInt(request.params.targetId, 10); const decision = cleanText(request.body.decision, 30);
+  if (!["confirm", "alternative_only", "not_related"].includes(decision) || sourceId === targetId) { response.status(400).json({ error: "Choose a valid substitution decision." }); return; }
+  const [source, target] = await Promise.all([get("SELECT * FROM products WHERE id = ? AND status = 'active'", [sourceId]), get("SELECT * FROM products WHERE id = ? AND status = 'active'", [targetId])]);
+  if (!source || !target) { response.status(404).json({ error: "Both active products are required." }); return; }
+  const conflicts = dietaryConflicts(source.product_attributes_json, target.product_attributes_json); const compatible = sizeCompatible(source, target);
+  const requestedConfidence = cleanText(request.body.confidence || "medium", 20); const confidence = ["high","medium","low"].includes(requestedConfidence) ? requestedConfidence : "medium";
+  if (decision === "confirm" && confidence === "high" && (conflicts.length || !compatible)) { response.status(409).json({ error: "High-confidence substitute blocked by size or dietary compatibility safeguards.", conflicts, size_comparable: compatible }); return; }
+  const status = decision === "not_related" ? "rejected" : decision === "alternative_only" ? "alternative_only" : "confirmed"; const type = decision === "alternative_only" ? "alternative" : cleanText(request.body.substitution_type || "very_similar", 30); const now = new Date().toISOString();
+  const reasons = Array.isArray(request.body.reasons) ? request.body.reasons.map((item) => cleanText(item, 120)).filter(Boolean).slice(0, 10) : [];
+  await run("INSERT INTO product_substitutions (source_product_id,target_product_id,substitution_type,confidence,reasons_json,safety_warnings_json,source,status,reviewed_by,reviewed_at,review_note,created_at,updated_at) VALUES (?,?,?,?,?,?,'staff_review',?,?,?,?,?,?) ON CONFLICT(source_product_id,target_product_id) DO UPDATE SET substitution_type=excluded.substitution_type,confidence=excluded.confidence,reasons_json=excluded.reasons_json,safety_warnings_json=excluded.safety_warnings_json,source='staff_review',status=excluded.status,reviewed_by=excluded.reviewed_by,reviewed_at=excluded.reviewed_at,review_note=excluded.review_note,updated_at=excluded.updated_at", [sourceId,targetId,type,confidence,JSON.stringify(reasons),JSON.stringify(conflicts),status,request.adminUser.id,now,cleanText(request.body.review_note,500),now,now]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "SUBSTITUTE_DECISION", affectedType: "product_substitution", affectedId: sourceId, metadata: { target_product_id: targetId, status, confidence, conflicts } });
+  response.json({ message: status === "rejected" ? "Products marked not related." : "Substitute relationship saved for public use.", status, confidence, safety_warnings: conflicts, size_comparable: compatible });
 }));
 
 app.use(express.static(CLIENT_DIST_DIR, { index: false }));

@@ -104,6 +104,12 @@ const visitorId = () => {
 }
 
 const submissionStorageKey = 'groceryRadar.submissions.v1'
+const listStorageKey = 'groceryRadar.list.v1'
+const substitutionPreferenceKey = 'groceryRadar.substitutePreferences.v1'
+const readLocalList = () => {
+  try { const items = JSON.parse(window.localStorage.getItem(listStorageKey) || '[]'); return Array.isArray(items) ? items : [] } catch { return [] }
+}
+const writeLocalList = (items) => window.localStorage.setItem(listStorageKey, JSON.stringify(items.slice(0, 100)))
 const readTrackedSubmissions = () => {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(submissionStorageKey) || '[]')
@@ -158,18 +164,6 @@ const compareCountLabel = (count = 0) => {
 const checkedDateLabel = (value) => {
   const label = shortDate(value)
   return label ? `Checked ${label}` : 'Check date pending'
-}
-const savingsForReport = (report) => {
-  const regular = numericPrice(report?.regular_price)
-  const price = numericPrice(report?.price)
-  if (regular !== null && price !== null && regular > price) {
-    return regular - price
-  }
-  return 0
-}
-const dealSavingsLabel = (report) => {
-  const savings = savingsForReport(report)
-  return savings > 0 ? `Save ${money(savings)}` : ''
 }
 const bestReportForProduct = (product, reports = []) => {
   if (!product?.id) return null
@@ -1022,7 +1016,7 @@ function CatalogTile({ product, reports, openProduct }) {
 }
 
 function HomeScreen(props) {
-  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore } = props
+  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore, arena } = props
   const service = homepageService?.service || fallbackHomepageService.service
   const products = (browse.products || []).filter(isRenderableProduct)
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
@@ -1036,6 +1030,8 @@ function HomeScreen(props) {
         <div className="mt-6"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
         <div className="mt-4 flex flex-wrap gap-2 text-sm font-bold text-emerald-50"><span>{titleCase(service.service_status || 'online')}</span><span aria-hidden="true">·</span><span>{service.main_message}</span></div>
       </section>
+
+      <section className="mt-6 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100"><SectionHeader title="Janesville Price Check" action="See all stores" onAction={() => openScreen('deals')} />{arena?.homepage_module_eligible ? <><p className="font-bold text-slate-500">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-3 grid gap-2 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0,3).map((row) => <div key={row.store_id} className="rounded-xl bg-emerald-50 p-3"><strong>{row.store_name}</strong><p className="text-sm font-bold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-3 text-sm font-bold text-slate-500">Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></> : <p className="font-bold text-slate-600">We’re still building store coverage. Product-level comparisons remain available whenever current comparable prices exist.</p>}</section>
 
       {homepageServiceState?.error ? <p className="mt-4 rounded-2xl bg-amber-50 p-3 font-bold text-amber-900">Service notes are temporarily unavailable. Grocery search is still working.</p> : null}
       {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
@@ -1298,42 +1294,16 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
           </section>
 
           <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
-            <SectionHeader title="Store comparison" />
-            {storeGroups.length ? (
-              <div className="space-y-3">
-                {storeGroups.map((group) => {
-                  const best = [...group.reports].sort((a, b) => reportSortPrice(a) - reportSortPrice(b))[0]
-                  return (
-                    <div key={group.store_id} className="rounded-2xl bg-slate-50 p-3">
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <StoreLogo store={{ name: group.store_name }} />
-                          <div className="min-w-0">
-                            <p className="truncate font-black text-slate-950">{group.store_name}</p>
-                            <p className="text-sm font-semibold text-slate-500">
-                              {group.reports.length} approved report{group.reports.length === 1 ? '' : 's'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-xs font-black text-emerald-700">BEST HERE</p>
-                          <p className="text-2xl font-black text-slate-950">{best?.price_label || money(best?.price)}</p>
-                        </div>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <StatusPill report={best} />
-                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">
-                          {best?.unit_price_label || best?.size_text}
-                        </span>
-                      </div>
-                      <SourceTrust report={best} />
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <EmptyState title="No comparison yet" body="Approved store reports will appear here." icon={Store} />
-            )}
+            <SectionHeader title="Compare stores" />
+            <p className="mb-4 font-bold text-slate-500">{detail?.store_comparison?.comparable_store_count || 0} stores compared. Missing prices are not treated as more expensive.</p>
+            {detail?.store_comparison?.stores?.length ? <div className="space-y-3">{detail.store_comparison.stores.map((row) => <article key={row.store_id} className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><StoreLogo store={{ name: row.store_name }} /><div><h3 className="font-black">{row.store_name}</h3><p className="text-sm font-bold text-slate-500">{row.freshness_label || timeAgo(row.observed_at)}</p></div></div><div className="text-right"><p className="text-2xl font-black">{row.price_label || money(row.price)}</p><p className={`text-sm font-black ${row.is_cheapest ? 'text-emerald-700' : 'text-slate-500'}`}>{row.is_cheapest ? 'CHEAPEST VERIFIED' : `+${money(row.difference_from_cheapest)}`}</p></div></div><PromotionDetails report={row} /><SourceTrust report={row} /></article>)}</div> : <EmptyState title="No comparison yet" body="Current comparable prices from active Janesville stores will appear here." icon={Store} />}
+            {detail?.store_comparison?.unavailable_stores?.length ? <details className="mt-4 rounded-xl bg-slate-50 p-3"><summary className="cursor-pointer font-black">Stores with no current verified price ({detail.store_comparison.unavailable_stores.length})</summary><ul className="mt-2 space-y-1">{detail.store_comparison.unavailable_stores.map((store) => <li key={store.id} className="font-bold text-slate-600">{store.name} — {store.status}</li>)}</ul></details> : null}
+          </section>
+
+          <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+            <SectionHeader title="Cheaper similar options" />
+            <p className="mb-4 font-bold text-slate-500">Substitutes are different products, not identical matches. Grocery Radar only shows human-confirmed relationships.</p>
+            {detail?.substitutes?.length ? <div className="grid gap-3 sm:grid-cols-2">{detail.substitutes.map((item) => <article key={item.id} className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-100"><span className="rounded-full bg-white px-2.5 py-1 text-xs font-black uppercase text-emerald-800">{item.substitution_type === 'alternative' ? 'Alternative' : 'Very similar'}</span><h3 className="mt-3 text-xl font-black">{item.product_name}</h3><p className="font-bold text-slate-500">{item.size_text || 'Package size shown on product'}</p>{item.cheapest ? <><p className="mt-3 text-3xl font-black text-emerald-800">{item.cheapest.price_label || money(item.cheapest.price)}</p><p className="font-bold">{item.cheapest.store_name}</p></> : null}{item.potential_savings ? <p className="mt-2 font-black">Potential savings: {money(item.potential_savings)}</p> : null}<p className="mt-2 text-sm font-bold text-slate-600">Why suggested: {(item.reasons || []).join(' · ') || 'Same confirmed product family and comparable use.'}</p><button type="button" onClick={() => openScreen('product', { productId: item.product_id })} className="mt-4 min-h-11 w-full rounded-xl bg-white font-black ring-1 ring-emerald-200">View alternative</button></article>)}</div> : <EmptyState title="No confirmed substitutes yet" body="Grocery Radar will not guess substitute relationships from text alone." icon={PackageCheck} />}
           </section>
 
           <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
@@ -1448,149 +1418,27 @@ function ActionButton({ label, icon: Icon, onClick }) {
   )
 }
 
-function DealsScreen({ reports, loading, error, addToCart, openProduct, reload }) {
-  const [storeFilter, setStoreFilter] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('')
-  const [couponFilter, setCouponFilter] = useState('all')
-  const [sortMode, setSortMode] = useState('expires')
-  const approvedReports = reports.filter(hasNumericApprovedReportPrice)
-  const dealReports = approvedReports.filter(isDealReport)
-  const baseReports = dealReports.length ? dealReports : approvedReports
-  const storesWithDeals = [...new Set(baseReports.map((report) => report.store_name).filter(Boolean))].sort()
-  const categoriesWithDeals = [...new Set(baseReports.map((report) => report.category).filter(Boolean))].sort()
-  const displayReports = baseReports
-    .filter((report) => !storeFilter || report.store_name === storeFilter)
-    .filter((report) => !categoryFilter || report.category === categoryFilter)
-    .filter((report) => {
-      if (couponFilter === 'coupon') return Boolean(report.coupon_required)
-      if (couponFilter === 'no_coupon') return !report.coupon_required
-      return true
-    })
-    .sort((a, b) => {
-      if (sortMode === 'lowest') return reportSortPrice(a) - reportSortPrice(b)
-      if (sortMode === 'savings') return savingsForReport(b) - savingsForReport(a)
-      const aDate = a.expires_at ? new Date(a.expires_at).getTime() : Number.POSITIVE_INFINITY
-      const bDate = b.expires_at ? new Date(b.expires_at).getTime() : Number.POSITIVE_INFINITY
-      return aDate - bDate
-    })
-
-  return (
-    <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
-      <ScreenTitle
-        eyebrow="Deals near you"
-        title="This Week's Deals"
-        subtitle="Approved sale prices, weekly ads, and store deals for Janesville shoppers."
-      />
-      <section className="mb-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="block">
-            <span className="mb-1 block text-sm font-black text-slate-600">Store</span>
-            <select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)} className="field py-3 text-base">
-              <option value="">All stores</option>
-              {storesWithDeals.map((store) => <option key={store} value={store}>{store}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-black text-slate-600">Category</span>
-            <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} className="field py-3 text-base">
-              <option value="">All categories</option>
-              {categoriesWithDeals.map((category) => <option key={category} value={category}>{titleCase(category)}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-black text-slate-600">Coupon</span>
-            <select value={couponFilter} onChange={(event) => setCouponFilter(event.target.value)} className="field py-3 text-base">
-              <option value="all">All offers</option>
-              <option value="no_coupon">No coupon required</option>
-              <option value="coupon">Coupon required</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-black text-slate-600">Sort</span>
-            <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} className="field py-3 text-base">
-              <option value="expires">Expiration date</option>
-              <option value="lowest">Lowest price</option>
-              <option value="savings">Largest savings</option>
-            </select>
-          </label>
-        </div>
-      </section>
-      {loading ? <LoadingCard label="Loading approved deals..." /> : null}
-      {error ? <ApiError message={error} onRetry={reload} /> : null}
-      {!loading && !displayReports.length ? (
-        <EmptyState title="No approved deals found" body="Try different filters, or check back after new proofs are reviewed." icon={Tag} />
-      ) : null}
-      {!dealReports.length && displayReports.length ? (
-        <div className="mb-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900 ring-1 ring-amber-100">
-          No active sale-tagged reports found yet. Showing recent approved prices instead.
-        </div>
-      ) : null}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {displayReports.map((report) => (
-          <article key={report.id} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100">
-            <div className="flex items-start justify-between gap-3">
-              <StoreLogo store={{ name: report.store_name }} />
-              <div className="flex flex-wrap justify-end gap-2">
-                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">
-                  {report.proof_type === 'weekly_ad' ? 'Weekly ad' : report.sale_price ? 'Sale' : 'Approved'}
-                </span>
-                <span className={`rounded-full px-3 py-1 text-xs font-black ${report.coupon_required ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                  {report.coupon_required ? 'Coupon required' : 'No coupon required'}
-                </span>
-                {report.regular_price ? (
-                  <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-800">
-                    Was {money(report.regular_price)}
-                  </span>
-                ) : null}
-                {dealSavingsLabel(report) ? (
-                  <span className="rounded-full bg-lime-100 px-3 py-1 text-xs font-black text-lime-800">
-                    {dealSavingsLabel(report)}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-            <h2 className="mt-4 text-2xl font-black text-slate-950">{reportTitle(report)}</h2>
-            <p className="mt-1 font-semibold text-slate-500">
-              {report.store_name} | {reportSize(report)}
-            </p>
-            <div className="mt-4 flex items-end justify-between gap-4">
-              <div>
-                <p className="text-sm font-bold text-slate-500">Approved price</p>
-                <p className="text-4xl font-black text-emerald-700">{report.price_label || money(report.price)}</p>
-                <p className="mt-1 text-sm font-bold text-slate-400">{report.unit_price_label}</p>
-                <PromotionDetails report={report} />
-              </div>
-              <StatusPill report={report} />
-            </div>
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl bg-slate-50 p-3">
-              <div className="flex items-center gap-2 text-sm font-black text-slate-700">
-                <Clock3 className="h-4 w-4 text-emerald-700" />
-                {report.valid_through_date ? `Valid through ${shortDate(report.valid_through_date)}` : report.expires_at ? `Expires ${new Date(report.expires_at).toLocaleDateString()}` : timeAgo(report.submitted_at)}
-              </div>
-              <button
-                type="button"
-                onClick={() => addToCart(report)}
-                className="inline-flex items-center gap-2 rounded-full bg-emerald-700 px-4 py-2 text-sm font-black text-white"
-              >
-                <Plus className="h-4 w-4" />
-                Add to My List
-              </button>
-            </div>
-            <SourceTrust report={report} />
-            {report.product_id ? (
-              <button
-                type="button"
-                onClick={() => openProduct(report.product_id)}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 font-black text-slate-800"
-              >
-                View product
-              </button>
-            ) : null}
-          </article>
-        ))}
-      </div>
-    </div>
-  )
+function DealsScreen({ arena, loading, error, openProduct, reload, onControlsChange }) {
+  const [section, setSection] = useState('drops')
+  const leaderboard = arena?.leaderboard || {}
+  const drops = arena?.price_drops || []
+  return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
+    <ScreenTitle eyebrow="Janesville price arena" title="Savings across every store" subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
+    <section className="mb-5 grid gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100 sm:grid-cols-2 lg:grid-cols-5">
+      <label className="font-black text-slate-700">Time window<select className="field mt-1" defaultValue="week" onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
+      <label className="font-black text-slate-700">Offer rules<select className="field mt-1" defaultValue="all" onChange={(event) => onControlsChange({ mode: event.target.value })}><option value="all">All valid offers</option><option value="unconditional">No special requirements</option></select></label>
+      <label className="font-black text-slate-700">Store<select className="field mt-1" defaultValue="" onChange={(event) => onControlsChange({ store_id: event.target.value })}><option value="">All stores</option>{(arena?.eligible_stores || []).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
+      <label className="font-black text-slate-700">Category<select className="field mt-1" defaultValue="" onChange={(event) => onControlsChange({ category: event.target.value })}><option value="">All categories</option>{categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></label>
+      <label className="font-black text-slate-700">Price-drop order<select className="field mt-1" defaultValue="newest" onChange={(event) => onControlsChange({ sort: event.target.value })}><option value="newest">Newest</option><option value="percent">Biggest % drop</option><option value="dollars">Biggest dollar savings</option><option value="ending">Ending soon</option></select></label>
+    </section>
+    <div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Savings views">{[['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <button key={id} type="button" role="tab" aria-selected={section === id} onClick={() => setSection(id)} className={`min-h-12 rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</button>)}</div>
+    {loading ? <LoadingCard label="Calculating current verified comparisons..." /> : null}
+    {error ? <ApiError message={error} onRetry={reload} /> : null}
+    {!loading && section === 'drops' ? <section><SectionHeader title="What got cheaper around Janesville?" />{drops.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drops.map((drop) => <article key={`${drop.type}-${drop.report.id}`} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="text-xs font-black uppercase text-emerald-700">{drop.label}</p><h2 className="mt-2 text-xl font-black">{drop.report.product_name}</h2><p className="font-bold text-slate-500">{drop.report.store_name}</p><p className="mt-3 text-sm font-bold text-slate-500">Was {money(drop.previous_price)}</p><p className="text-3xl font-black text-emerald-700">Now {money(drop.current_price)}</p><p className="mt-1 font-black">↓ {money(drop.dollar_drop)} / {drop.percent_drop}%</p><PromotionDetails report={drop.report} /><button type="button" onClick={() => openProduct(drop.report.product_id)} className="mt-4 min-h-11 w-full rounded-xl bg-slate-100 font-black">Compare stores</button></article>)}</div> : <EmptyState title="No verified price drops yet" body="A drop appears only after Grocery Radar has a legitimate comparable previous price." icon={Tag} />}</section> : null}
+    {!loading && section === 'showdown' ? <section className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100"><SectionHeader title="Janesville Store Showdown" /><p className="font-bold text-slate-500">{arena?.window?.label} · {leaderboard.comparable_product_count || 0} comparable products</p><div className="mt-4 space-y-2">{(leaderboard.rankings || []).map((row,index) => <div key={row.store_id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3"><div><p className="font-black">#{index + 1} {row.store_name}</p><p className="text-sm font-bold text-slate-500">{row.current_price_count} current prices · {row.tied_lowest_count} ties</p></div><p className="text-right font-black text-emerald-800">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{leaderboard.status_message} Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></section> : null}
+    {!loading && section === 'categories' ? <section><SectionHeader title="Who's cheaper by category?" /><div className="grid gap-4 sm:grid-cols-2">{(arena?.categories || []).map((category) => <article key={category.category} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><h2 className="text-xl font-black">{titleCase(category.category)}</h2><p className="text-sm font-bold text-slate-500">{category.comparable_product_count} comparable products</p><div className="mt-3 space-y-2">{category.rankings.slice(0,5).map((row) => <div key={row.store_id} className="flex justify-between gap-3"><span className="font-bold">{row.store_name}</span><span className="font-black">Lowest on {row.lowest_count}</span></div>)}</div></article>)}</div>{!arena?.categories?.length ? <EmptyState title="Limited category data" body="Category comparisons appear as comparable verified prices grow." icon={Store} /> : null}</section> : null}
+    <p className="mt-5 text-sm font-bold text-slate-500">{arena?.disclaimer || 'Missing store prices are never treated as higher prices.'}</p>
+  </div>
 }
 
 function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Legacy accounts can still sign in for saved lists and points. Shopping and proof submission need no account.' }) {
@@ -1657,7 +1505,38 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Le
   )
 }
 
-function CartScreen({ me, cart, comparison, cartMode, setCartMode, loading, error, openScreen, reload, onAuthChanged, updateCartItem, removeCartItem, clearCart }) {
+function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOfferMode, loading, error, openScreen, reload, updateCartItem, removeCartItem, clearCart, onUseSubstitute }) {
+  const [substituteState, setSubstituteState] = useState({ loading: false, items: [], message: '' })
+  const [ignoredSubstitutes, setIgnoredSubstitutes] = useState(() => { try { return JSON.parse(window.localStorage.getItem(substitutionPreferenceKey) || '{}') } catch { return {} } })
+  const findSubstitutes = async () => {
+    setSubstituteState({ loading: true, items: [], message: '' })
+    try {
+      const results = await Promise.all((cart?.items || []).filter((item) => item.product_id && !ignoredSubstitutes[item.product_id]).map(async (item) => ({ item, data: await getJson(`/api/savings/products/${item.product_id}/substitutes?mode=${offerMode}`) })))
+      const items = results.flatMap(({ item, data }) => (data.substitutes || []).filter((candidate) => candidate.potential_savings).map((candidate) => ({ original: item, candidate })))
+      setSubstituteState({ loading: false, items, message: items.length ? '' : 'No cheaper human-confirmed substitutes are available for this list yet.' })
+    } catch (findError) { setSubstituteState({ loading: false, items: [], message: findError.message }) }
+  }
+  const ignore = (productId) => { const next = { ...ignoredSubstitutes, [productId]: true }; setIgnoredSubstitutes(next); window.localStorage.setItem(substitutionPreferenceKey, JSON.stringify(next)); setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => Number(entry.original.product_id) !== Number(productId)) })) }
+  const selected = comparison?.selected
+  const one = comparison?.best_one_store
+  const two = comparison?.best_two_stores
+  const savings = one && selected && one.matched_count === selected.matched_count ? Math.max(0, one.estimated_total - selected.estimated_total) : 0
+  return <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
+    <ScreenTitle eyebrow="My List · no shopper account required" title="Cheapest Basket" subtitle="Compare one-store, two-store, or all-store plans. Anonymous lists stay on this device; legacy signed-in lists remain supported." />
+    <div className="mb-5 flex flex-wrap gap-2" role="group" aria-label="Maximum stores">{[['1','One store'],['2','Two stores'],['any','Any stores']].map(([value,label]) => <button key={value} type="button" onClick={() => setCartMode(value)} className={`min-h-12 rounded-full px-5 font-black ${cartMode === value ? 'bg-emerald-700 text-white' : 'bg-white ring-1 ring-slate-200'}`}>{label}</button>)}<button type="button" onClick={() => setOfferMode(offerMode === 'all' ? 'unconditional' : 'all')} className="min-h-12 rounded-full bg-white px-5 font-black ring-1 ring-slate-200">{offerMode === 'all' ? 'Including conditional offers' : 'No special requirements'}</button></div>
+    {loading ? <LoadingCard label="Optimizing current verified prices..." /> : null}{error ? <ApiError message={error} onRetry={reload} /> : null}
+    <section className="grid gap-3 sm:grid-cols-3"><SummaryCard icon={Store} label="Best one-store" value={one?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={one ? `${one.matched_count}/${one.requested_count} matched · ${money(one.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={Store} label="Best two-store" value={two?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={two ? `${two.matched_count}/${two.requested_count} matched · ${money(two.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={CircleDollarSign} label="Selected plan" value={selected ? money(selected.estimated_total) : '$0.00'} note={savings > 0 ? `${money(savings)} below best one-store plan` : 'Approved current prices only'} /></section>
+    {selected ? <section className="mt-5 rounded-2xl bg-emerald-700 p-5 text-white"><p className="text-sm font-black text-emerald-100">CHEAPEST {cartMode === '1' ? 'ONE-STORE' : cartMode === '2' ? 'TWO-STORE' : 'ALL-STORE'} PLAN</p><h2 className="mt-1 text-3xl font-black">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 text-4xl font-black">{money(selected.estimated_total)}</p><p className="mt-2 font-bold">{selected.matched_count} of {selected.requested_count} products matched</p></section> : null}
+    {comparison?.coverage_warning ? <p className="mt-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900"><AlertTriangle className="mr-2 inline h-5 w-5" />{comparison.coverage_warning}</p> : null}
+    {selected?.matches?.length ? <section className="mt-5 space-y-3"><SectionHeader title="Shopping plan" />{selected.matches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div><h3 className="font-black">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="text-sm font-bold text-slate-500">{match.report.store_name} · {match.report.promotion_conditions || 'No special requirement shown'}</p></div><p className="text-xl font-black text-emerald-700">{money(match.line_total)}</p></article>)}</section> : null}
+    {comparison?.comparable_subset ? <p className="mt-4 text-sm font-bold text-slate-500">Comparable subset across every participating store: {comparison.comparable_subset.product_count} products. Partial store totals are never ranked as complete totals.</p> : null}
+    <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-black">Save with substitutes</h2><p className="font-bold text-slate-500">Different products are always labeled, and your list changes only when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="min-h-12 rounded-xl bg-emerald-700 px-5 font-black text-white">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-3 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-xl bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><p className="mt-2 font-bold text-slate-500">Instead of {original.product_display_name || original.item_name}</p><h3 className="text-xl font-black">{candidate.product_name}</h3><p className="font-bold">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p><p className="mt-1 font-black text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-2 text-sm font-bold text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="min-h-11 rounded-xl bg-emerald-700 px-4 font-black text-white">Use Substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="min-h-11 rounded-xl bg-white px-4 font-black">Keep Original</button><button type="button" onClick={() => ignore(original.product_id)} className="min-h-11 rounded-xl bg-white px-4 font-black">Don’t Suggest Again</button></div></article>)}</div></section>
+    <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex items-center justify-between"><h2 className="text-xl font-black">My List Items</h2><button type="button" onClick={clearCart} className="min-h-11 rounded-xl bg-slate-100 px-4 font-black"><Trash2 className="mr-2 inline h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3"><div className="min-w-0"><p className="truncate font-black">{item.product_display_name || item.item_name}</p><p className="text-sm font-bold text-slate-500">{item.size_preference || 'Catalog product'}</p></div><div className="flex items-center gap-2"><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong>{item.quantity_needed || 1}</strong><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="h-11 w-11 rounded-full bg-white" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add products to compare every active Janesville store." icon={ShoppingCart} /> : null}</div></section>
+    <button type="button" onClick={() => openScreen('search')} className="mt-5 min-h-14 w-full rounded-2xl bg-emerald-700 px-5 text-lg font-black text-white">Add another item</button>
+  </div>
+}
+
+function _LegacyCartScreen({ me, cart, comparison, cartMode, setCartMode, loading, error, openScreen, reload, onAuthChanged, updateCartItem, removeCartItem, clearCart }) {
   if (!me.loggedIn) {
     return (
       <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
@@ -2744,6 +2623,8 @@ function StoreDetailScreen({ detail, loading, error, openProduct, openScreen }) 
     {loading ? <LoadingCard label="Loading current store prices..." /> : null}
     {error ? <ApiError message={error} /> : null}
     {store ? <><ScreenTitle eyebrow="Janesville store" title={store.name} subtitle={`${Number(store.current_price_count || 0)} current approved prices · Inventory is not live.`} />
+      <section className="mb-6 grid gap-3 sm:grid-cols-4"><SummaryCard icon={CircleDollarSign} label="Current prices" value={store.current_price_count || 0} note="Verified and currently eligible" /><SummaryCard icon={Tag} label="Price drops this week" value={detail?.scorecard?.price_drops || 0} note="Verified decreases" /><SummaryCard icon={Store} label="Lowest among stores" value={detail?.scorecard?.lowest_count || 0} note={`${detail?.scorecard?.comparable_products || 0} comparable products`} /><SummaryCard icon={PackageCheck} label="Strongest observed category" value={titleCase(detail?.scorecard?.strongest_observed_category || 'Limited data')} note="Coverage varies by category" /></section>
+      <p className="mb-5 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{detail?.scorecard?.disclaimer}</p>
       {grouped.map(([category, products]) => <section key={category} className="mt-7"><SectionHeader title={titleCase(category)} /><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{products.map((product) => <CatalogTile key={product.id} product={product} reports={detail.reports || []} openProduct={openProduct} />)}</div></section>)}
       {!grouped.length ? <EmptyState title="Prices needed" body="This store has no current approved product prices yet." icon={Store} /> : null}</> : null}
   </div>
@@ -2788,7 +2669,7 @@ function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnrea
 function BottomNav({ active, openScreen }) {
   const navItems = [
     { id: 'search', label: 'Products', icon: Search },
-    { id: 'deals', label: 'Deals', icon: Tag },
+    { id: 'deals', label: 'Savings', icon: Tag },
     { id: 'stores', label: 'Stores', icon: Store },
     { id: 'cart', label: 'My List', icon: ShoppingCart },
     { id: 'submit', label: 'Submit', icon: Upload },
@@ -2841,12 +2722,14 @@ function App() {
   const [selectedProductId, setSelectedProductId] = useState(null)
   const [productDetail, setProductDetail] = useState(null)
   const [productState, setProductState] = useState({ loading: false, error: '' })
-  const [dealReports, setDealReports] = useState([])
+  const [dealReports, setDealReports] = useState({ leaderboard: {}, categories: [], price_drops: [] })
+  const [arenaControls, setArenaControls] = useState({ window: 'week', mode: 'all' })
   const [dealState, setDealState] = useState({ loading: false, error: '' })
   const [me, setMe] = useState({ loading: true, loggedIn: false })
   const [cart, setCart] = useState(null)
   const [comparison, setComparison] = useState(null)
-  const [cartMode, setCartMode] = useState('cheapest_split')
+  const [cartMode, setCartMode] = useState('any')
+  const [arenaOfferMode, setArenaOfferMode] = useState('all')
   const [cartState, setCartState] = useState({ loading: false, error: '' })
   const [profileStats, setProfileStats] = useState(null)
   const [engagement, setEngagement] = useState(null)
@@ -2867,6 +2750,7 @@ function App() {
   const openScreen = useCallback((nextScreen, options = {}) => {
     if (options.category) setActiveCategory(options.category)
     if (options.proofId) setSelectedProofId(options.proofId)
+    if (options.productId) setSelectedProductId(Number(options.productId))
     setScreen(nextScreen)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
@@ -2978,29 +2862,28 @@ function App() {
   const loadDeals = useCallback(async () => {
     setDealState({ loading: true, error: '' })
     try {
-      const data = await getJson('/api/search?sort=newest_report')
-      setDealReports(data.reports || [])
+      const params = new URLSearchParams(arenaControls)
+      const data = await getJson(`/api/savings/overview?${params.toString()}`)
+      setDealReports(data)
       setDealState({ loading: false, error: '' })
     } catch (error) {
       setDealState({ loading: false, error: error.message })
     }
-  }, [])
+  }, [arenaControls])
 
   const loadCart = useCallback(async () => {
-    if (!me.loggedIn) return
     setCartState({ loading: true, error: '' })
     try {
-      const [cartData, compareData] = await Promise.all([
-        getJson('/api/cart'),
-        getJson(`/api/cart/compare?mode=${encodeURIComponent(cartMode)}`),
-      ])
+      const cartData = me.loggedIn ? await getJson('/api/cart') : { items: readLocalList() }
+      const items = (cartData.items || []).filter((item) => item.product_id).map((item) => ({ product_id: item.product_id, quantity: Number(item.quantity_needed || 1), item_name: item.product_display_name || item.item_name }))
+      const compareData = items.length ? await postJson('/api/savings/basket', { items, max_stores: cartMode, mode: arenaOfferMode }) : null
       setCart(cartData)
       setComparison(compareData)
       setCartState({ loading: false, error: '' })
     } catch (error) {
       setCartState({ loading: false, error: error.message })
     }
-  }, [cartMode, me.loggedIn])
+  }, [arenaOfferMode, cartMode, me.loggedIn])
 
   const loadProfile = useCallback(async () => {
     if (!me.loggedIn) return
@@ -3115,6 +2998,8 @@ function App() {
     if (screen === 'deals') loadDeals()
   }, [screen, loadDeals])
 
+  useEffect(() => { loadDeals() }, [loadDeals])
+
   useEffect(() => {
     if (screen === 'cart') loadCart()
   }, [screen, loadCart])
@@ -3146,8 +3031,14 @@ function App() {
 
   const addToCart = async (item) => {
     if (!me.loggedIn) {
-      setToast('Log in to add items to My List.')
-      openScreen('cart')
+      const productId = Number(item.product_id || item.id)
+      const current = readLocalList()
+      if (current.some((entry) => Number(entry.product_id) === productId)) setToast('Already in My List.')
+      else {
+        writeLocalList([...current, { id: `local-${productId}`, product_id: productId, product_display_name: item.display_name || item.product_display_name || item.item_name, item_name: item.display_name || item.product_display_name || item.item_name, quantity_needed: '1', size_preference: item.default_size_text || item.size_text || '', category: item.category || '' }])
+        setToast('Added to My List on this device.')
+      }
+      if (screen === 'cart') await loadCart()
       return
     }
 
@@ -3173,7 +3064,8 @@ function App() {
 
   const removeCartItem = async (id) => {
     try {
-      await apiFetch(`/api/cart/${id}`, { method: 'DELETE' })
+      if (me.loggedIn) await apiFetch(`/api/cart/${id}`, { method: 'DELETE' })
+      else writeLocalList(readLocalList().filter((item) => String(item.id) !== String(id)))
       await loadCart()
     } catch (error) {
       setToast(error.message)
@@ -3182,10 +3074,11 @@ function App() {
 
   const updateCartItem = async (item, quantityNeeded) => {
     try {
-      await putJson(`/api/cart/${item.id}`, {
+      if (me.loggedIn) await putJson(`/api/cart/${item.id}`, {
         ...item,
         quantity_needed: String(quantityNeeded),
       })
+      else writeLocalList(readLocalList().map((entry) => String(entry.id) === String(item.id) ? { ...entry, quantity_needed: String(quantityNeeded) } : entry))
       await loadCart()
     } catch (error) {
       setToast(error.message)
@@ -3194,11 +3087,24 @@ function App() {
 
   const clearCart = async () => {
     try {
-      await apiFetch('/api/cart', { method: 'DELETE' })
+      if (me.loggedIn) await apiFetch('/api/cart', { method: 'DELETE' })
+      else writeLocalList([])
       await loadCart()
     } catch (error) {
       setToast(error.message)
     }
+  }
+
+  const useSubstitute = async (original, candidate) => {
+    try {
+      if (me.loggedIn) {
+        await postJson('/api/cart', { product_id: candidate.product_id, item_name: candidate.product_name, quantity_needed: original.quantity_needed || '1', source: 'human_confirmed_substitute' })
+        await apiFetch(`/api/cart/${original.id}`, { method: 'DELETE' })
+      } else {
+        writeLocalList(readLocalList().map((item) => String(item.id) === String(original.id) ? { ...item, id: `local-${candidate.product_id}`, product_id: candidate.product_id, product_display_name: candidate.product_name, item_name: candidate.product_name, size_preference: candidate.size_text || '', substitution_for_product_id: original.product_id } : item))
+      }
+      setToast('My List updated with the substitute you chose.'); await loadCart()
+    } catch (error) { setToast(error.message) }
   }
 
   const activeNav = useMemo(() => {
@@ -3239,6 +3145,7 @@ function App() {
             openProduct={openProduct}
             openStore={openStore}
             addToCart={addToCart}
+            arena={dealReports}
           />
         ) : null}
         {screen === 'search' ? (
@@ -3273,12 +3180,12 @@ function App() {
         ) : null}
         {screen === 'deals' ? (
           <DealsScreen
-            reports={dealReports}
+            arena={dealReports}
             loading={dealState.loading}
             error={dealState.error}
-            addToCart={addToCart}
             openProduct={openProduct}
             reload={loadDeals}
+            onControlsChange={(next) => setArenaControls((current) => ({ ...current, ...next }))}
           />
         ) : null}
         {screen === 'cart' ? (
@@ -3288,6 +3195,8 @@ function App() {
             comparison={comparison}
             cartMode={cartMode}
             setCartMode={setCartMode}
+            offerMode={arenaOfferMode}
+            setOfferMode={setArenaOfferMode}
             loading={cartState.loading}
             error={cartState.error}
             openScreen={openScreen}
@@ -3296,6 +3205,7 @@ function App() {
             updateCartItem={updateCartItem}
             removeCartItem={removeCartItem}
             clearCart={clearCart}
+            onUseSubstitute={useSubstitute}
           />
         ) : null}
         {screen === 'submit' ? (
