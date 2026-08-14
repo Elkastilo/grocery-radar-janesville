@@ -1582,6 +1582,7 @@ async function ensureSubmissionOutcome(batchId, reviewerId, options = {}) {
 }
 
 function formatProduct(row) {
+  const hasCurrentPrice = row.best_price !== null && row.best_price !== undefined;
   return {
     id: row.id,
     canonical_name: row.canonical_name,
@@ -1612,16 +1613,18 @@ function formatProduct(row) {
     merged_into_product_id: row.merged_into_product_id || null,
     admin_note: row.admin_note || "",
     updated_by: row.updated_by || null,
-    approved_price_count: row.approved_price_count || 0,
+    approved_price_count: hasCurrentPrice ? Number(row.approved_price_count || 0) : 0,
     pending_report_count: row.pending_report_count || 0,
     unlinked_report_count: row.unlinked_report_count || 0,
-    best_price: row.best_price === null || row.best_price === undefined ? null : Number(row.best_price),
-    best_price_unit: normalizePriceUnit(row.best_price_unit || ""),
-    best_price_label: row.best_price === null || row.best_price === undefined ? "Price needed" : primaryPriceLabel(row.best_price, row.best_price_unit, row.best_price_size_text),
-    best_store_name: row.best_store_name || "",
-    best_store_id: row.best_store_id || null,
-    best_report_id: row.best_report_id || null,
-    best_price_freshness: row.best_price === null || row.best_price === undefined ? "" : publicFreshnessLabel({ source_date: row.best_source_date, submitted_at: row.best_reported_at, proof_type: row.best_proof_type, expires_at: row.best_expires_at }),
+    has_current_price: hasCurrentPrice,
+    best_price: hasCurrentPrice ? Number(row.best_price) : null,
+    best_price_unit: hasCurrentPrice ? normalizePriceUnit(row.best_price_unit || "") : null,
+    best_price_size_text: hasCurrentPrice ? (row.best_price_size_text || "") : null,
+    best_price_label: hasCurrentPrice ? primaryPriceLabel(row.best_price, row.best_price_unit, row.best_price_size_text) : "Price needed",
+    best_store_name: hasCurrentPrice ? (row.best_store_name || "") : null,
+    best_store_id: hasCurrentPrice ? (row.best_store_id || null) : null,
+    best_report_id: hasCurrentPrice ? (row.best_report_id || null) : null,
+    best_price_freshness: hasCurrentPrice ? publicFreshnessLabel({ source_date: row.best_source_date, submitted_at: row.best_reported_at, proof_type: row.best_proof_type, expires_at: row.best_expires_at }) : "",
     other_store_price_count: Number(row.other_store_price_count || 0),
     image_id: row.image_id || null,
     image_url: row.image_id ? `/api/product-images/${row.image_id}/file` : "",
@@ -1673,8 +1676,10 @@ function productSelectColumns(alias = "products") {
     (
       SELECT COUNT(DISTINCT price_reports.store_id)
       FROM price_reports
+      JOIN users ON users.id = price_reports.user_id
       WHERE price_reports.product_id = ${alias}.id
         AND ${eligible}
+        AND ${activeUser}
     ) AS approved_price_count,
     (
       SELECT COUNT(*)

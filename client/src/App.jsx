@@ -28,6 +28,7 @@ import {
   UsersRound,
 } from 'lucide-react'
 import { apiFetch, getJson, postJson, putJson } from './api'
+import { isRenderableProduct, productCardViewModel, reportSize } from './productDisplay'
 
 const categories = [
   { label: 'Fresh Produce', value: 'produce' },
@@ -137,9 +138,9 @@ const shortDate = (value) => {
 }
 
 const reportTitle = (report) => displayText(report.product_display_name || report.item_name || 'Price report')
-const reportSize = (report) => report.size_text || report.product_default_size_text || report.unit_price_label || ''
 const isApprovedReport = (report) => report?.status === 'approved'
 const numericPrice = (value) => {
+  if (value === null || value === undefined || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -177,9 +178,8 @@ const bestReportForProduct = (product, reports = []) => {
     .filter((report) => String(report.product_id || '') === String(product.id) && hasNumericApprovedReportPrice(report))
     .sort((a, b) => reportSortPrice(a) - reportSortPrice(b))[0] || null
 }
-const productSize = (product, report) => product?.default_size_text || reportSize(report) || 'Size varies'
-const productImageUrl = (item = {}) => item.image_url || item.product_image_url || item.photo_url || ''
-const productBrand = (item = {}, report = null) => item.preferred_brand || item.brand || report?.brand || ''
+const productImageUrl = (item = {}) => item?.image_url || item?.product_image_url || item?.photo_url || ''
+const productBrand = (item = {}, report = null) => item?.preferred_brand || item?.brand || report?.brand || ''
 
 function initialsFor(name = '') {
   const parts = String(name).replace(/[^a-z0-9 ]/gi, ' ').split(/\s+/).filter(Boolean)
@@ -406,20 +406,23 @@ function StoreCard({ store, onOpen }) {
 }
 
 function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
-  const hasPrice = hasApprovedProductPrice(product)
-  const storeName = bestReport?.store_name || product.best_store_name || ''
-  const brand = productBrand(product, bestReport)
+  const card = productCardViewModel(product, bestReport)
+  const safeProduct = card.product
+  if (!card.renderable) return <article className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="font-black text-slate-700">Product unavailable</p><p className="mt-1 text-sm font-bold text-slate-500">This product card could not be displayed.</p></article>
+  const hasPrice = card.hasCurrentPrice
+  const storeName = bestReport?.store_name || safeProduct.best_store_name || ''
+  const brand = productBrand(safeProduct, bestReport)
 
   return (
     <article className="rounded-2xl bg-white p-4 text-left shadow-soft ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:shadow-lift">
-      <button type="button" onClick={() => onOpen(product.id)} className="w-full text-left">
+      <button type="button" onClick={() => onOpen(safeProduct.id)} className="w-full text-left">
         <div className="flex items-start gap-3">
-          <ProductVisual item={product} label={product.display_name} />
+          <ProductVisual item={safeProduct} label={card.displayName} />
           <div className="min-w-0 flex-1">
-            <p className="text-lg font-black text-slate-950">{displayText(product.display_name)}</p>
+            <p className="text-lg font-black text-slate-950">{displayText(card.displayName)}</p>
             {brand ? <p className="mt-0.5 text-sm font-black text-emerald-700">{displayText(brand)}</p> : null}
             <p className="mt-1 text-sm font-semibold text-slate-500">
-              {titleCase(product.category)} | {productSize(product, bestReport)}
+              {titleCase(card.category)} | {card.size}
             </p>
           </div>
           <div className={`rounded-2xl px-3 py-2 text-right shadow-sm ${
@@ -427,7 +430,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
           }`}>
             <p className="text-xs font-bold">{hasPrice ? 'Lowest' : 'Waiting'}</p>
             <p className={`${hasPrice ? 'text-xl' : 'max-w-24 text-sm leading-tight'} font-black`}>
-              {hasPrice ? productPrice(product) : 'No approved price yet'}
+              {hasPrice ? productPrice(safeProduct) : 'Price needed'}
             </p>
           </div>
         </div>
@@ -445,12 +448,12 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
             </span>
           ) : null}
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-            {compareCountLabel(product.approved_price_count)}
+            {compareCountLabel(safeProduct.approved_price_count)}
           </span>
-          {product.last_reported_at ? (
+          {safeProduct.last_reported_at ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
               <Clock3 className="h-3.5 w-3.5" />
-              {checkedDateLabel(product.last_reported_at)}
+              {checkedDateLabel(safeProduct.last_reported_at)}
             </span>
           ) : null}
         </div>
@@ -470,7 +473,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
       {onAddToCart ? (
         <button
           type="button"
-          onClick={() => onAddToCart(product)}
+          onClick={() => onAddToCart(safeProduct)}
           className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 font-black text-slate-800"
         >
           <Plus className="h-5 w-5 text-emerald-700" />
@@ -966,7 +969,7 @@ function CatalogTile({ product, reports, openProduct }) {
 function HomeScreen(props) {
   const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore } = props
   const service = homepageService?.service || fallbackHomepageService.service
-  const products = browse.products || []
+  const products = (browse.products || []).filter(isRenderableProduct)
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
   const visibleCategories = categories.map((category) => ({ ...category, products: products.filter((product) => product.category === category.value).slice(0, 4) })).filter((category) => category.products.length)
 
@@ -1033,7 +1036,7 @@ function SearchScreen({
 }) {
   const approvedReports = (searchData.reports || []).filter(hasNumericApprovedReportPrice)
   const foodCategorySet = new Set(['meat', 'dairy', 'produce', 'pantry', 'frozen', 'drinks', 'snacks', 'bakery'])
-  const filterFood = (item) => activeFilter !== 'food' || foodCategorySet.has(item.category)
+  const filterFood = (item) => Boolean(item && typeof item === 'object') && (activeFilter !== 'food' || foodCategorySet.has(item.category))
   const reports = (activeFilter === 'deals'
     ? approvedReports.filter(isDealReport)
     : approvedReports).filter(filterFood)
@@ -2669,7 +2672,7 @@ function ActivityList({ title, items, type }) {
 
 function StoreDetailScreen({ detail, loading, error, openProduct, openScreen }) {
   const store = detail?.store
-  const grouped = Object.entries((detail?.products || []).reduce((result, product) => {
+  const grouped = Object.entries((detail?.products || []).filter(isRenderableProduct).reduce((result, product) => {
     const key = product.category || 'other'; (result[key] ||= []).push(product); return result
   }, {}))
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
