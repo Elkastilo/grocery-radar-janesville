@@ -260,6 +260,51 @@ async function initDb() {
   await migrateProductsTable();
 
   await run(`
+    CREATE TABLE IF NOT EXISTS store_product_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      department TEXT,
+      aisle TEXT,
+      shelf TEXT,
+      bay TEXT,
+      section TEXT,
+      location_note TEXT,
+      source_type TEXT NOT NULL DEFAULT 'staff',
+      source_reference TEXT,
+      verified_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by_staff_id INTEGER,
+      is_current INTEGER NOT NULL DEFAULT 1,
+      superseded_at TEXT,
+      FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (updated_by_staff_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS store_product_location_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER,
+      store_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      previous_location_id INTEGER,
+      actor_staff_id INTEGER,
+      reason TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (location_id) REFERENCES store_product_locations(id) ON DELETE SET NULL,
+      FOREIGN KEY (previous_location_id) REFERENCES store_product_locations(id) ON DELETE SET NULL,
+      FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (actor_staff_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS product_images (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
@@ -1934,6 +1979,9 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_store ON price_reports(store_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_category ON price_reports(category)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_reports_product ON price_reports(product_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_store_product_locations_pair ON store_product_locations(store_id, product_id, is_current, verified_at)");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_store_product_locations_current ON store_product_locations(store_id, product_id) WHERE is_current = 1");
+  await run("CREATE INDEX IF NOT EXISTS idx_store_product_location_events_pair ON store_product_location_events(store_id, product_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_verifications_report ON verifications(price_report_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_point_events_user ON point_events(user_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_point_events_import_batch ON point_events(related_import_batch_id)");
@@ -2173,6 +2221,7 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "applicable_state", "TEXT");
   await addColumnIfMissing("price_reports", "applicable_store_id", "INTEGER");
   await addColumnIfMissing("price_reports", "location_evidence_text", "TEXT");
+  await addColumnIfMissing("price_reports", "retailer_displayed_discount_percent", "REAL");
   await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 
@@ -2378,6 +2427,13 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "display_offer_text", "TEXT");
   await addColumnIfMissing("price_import_rows", "public_rejection_reason", "TEXT");
   await addColumnIfMissing("price_import_rows", "public_reviewer_explanation", "TEXT");
+  await addColumnIfMissing("price_import_rows", "retailer_displayed_discount_percent", "REAL");
+  await addColumnIfMissing("price_import_rows", "department", "TEXT");
+  await addColumnIfMissing("price_import_rows", "aisle", "TEXT");
+  await addColumnIfMissing("price_import_rows", "shelf", "TEXT");
+  await addColumnIfMissing("price_import_rows", "bay", "TEXT");
+  await addColumnIfMissing("price_import_rows", "section", "TEXT");
+  await addColumnIfMissing("price_import_rows", "location_note", "TEXT");
   await run("UPDATE price_import_rows SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }
 

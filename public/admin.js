@@ -3859,6 +3859,7 @@ function renderProductTools() {
             <button class="quiet-button" type="button" data-hide-product="${product.id}">Hide product</button>
             <button class="danger-button" type="button" data-merge-product="${product.id}">Merge duplicate</button>
           </div>
+          <section class="admin-card compact-card"><h4>Store shelf / aisle locations</h4><p class="field-help">Locations belong to this product at one store and are versioned separately from prices.</p>${(product.store_locations || []).map((location) => `<p><strong>${escapeHtml(location.store_name)}</strong> — ${escapeHtml(location.label)} · checked ${escapeHtml(formatDate(location.verified_at))}<br><span class="field-help">${escapeHtml(titleCase(location.source_type || "staff"))}${location.source_reference ? ` · ${escapeHtml(location.source_reference)}` : ""}</span></p>`).join("") || '<p class="field-help">No current store locations.</p>'}<div class="admin-control-grid" data-product-location-form="${product.id}"><label><span>Store</span><select name="store_id">${storeOptionsWithEmpty("Choose store")}</select></label><label><span>Department</span><input name="department" maxlength="80"></label><label><span>Aisle</span><input name="aisle" maxlength="40"></label><label><span>Shelf</span><input name="shelf" maxlength="40"></label><label><span>Bay</span><input name="bay" maxlength="40"></label><label><span>Section</span><input name="section" maxlength="80"></label><label><span>Location note</span><input name="location_note" maxlength="240"></label><label><span>Verified date</span><input name="verified_at" type="date" value="${new Date().toISOString().slice(0, 10)}"></label><label><span>Source</span><input name="source_reference" maxlength="500" placeholder="Visible retailer page or staff check"></label><label><span>Audit reason</span><input name="reason" maxlength="500" value="Staff verified store location"></label><button class="secondary-button" type="button" data-save-product-location="${product.id}">Save store location</button></div></section>
           <div class="admin-control-grid" data-product-image-form="${product.id}">
             <section class="product-image-manager"><h4>Primary image</h4>${product.primary_image ? `<img class="admin-upload-preview-image" src="${escapeHtml(product.primary_image.image_url)}" alt="${escapeHtml(product.primary_image.alt_text || product.display_name)}" loading="lazy"><button class="quiet-button" type="button" data-remove-primary="${product.id}">Remove primary</button>` : '<div class="empty-state">No approved primary image. Public pages use another approved image or a category placeholder.</div>'}<h4>Other images</h4><div class="product-image-thumbnails">${(product.images || []).filter((image) => !image.is_primary).map((image) => `<div class="product-image-thumbnail"><img src="${escapeHtml(image.image_url + (image.status === "approved" ? "" : adminQuery()))}" alt="${escapeHtml(image.alt_text || product.display_name)}" loading="lazy"><span>${escapeHtml(titleCase(image.status))}</span>${image.status === "approved" ? `<button class="quiet-button" type="button" data-set-primary="${image.id}">Set Primary</button>` : ""}</div>`).join("") || '<span class="field-help">No other images.</span>'}</div></section>
             <label><span>Product photo</span><input name="product_image" type="file" accept="image/jpeg,image/png,image/webp"></label>
@@ -3937,6 +3938,7 @@ function renderProductTools() {
   for (const button of productToolsContent.querySelectorAll("[data-merge-product]")) {
     button.addEventListener("click", () => mergeProduct(button.dataset.mergeProduct));
   }
+  for (const button of productToolsContent.querySelectorAll("[data-save-product-location]")) button.addEventListener("click", () => saveProductLocation(button.dataset.saveProductLocation));
 
   for (const button of productToolsContent.querySelectorAll("[data-upload-product-image]")) {
     button.addEventListener("click", () => uploadProductImage(button.dataset.uploadProductImage));
@@ -4035,6 +4037,18 @@ async function saveProduct(productId, overrides = {}) {
   } catch (error) {
     setAdminMessage(error.message, "error");
   }
+}
+
+async function saveProductLocation(productId) {
+  const container = productToolsContent.querySelector(`[data-product-location-form="${productId}"]`);
+  const storeId = container?.querySelector('[name="store_id"]')?.value;
+  if (!storeId) { setAdminMessage("Choose the store for this product location.", "error"); return; }
+  const payload = { pin: getPin(), source_type: "staff", ...Object.fromEntries([...container.querySelectorAll("input")].map((input) => [input.name, input.value])) };
+  try {
+    const data = await fetchJson(`/api/admin/products/${productId}/store-locations/${storeId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    setAdminMessage(data.message, "success");
+    await loadAdminData();
+  } catch (error) { setAdminMessage(error.message, "error"); }
 }
 
 async function uploadProductImage(productId) {
@@ -4929,6 +4943,11 @@ function resetPriceImportRowForm(row = {}) {
   priceImportRowForm.elements.member_card_price.value = row.member_card_price ?? "";
   priceImportRowForm.elements.multibuy_details.value = row.multibuy_details || "";
   priceImportRowForm.elements.promotion_text.value = row.promotion_text || "";
+  priceImportRowForm.elements.department.value = row.department || "";
+  priceImportRowForm.elements.aisle.value = row.aisle || "";
+  priceImportRowForm.elements.shelf.value = row.shelf || "";
+  priceImportRowForm.elements.bay.value = row.bay || "";
+  priceImportRowForm.elements.location_note.value = row.location_note || "";
   priceImportRowForm.elements.sale_price.checked = Boolean(row.sale_price);
   priceImportRowForm.elements.coupon_required.checked = Boolean(row.coupon_required);
   priceImportRowForm.elements.deal_limit.value = row.deal_limit || "";
@@ -5734,6 +5753,12 @@ function importRowInlinePayload(rowId) {
     deal_limit: valueFor("deal_limit") ?? row.deal_limit ?? "",
     multibuy_details: valueFor("multibuy_details") ?? row.multibuy_details ?? "",
     promotion_text: valueFor("promotion_text") ?? row.promotion_text ?? "",
+    department: row.department ?? "",
+    aisle: row.aisle ?? "",
+    shelf: row.shelf ?? "",
+    bay: row.bay ?? "",
+    section: row.section ?? "",
+    location_note: row.location_note ?? "",
     size_text: valueFor("size_text") ?? row.size_text ?? "",
     quantity: valueFor("quantity") ?? row.quantity ?? 1,
     unit: valueFor("unit") ?? row.unit ?? "each",
@@ -5996,6 +6021,11 @@ function priceImportRowPayloadFromForm() {
     deal_limit: formData.get("deal_limit"),
     multibuy_details: formData.get("multibuy_details"),
     promotion_text: formData.get("promotion_text"),
+    department: formData.get("department"),
+    aisle: formData.get("aisle"),
+    shelf: formData.get("shelf"),
+    bay: formData.get("bay"),
+    location_note: formData.get("location_note"),
     size_text: formData.get("size_text"),
     quantity: formData.get("quantity"),
     unit: formData.get("unit"),

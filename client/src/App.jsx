@@ -253,6 +253,15 @@ function PromotionDetails({ report, dark = false }) {
   </div>
 }
 
+function StoreProductLocation({ report, dark = false }) {
+  const location = report?.store_product_location
+  if (!location?.label) return null
+  return <div className={`mt-2 text-sm font-black ${dark ? 'text-emerald-50' : 'text-slate-700'}`}>
+    <p>{location.label}</p>
+    {location.verified_at ? <p className={`mt-0.5 text-xs font-bold ${dark ? 'text-emerald-100' : 'text-slate-500'}`}>Location checked {shortDate(location.verified_at)}</p> : null}
+  </div>
+}
+
 function StoreLogo({ store, size = 'md' }) {
   const box = size === 'lg' ? 'h-14 w-14 text-lg' : 'h-11 w-11 text-sm'
   const tone = store?.store_type === 'convenience'
@@ -452,6 +461,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
           ) : null}
         </div>
         {bestReport ? <SourceTrust report={bestReport} showLink={false} /> : null}
+        <StoreProductLocation report={bestReport || { store_product_location: safeProduct.best_store_location }} />
       </button>
       {bestReport?.source_url ? (
         <a
@@ -591,6 +601,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
         </div>
         <SourceTrust report={report} showLink={false} />
         <PromotionDetails report={report} />
+        <StoreProductLocation report={report} />
       </button>
       {report.source_url ? (
         <a
@@ -1021,6 +1032,7 @@ function CatalogTile({ product, reports, openProduct }) {
       <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
       <p className="mt-1 text-2xl font-black text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
       <p className="mt-1 line-clamp-2 text-sm font-bold text-slate-600">{storeName || titleCase(product.category)}</p>
+      {product.best_store_location?.label ? <p className="mt-1 line-clamp-2 text-xs font-black text-slate-600">{product.best_store_location.label}</p> : null}
       {hasApprovedProductPrice(product) ? <p className="mt-1 text-sm font-bold text-emerald-700">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-1 text-sm font-bold text-amber-800">Submit Price</p>}
       {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
     </button>
@@ -1257,6 +1269,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, onBack, addTo
                     {cheapest.estimated_item_price_label ? <p className="mt-2 text-sm font-bold text-emerald-100">{cheapest.estimated_item_price_label}</p> : null}
                     {cheapest.approximate_item_weight_label ? <p className="text-sm font-bold text-emerald-100">{cheapest.approximate_item_weight_label}</p> : null}
                     <PromotionDetails report={cheapest} dark />
+                    <StoreProductLocation report={cheapest} dark />
                   </div>
                   <StoreLogo store={{ name: cheapest.store_name }} size="lg" />
                 </div>
@@ -1308,7 +1321,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, onBack, addTo
           <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
             <SectionHeader title="Compare stores" />
             <p className="mb-4 font-bold text-slate-500">{detail?.store_comparison?.comparable_store_count || 0} stores compared. Missing prices are not treated as more expensive.</p>
-            {detail?.store_comparison?.stores?.length ? <div className="space-y-3">{detail.store_comparison.stores.map((row) => <article key={row.store_id} className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><StoreLogo store={{ name: row.store_name }} /><div><h3 className="font-black">{row.store_name}</h3><p className="text-sm font-bold text-slate-500">{row.freshness_label || timeAgo(row.observed_at)}</p></div></div><div className="text-right"><p className="text-2xl font-black">{row.price_label || money(row.price)}</p><p className={`text-sm font-black ${row.is_cheapest ? 'text-emerald-700' : 'text-slate-500'}`}>{row.is_cheapest ? 'CHEAPEST VERIFIED' : `+${money(row.difference_from_cheapest)}`}</p></div></div><PromotionDetails report={row} /><SourceTrust report={row} /></article>)}</div> : <EmptyState title="No comparison yet" body="Current comparable prices from active Janesville stores will appear here." icon={Store} />}
+            {detail?.store_comparison?.stores?.length ? <div className="space-y-3">{detail.store_comparison.stores.map((row) => <article key={row.store_id} className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><StoreLogo store={{ name: row.store_name }} /><div><h3 className="font-black">{row.store_name}</h3><p className="text-sm font-bold text-slate-500">{row.freshness_label || timeAgo(row.observed_at)}</p><StoreProductLocation report={row} /></div></div><div className="text-right"><p className="text-2xl font-black">{row.price_label || money(row.price)}</p><p className={`text-sm font-black ${row.is_cheapest ? 'text-emerald-700' : 'text-slate-500'}`}>{row.is_cheapest ? 'CHEAPEST VERIFIED' : `+${money(row.difference_from_cheapest)}`}</p></div></div><PromotionDetails report={row} /><SourceTrust report={row} /></article>)}</div> : <EmptyState title="No comparison yet" body="Current comparable prices from active Janesville stores will appear here." icon={Store} />}
             {detail?.store_comparison?.unavailable_stores?.length ? <details className="mt-4 rounded-xl bg-slate-50 p-3"><summary className="cursor-pointer font-black">Stores with no current verified price ({detail.store_comparison.unavailable_stores.length})</summary><ul className="mt-2 space-y-1">{detail.store_comparison.unavailable_stores.map((store) => <li key={store.id} className="font-bold text-slate-600">{store.name} — {store.status}</li>)}</ul></details> : null}
           </section>
 
@@ -1548,6 +1561,7 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Le
 
 function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOfferMode, loading, error, openScreen, reload, updateCartItem, removeCartItem, clearCart, onUseSubstitute }) {
   const [substituteState, setSubstituteState] = useState({ loading: false, items: [], message: '' })
+  const [locationSort, setLocationSort] = useState(false)
   const [ignoredSubstitutes, setIgnoredSubstitutes] = useState(() => { try { return JSON.parse(window.localStorage.getItem(substitutionPreferenceKey) || '{}') } catch { return {} } })
   const findSubstitutes = async () => {
     setSubstituteState({ loading: true, items: [], message: '' })
@@ -1559,6 +1573,9 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
   }
   const ignore = (productId) => { const next = { ...ignoredSubstitutes, [productId]: true }; setIgnoredSubstitutes(next); window.localStorage.setItem(substitutionPreferenceKey, JSON.stringify(next)); setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => Number(entry.original.product_id) !== Number(productId)) })) }
   const selected = comparison?.selected
+  const selectedMatches = selected?.matches || []
+  const knownLocationCount = selectedMatches.filter((match) => match.report?.store_product_location?.label).length
+  const shoppingMatches = locationSort ? [...selectedMatches].sort((left, right) => String(left.report?.store_name || '').localeCompare(String(right.report?.store_name || '')) || String(left.report?.store_product_location?.department || '').localeCompare(String(right.report?.store_product_location?.department || '')) || String(left.report?.store_product_location?.aisle || '').localeCompare(String(right.report?.store_product_location?.aisle || ''), undefined, { numeric: true }) || String(left.report?.store_product_location?.shelf || '').localeCompare(String(right.report?.store_product_location?.shelf || ''), undefined, { numeric: true })) : selectedMatches
   const one = comparison?.best_one_store
   const two = comparison?.best_two_stores
   const savings = one && selected && one.matched_count === selected.matched_count ? Math.max(0, one.estimated_total - selected.estimated_total) : 0
@@ -1569,7 +1586,7 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
     <section className="grid gap-3 sm:grid-cols-3"><SummaryCard icon={Store} label="Best one-store" value={one?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={one ? `${one.matched_count}/${one.requested_count} matched · ${money(one.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={Store} label="Best two-store" value={two?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={two ? `${two.matched_count}/${two.requested_count} matched · ${money(two.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={CircleDollarSign} label="Selected plan" value={selected ? money(selected.estimated_total) : '$0.00'} note={savings > 0 ? `${money(savings)} below best one-store plan` : 'Approved current prices only'} /></section>
     {selected ? <section className="mt-5 rounded-2xl bg-emerald-700 p-5 text-white"><p className="text-sm font-black text-emerald-100">CHEAPEST {cartMode === '1' ? 'ONE-STORE' : cartMode === '2' ? 'TWO-STORE' : 'ALL-STORE'} PLAN</p><h2 className="mt-1 text-3xl font-black">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 text-4xl font-black">{money(selected.estimated_total)}</p><p className="mt-2 font-bold">{selected.matched_count} of {selected.requested_count} products matched</p></section> : null}
     {comparison?.coverage_warning ? <p className="mt-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900"><AlertTriangle className="mr-2 inline h-5 w-5" />{comparison.coverage_warning}</p> : null}
-    {selected?.matches?.length ? <section className="mt-5 space-y-3"><SectionHeader title="Shopping plan" />{selected.matches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div><h3 className="font-black">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="text-sm font-bold text-slate-500">{match.report.store_name} · {match.report.promotion_conditions || 'No special requirement shown'}</p></div><p className="text-xl font-black text-emerald-700">{money(match.line_total)}</p></article>)}</section> : null}
+    {shoppingMatches.length ? <section className="mt-5 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="min-h-11 rounded-xl bg-white px-4 font-black ring-1 ring-slate-200">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div><h3 className="font-black">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="text-sm font-bold text-slate-500">{match.report.store_name} · {match.report.promotion_conditions || 'No special requirement shown'}</p><StoreProductLocation report={match.report} /></div><p className="text-xl font-black text-emerald-700">{money(match.line_total)}</p></article>)}</section> : null}
     {comparison?.comparable_subset ? <p className="mt-4 text-sm font-bold text-slate-500">Comparable subset across every participating store: {comparison.comparable_subset.product_count} products. Partial store totals are never ranked as complete totals.</p> : null}
     <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-black">Save with substitutes</h2><p className="font-bold text-slate-500">Different products are always labeled, and your list changes only when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="min-h-12 rounded-xl bg-emerald-700 px-5 font-black text-white">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-3 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-xl bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><p className="mt-2 font-bold text-slate-500">Instead of {original.product_display_name || original.item_name}</p><h3 className="text-xl font-black">{candidate.product_name}</h3><p className="font-bold">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p><p className="mt-1 font-black text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-2 text-sm font-bold text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="min-h-11 rounded-xl bg-emerald-700 px-4 font-black text-white">Use Substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="min-h-11 rounded-xl bg-white px-4 font-black">Keep Original</button><button type="button" onClick={() => ignore(original.product_id)} className="min-h-11 rounded-xl bg-white px-4 font-black">Don’t Suggest Again</button></div></article>)}</div></section>
     <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex items-center justify-between"><h2 className="text-xl font-black">My List Items</h2><button type="button" onClick={clearCart} className="min-h-11 rounded-xl bg-slate-100 px-4 font-black"><Trash2 className="mr-2 inline h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3"><div className="min-w-0"><p className="truncate font-black">{item.product_display_name || item.item_name}</p><p className="text-sm font-bold text-slate-500">{item.size_preference || 'Catalog product'}</p></div><div className="flex items-center gap-2"><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong>{item.quantity_needed || 1}</strong><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="h-11 w-11 rounded-full bg-white" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add products to compare every active Janesville store." icon={ShoppingCart} /> : null}</div></section>

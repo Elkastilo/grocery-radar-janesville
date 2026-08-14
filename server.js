@@ -50,6 +50,14 @@ const {
 } = require("./src/email");
 const { calculateUnitPrice, formatUnitPrice } = require("./src/unitPrice");
 const {
+  cleanStoreProductLocation,
+  hasStoreProductLocation,
+  publicStoreProductLocation,
+  currentLocationsForProducts,
+  enrichRowsWithStoreProductLocations,
+  saveStoreProductLocation
+} = require("./src/storeProductLocations");
+const {
   priceValue: arenaPriceValue,
   isConditionalOffer,
   productComparison,
@@ -502,6 +510,7 @@ function formatReport(row) {
     price: Number(row.price),
     price_label: row.display_offer_text || `$${Number(row.price).toFixed(2)}`,
     regular_price: row.regular_price === null ? null : Number(row.regular_price),
+    retailer_displayed_discount_percent: row.retailer_displayed_discount_percent == null ? null : Number(row.retailer_displayed_discount_percent),
     sale_price: Boolean(row.sale_price),
     size_text: row.size_text || "",
     quantity: Number(row.quantity),
@@ -554,6 +563,7 @@ function formatReport(row) {
     applicable_state: row.applicable_state || "",
     applicable_store_id: row.applicable_store_id || null,
     location_evidence_text: row.location_evidence_text || "",
+    store_product_location: publicStoreProductLocation(row.store_product_location),
     review_started_at: row.review_started_at || "",
     review_completed_at: row.review_completed_at || row.reviewed_at || "",
     freshness_status: freshnessForPrice(row),
@@ -1093,6 +1103,7 @@ function cleanImportRowDraft(body = {}) {
     approximate_item_weight_unit: normalizePriceUnit(body.approximate_item_weight_unit || ""),
     package_price: parseImportNumber(body.package_price),
     regular_price: regularPrice,
+    retailer_displayed_discount_percent: parseImportNumber(body.retailer_displayed_discount_percent),
     sale_price: parseImportBoolean(body.sale_price) ? 1 : 0,
     member_card_price: memberCardPrice,
     coupon_required: parseImportBoolean(body.coupon_required) ? 1 : 0,
@@ -1106,6 +1117,12 @@ function cleanImportRowDraft(body = {}) {
     display_offer_text: cleanText(body.display_offer_text || body.promotion_text, 240),
     promotion_conditions: cleanText(body.promotion_conditions, 500),
     promotion_schedule_text: cleanText(body.promotion_schedule_text, 240),
+    department: cleanText(body.department, 80),
+    aisle: cleanText(body.aisle, 40),
+    shelf: cleanText(body.shelf, 40),
+    bay: cleanText(body.bay, 40),
+    section: cleanText(body.section, 80),
+    location_note: cleanText(body.location_note, 240),
     valid_from_date: dateInputValue(body.valid_from_date || body.valid_start_date || body.valid_start_at),
     valid_through_date: dateInputValue(body.valid_through_date || body.valid_end_date || body.valid_end_at || body.expires_at),
     valid_from_time: cleanText(body.valid_from_time, 20),
@@ -1399,6 +1416,7 @@ function formatPriceImportRow(row) {
     approximate_item_weight_label: row.approximate_item_weight == null ? "" : `About ${Number(row.approximate_item_weight)} ${normalizePriceUnit(row.approximate_item_weight_unit || "lb")} each`,
     package_price: row.package_price == null ? null : Number(row.package_price),
     regular_price: row.regular_price === null || row.regular_price === undefined ? null : Number(row.regular_price),
+    retailer_displayed_discount_percent: row.retailer_displayed_discount_percent == null ? null : Number(row.retailer_displayed_discount_percent),
     sale_price: Boolean(row.sale_price),
     member_card_price: row.member_card_price === null || row.member_card_price === undefined ? null : Number(row.member_card_price),
     member_card_price_label: row.member_card_price === null || row.member_card_price === undefined ? "" : `$${Number(row.member_card_price).toFixed(2)}`,
@@ -1413,6 +1431,13 @@ function formatPriceImportRow(row) {
     display_offer_text: row.display_offer_text || row.promotion_text || "",
     promotion_conditions: row.promotion_conditions || "",
     promotion_schedule_text: row.promotion_schedule_text || "",
+    department: row.department || "",
+    aisle: row.aisle || "",
+    shelf: row.shelf || "",
+    bay: row.bay || "",
+    section: row.section || "",
+    location_note: row.location_note || "",
+    location_label: publicStoreProductLocation(row)?.label || "",
     valid_from_date: row.valid_from_date || dateInputValue(row.valid_start_at),
     valid_through_date: row.valid_through_date || dateInputValue(row.valid_end_at),
     valid_from_time: row.valid_from_time || "",
@@ -1778,6 +1803,7 @@ function formatProduct(row) {
     best_store_id: hasCurrentPrice ? (row.best_store_id || null) : null,
     best_report_id: hasCurrentPrice ? (row.best_report_id || null) : null,
     best_price_freshness: hasCurrentPrice ? publicFreshnessLabel({ source_date: row.best_source_date, submitted_at: row.best_reported_at, proof_type: row.best_proof_type, expires_at: row.best_expires_at }) : "",
+    best_store_location: hasCurrentPrice ? publicStoreProductLocation(row.best_store_location) : null,
     other_store_price_count: Number(row.other_store_price_count || 0),
     image_id: row.image_id || null,
     image_url: row.image_id ? `/api/product-images/${row.image_id}/file` : "",
@@ -1786,6 +1812,12 @@ function formatProduct(row) {
     created_at: row.created_at,
     updated_at: row.updated_at
   };
+}
+
+async function enrichProductsWithBestStoreLocations(rows = []) {
+  const locations = await currentLocationsForProducts(rows.map((row) => row.id));
+  const byPair = new Map(locations.map((location) => [`${location.store_id}:${location.product_id}`, location]));
+  return rows.map((row) => ({ ...row, best_store_location: byPair.get(`${row.best_store_id}:${row.id}`) || null }));
 }
 
 function formatPublicProduct(row) {
@@ -7496,13 +7528,14 @@ app.get("/api/stores/:id", asyncRoute(async (request, response) => {
   if (!store) { response.status(404).json({ error: "Store was not found." }); return; }
   const rows = await all(`SELECT ${productSelectColumns("products")} FROM products WHERE products.status = 'active' AND EXISTS (SELECT 1 FROM price_reports pr JOIN users store_price_users ON store_price_users.id = pr.user_id WHERE pr.product_id = products.id AND pr.store_id = ? AND ${publicPriceEligibilitySql("pr")} AND COALESCE(store_price_users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated')) ORDER BY products.category, products.display_name`, [storeId]);
   const reports = await all(`${reportSelectWithProduct()} WHERE pr.store_id = ? AND ${publicPriceEligibilitySql("pr")} AND COALESCE(users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated') ORDER BY pr.category, COALESCE(pr.comparison_price, pr.unit_price, pr.price), pr.submitted_at DESC`, [storeId]);
-  const publicReports = reports.map(formatPublicReport);
+  const enrichedReports = await enrichRowsWithStoreProductLocations(reports);
+  const publicReports = enrichedReports.map(formatPublicReport);
   const categoryCounts = {};
-  for (const report of reports) categoryCounts[report.category || "other"] = (categoryCounts[report.category || "other"] || 0) + 1;
+  for (const report of enrichedReports) categoryCounts[report.category || "other"] = (categoryCounts[report.category || "other"] || 0) + 1;
   const products = rows.map((row) => {
     const product = formatPublicProduct(row);
     const bestHere = publicReports.filter((report) => Number(report.product_id) === Number(product.id)).sort((left, right) => Number(left.comparison_price ?? left.unit_price ?? left.price) - Number(right.comparison_price ?? right.unit_price ?? right.price))[0];
-    return bestHere ? { ...product, best_price: bestHere.comparison_price ?? bestHere.unit_price ?? bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.primary_price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label } : product;
+    return bestHere ? { ...product, best_price: bestHere.comparison_price ?? bestHere.unit_price ?? bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.primary_price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label, best_store_location: bestHere.store_product_location || null } : product;
   });
   const week = arenaDateWindow("week");
   const [competitionRows, drops] = await Promise.all([arenaCurrentRows({ window: week }), arenaPriceDrops({ window: week, storeId })]);
@@ -8835,10 +8868,12 @@ app.get("/api/browse", asyncRoute(async (request, response) => {
       `
     )
   ]);
+  const enrichedRecentReports = await enrichRowsWithStoreProductLocations(recentReports);
+  const enrichedProducts = await enrichProductsWithBestStoreLocations(productsWithPrices);
 
   response.json({
-    products: productsWithPrices.map(formatPublicProduct),
-    recently_approved_reports: recentReports.map(formatPublicReport),
+    products: enrichedProducts.map(formatPublicProduct),
+    recently_approved_reports: enrichedRecentReports.map(formatPublicReport),
     stores,
     needs_prices: needsPrices,
     selected_categories: categoriesForBrowse
@@ -8935,9 +8970,11 @@ app.get("/api/search", asyncRoute(async (request, response) => {
   // user or session through the legacy per-event analytics table.
   await recordSearchDemand(rawQuery, products.length + reports.length);
 
+  const enrichedReports = await enrichRowsWithStoreProductLocations(reports);
+  const enrichedProducts = await enrichProductsWithBestStoreLocations(products);
   response.json({
-    products: products.map(formatPublicProduct),
-    reports: reports.map(formatPublicReport),
+    products: enrichedProducts.map(formatPublicProduct),
+    reports: enrichedReports.map(formatPublicReport),
     search: { normalized_query: searchResolution.normalized, matched_alias: searchResolution.alias ? searchResolution.effective : "" }
   });
 }));
@@ -8965,8 +9002,9 @@ app.get("/api/products", asyncRoute(async (request, response) => {
     params
   );
 
+  const enrichedProducts = await enrichProductsWithBestStoreLocations(products);
   response.json({
-    products: products.map(formatPublicProduct)
+    products: enrichedProducts.map(formatPublicProduct)
   });
 }));
 
@@ -9319,7 +9357,8 @@ async function arenaCurrentRows(options = {}) {
   const rows = await all(`${reportSelectWithProduct()}
     WHERE ${filters.join(" AND ")}
     ORDER BY pr.product_id, pr.store_id, COALESCE(pr.comparison_price,pr.unit_price,pr.price), datetime(COALESCE(NULLIF(pr.source_date,''),NULLIF(pr.reviewed_at,''),pr.submitted_at)) DESC`, params);
-  return rows.map((row) => arenaReportPublicRow({ ...row, observed_at: row.source_date || row.reviewed_at || row.submitted_at }));
+  const enriched = await enrichRowsWithStoreProductLocations(rows);
+  return enriched.map((row) => arenaReportPublicRow({ ...row, observed_at: row.source_date || row.reviewed_at || row.submitted_at }));
 }
 
 async function arenaSettings() {
@@ -9493,9 +9532,10 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     `,
     [resolvedProductId]
   );
+  const enrichedReports = await enrichRowsWithStoreProductLocations(reports);
   const storeGroups = [];
 
-  for (const report of reports.map(formatPublicReport)) {
+  for (const report of enrichedReports.map(formatPublicReport)) {
     let group = storeGroups.find((item) => item.store_id === report.store_id);
 
     if (!group) {
@@ -9510,9 +9550,10 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     group.reports.push(report);
   }
 
+  const [enrichedProduct] = await enrichProductsWithBestStoreLocations([product]);
   response.json({
-    product: formatPublicProduct(product),
-    reports: reports.map(formatPublicReport),
+    product: formatPublicProduct(enrichedProduct),
+    reports: enrichedReports.map(formatPublicReport),
     store_groups: storeGroups,
     quality: await publicQualitySummary(resolvedProductId, null, request.session?.userId || null),
     price_history: await priceHistoryForProduct(product),
@@ -10694,6 +10735,11 @@ async function upsertAiDrafts(proof, analysisId, result, stores, products, now) 
       promotion_conditions: item.promotion_conditions,
       promotion_schedule_text: item.promotion_schedule_text,
       display_offer_text: item.display_offer_text,
+      department: item.department,
+      aisle: item.aisle,
+      shelf: item.shelf,
+      bay: item.bay,
+      location_note: item.location_note,
       promotion_text: item.display_offer_text,
       multibuy_quantity: item.multi_buy_quantity,
       multibuy_total_price: item.multi_buy_total,
@@ -10707,6 +10753,7 @@ async function upsertAiDrafts(proof, analysisId, result, stores, products, now) 
     let rowId = existing?.id;
     if (!existing) rowId = await insertPriceImportRowDraft(proof.id, draft, null, now);
     else if (!['approved', 'rejected'].includes(existing.status)) await run(`UPDATE price_import_rows SET product_id = ?, store_id = ?, item_name = ?, brand = ?, variant = ?, category = ?, price = ?, price_basis = ?, comparison_price = ?, comparison_unit = ?, estimated_item_price = ?, approximate_item_weight = ?, approximate_item_weight_unit = ?, package_price = ?, size_text = ?, quantity = ?, unit = ?, proof_type = ?, observed_at = ?, source_date = ?, storage_condition = ?, price_type = ?, valid_from_date = ?, valid_through_date = ?, valid_start_at = ?, valid_end_at = ?, promotion_conditions = ?, promotion_schedule_text = ?, display_offer_text = ?, promotion_text = ?, multibuy_quantity = ?, multibuy_total_price = ?, raw_receipt_line = ?, extraction_confidence = ?, extraction_notes = ?, notes = ?, status = ?, updated_at = ? WHERE id = ? AND batch_id = ?`, [draft.product_id, draft.store_id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.price_basis, draft.comparison_price, draft.comparison_unit, draft.estimated_item_price, draft.approximate_item_weight, draft.approximate_item_weight_unit, draft.package_price, draft.size_text, draft.quantity, draft.unit, draft.proof_type, draft.observed_at, draft.source_date, draft.storage_condition, draft.price_type, draft.valid_from_date, draft.valid_through_date, draft.valid_start_at, draft.valid_end_at, draft.promotion_conditions, draft.promotion_schedule_text, draft.display_offer_text, draft.promotion_text, draft.multibuy_quantity, draft.multibuy_total_price, draft.raw_receipt_line, draft.extraction_confidence, draft.extraction_notes, draft.notes, draft.status, now, rowId, proof.id]);
+    if (!['approved', 'rejected'].includes(existing?.status || "")) await run("UPDATE price_import_rows SET department = ?, aisle = ?, shelf = ?, bay = ?, location_note = ? WHERE id = ? AND batch_id = ?", [draft.department, draft.aisle, draft.shelf, draft.bay, draft.location_note, rowId, proof.id]);
     const safetyWarnings = promotionGate(draft).flags;
     await run("UPDATE price_import_rows SET ai_analysis_id = ?, ai_item_index = ?, ai_confidence = ?, ai_field_confidences_json = ?, ai_warnings_json = ?, research_notes = ?, research_sources_json = ?, suggested_new_product = ?, updated_at = ? WHERE id = ? AND batch_id = ?", [analysisId, item.item_index, item.confidence, JSON.stringify(item.field_confidences), JSON.stringify([...new Set([...(item.warnings || []), ...safetyWarnings])]), item.research_notes, JSON.stringify(item.research_sources), item.suggested_new_product ? 1 : 0, now, rowId, proof.id]);
   }
@@ -12010,6 +12057,8 @@ async function insertPriceImportRowDraft(batchId, draft, adminUserId, now) {
     ]
   );
 
+  await run(`UPDATE price_import_rows SET retailer_displayed_discount_percent = ?, department = ?, aisle = ?, shelf = ?, bay = ?, section = ?, location_note = ? WHERE id = ?`, [draft.retailer_displayed_discount_percent, draft.department, draft.aisle, draft.shelf, draft.bay, draft.section, draft.location_note, result.lastID]);
+
   return result.lastID;
 }
 
@@ -12448,6 +12497,10 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       [importBatch && isProofSubmissionBatch(importBatch) ? 1 : 0, row.batch_id, submittedAt, row.batch_id]
     );
 
+    if (hasStoreProductLocation(row)) {
+      await saveStoreProductLocation({ storeId: cleanReport.store_id, productId, location: { ...row, source_type: importBatch?.source_type || "reviewed_proof", source_reference: row.source_url || `proof:${row.batch_id}/row:${row.id}`, verified_at: row.observed_at || (row.source_date ? `${row.source_date}T12:00:00-05:00` : submittedAt) }, staffId: adminUser.id, reason: "Physical store location approved from visible source evidence" });
+    }
+
     return {
       row: await priceImportRowById(rowId),
       report_id: equivalentReport.id,
@@ -12478,6 +12531,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         category,
         price,
         regular_price,
+        retailer_displayed_discount_percent,
         sale_price,
         size_text,
         quantity,
@@ -12531,7 +12585,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
         submitted_at,
         expires_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'approved', NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       reportOwnerUserId,
@@ -12545,6 +12599,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       cleanReport.category,
       cleanReport.price,
       cleanReport.regular_price,
+      row.retailer_displayed_discount_percent,
       cleanReport.sale_price,
       cleanReport.size_text,
       cleanReport.quantity,
@@ -12604,6 +12659,25 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   );
 
   await organizeApprovedReportProduct(updatedReport, adminUser.id);
+  if (hasStoreProductLocation(row)) {
+    await saveStoreProductLocation({
+      storeId: cleanReport.store_id,
+      productId,
+      location: {
+        department: row.department,
+        aisle: row.aisle,
+        shelf: row.shelf,
+        bay: row.bay,
+        section: row.section,
+        location_note: row.location_note,
+        source_type: importBatch?.source_type || "reviewed_proof",
+        source_reference: row.source_url || `proof:${row.batch_id}/row:${row.id}`,
+        verified_at: row.observed_at || (row.source_date ? `${row.source_date}T12:00:00-05:00` : submittedAt)
+      },
+      staffId: adminUser.id,
+      reason: "Physical store location approved from visible source evidence"
+    });
+  }
   await learnApprovedProductNormalization(row, result.lastID, productId, adminUser.id);
   await notifyCartUsersForApprovedReport(updatedReport);
   if (submitterUserId) await updateUserAccuracy(submitterUserId);
@@ -14089,6 +14163,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           approximate_item_weight_unit = ?,
           package_price = ?,
           regular_price = ?,
+          retailer_displayed_discount_percent = ?,
           sale_price = ?,
           member_card_price = ?,
           coupon_required = ?,
@@ -14102,6 +14177,12 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
           display_offer_text = ?,
           promotion_conditions = ?,
           promotion_schedule_text = ?,
+          department = ?,
+          aisle = ?,
+          shelf = ?,
+          bay = ?,
+          section = ?,
+          location_note = ?,
           valid_from_date = ?,
           valid_through_date = ?,
           valid_from_time = ?,
@@ -14147,6 +14228,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.approximate_item_weight_unit,
       draft.package_price,
       draft.regular_price,
+      draft.retailer_displayed_discount_percent,
       draft.sale_price,
       draft.member_card_price,
       draft.coupon_required,
@@ -14160,6 +14242,12 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
       draft.display_offer_text,
       draft.promotion_conditions,
       draft.promotion_schedule_text,
+      draft.department,
+      draft.aisle,
+      draft.shelf,
+      draft.bay,
+      draft.section,
+      draft.location_note,
       draft.valid_from_date,
       draft.valid_through_date,
       draft.valid_from_time,
@@ -14195,7 +14283,7 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
   }
 
   const savedRow = await priceImportRowById(rowId);
-  const auditedFields = ["product_id", "store_id", "item_name", "brand", "variant", "category", "price", "comparison_price", "comparison_unit", "estimated_item_price", "package_price", "size_text", "quantity", "unit", "storage_condition", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "multibuy_quantity", "multibuy_total_price"];
+  const auditedFields = ["product_id", "store_id", "item_name", "brand", "variant", "category", "price", "comparison_price", "comparison_unit", "estimated_item_price", "package_price", "size_text", "quantity", "unit", "storage_condition", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "multibuy_quantity", "multibuy_total_price", "department", "aisle", "shelf", "bay", "section", "location_note"];
   const correctedFields = auditedFields.filter((field) => String(existing[field] ?? "") !== String(savedRow[field] ?? ""));
   if (correctedFields.length) {
     await recordPriceEvent({
@@ -17528,6 +17616,13 @@ app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (reques
   );
   const productIds = products.map((product) => product.id);
   const productImages = productIds.length ? await all(`SELECT id, product_id, alt_text, source_type, source_note, status, is_primary, uploaded_by, moderated_by, moderated_at, created_at FROM product_images WHERE product_id IN (${productIds.map(() => "?").join(",")}) ORDER BY product_id, is_primary DESC, id ASC`, productIds) : [];
+  const productLocations = await currentLocationsForProducts(productIds);
+  const locationsByProduct = new Map();
+  for (const location of productLocations) {
+    const list = locationsByProduct.get(location.product_id) || [];
+    list.push({ ...publicStoreProductLocation(location), id: location.id, store_id: location.store_id, store_name: location.store_name, source_type: location.source_type, source_reference: location.source_reference });
+    locationsByProduct.set(location.product_id, list);
+  }
   const imagesByProduct = new Map();
   for (const image of productImages) {
     const list = imagesByProduct.get(image.product_id) || [];
@@ -17537,7 +17632,7 @@ app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (reques
   const formattedProducts = products.map((product) => {
     const images = imagesByProduct.get(product.id) || [];
     const primaryImage = images.find((image) => image.status === "approved" && image.is_primary) || null;
-    return { ...formatProduct(product), images, primary_image: primaryImage, missing_primary_image: !primaryImage };
+    return { ...formatProduct(product), images, primary_image: primaryImage, missing_primary_image: !primaryImage, store_locations: locationsByProduct.get(product.id) || [] };
   });
 
   response.json({
@@ -17697,6 +17792,24 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
   response.json({ message: "Product updated." });
 }));
 
+app.get("/api/admin/products/:id/store-locations", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.params.id, 10);
+  const product = await getProductById(productId, true);
+  if (!product) { response.status(404).json({ error: "Product was not found." }); return; }
+  const locations = await currentLocationsForProducts([product.id]);
+  response.json({ product_id: product.id, locations: locations.map((row) => ({ ...publicStoreProductLocation(row), id: row.id, store_id: row.store_id, store_name: row.store_name, source_type: row.source_type, source_reference: row.source_reference })) });
+}));
+
+app.put("/api/admin/products/:id/store-locations/:storeId", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const productId = Number.parseInt(request.params.id, 10);
+  const storeId = Number.parseInt(request.params.storeId, 10);
+  const location = cleanStoreProductLocation(request.body);
+  if (!hasStoreProductLocation(location)) { response.status(400).json({ error: "Enter a department, aisle, shelf, bay, section, or location note." }); return; }
+  const saved = await saveStoreProductLocation({ storeId, productId, location, staffId: request.adminUser.id, reason: cleanText(request.body.reason || "Staff corrected store location", 500) });
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "STORE_PRODUCT_LOCATION_UPDATED", affectedType: "product", affectedId: productId, metadata: { store_id: storeId, location_id: saved.location.id, changed: saved.changed } });
+  response.json({ message: saved.changed ? "Store location saved." : "Store location was already current.", location: { ...publicStoreProductLocation(saved.location), id: saved.location.id, store_id: storeId, source_type: saved.location.source_type, source_reference: saved.location.source_reference } });
+}));
+
 app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const sourceId = Number.parseInt(request.params.id, 10);
   const targetId = Number.parseInt(request.body.target_product_id, 10);
@@ -17730,6 +17843,17 @@ app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdm
   const aliases = [...new Set([target.display_name, source.display_name, ...String(target.common_aliases || "").split(","), ...String(source.common_aliases || "").split(",")].map((value) => cleanText(value, 160)).filter(Boolean))].join(", ");
   await run("BEGIN IMMEDIATE");
   try {
+    const sourceCurrentLocations = await all("SELECT * FROM store_product_locations WHERE product_id = ? AND is_current = 1", [sourceId]);
+    for (const sourceLocation of sourceCurrentLocations) {
+      const targetLocation = await get("SELECT * FROM store_product_locations WHERE product_id = ? AND store_id = ? AND is_current = 1", [targetId, sourceLocation.store_id]);
+      if (!targetLocation) continue;
+      const sourceIsNewer = String(sourceLocation.verified_at || sourceLocation.updated_at) > String(targetLocation.verified_at || targetLocation.updated_at);
+      const superseded = sourceIsNewer ? targetLocation : sourceLocation;
+      await run("UPDATE store_product_locations SET is_current = 0, superseded_at = ?, updated_at = ? WHERE id = ?", [now, now, superseded.id]);
+      await run("INSERT INTO store_product_location_events (location_id, store_id, product_id, event_type, previous_location_id, actor_staff_id, reason, metadata_json, created_at) VALUES (?, ?, ?, 'MERGE_LOCATION_CONFLICT_RESOLVED', ?, ?, ?, ?, ?)", [sourceIsNewer ? sourceLocation.id : targetLocation.id, sourceLocation.store_id, targetId, superseded.id, request.adminUser.id, adminNote || "Product merge location conflict", JSON.stringify({ kept: sourceIsNewer ? sourceLocation.id : targetLocation.id, superseded: superseded.id, rule: "newest_verified_location" }), now]);
+    }
+    await run("UPDATE store_product_locations SET product_id = ?, updated_at = ? WHERE product_id = ?", [targetId, now, sourceId]);
+    await run("UPDATE store_product_location_events SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
     await run("UPDATE price_reports SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
     await run("UPDATE price_import_rows SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
     await run("UPDATE cart_items SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
@@ -17745,7 +17869,7 @@ app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdm
     await run("UPDATE catalog_import_rows SET duplicate_product_id = ? WHERE duplicate_product_id = ?", [targetId, sourceId]);
     await run("UPDATE products SET common_aliases = ?, updated_by = ?, updated_at = ? WHERE id = ?", [aliases, request.adminUser.id, now, targetId]);
     await run("UPDATE products SET status = 'merged', merged_into_product_id = ?, admin_note = ?, updated_by = ?, updated_at = ? WHERE id = ?", [targetId, adminNote, request.adminUser.id, now, sourceId]);
-    await run("INSERT INTO product_merge_events (source_product_id, target_product_id, merged_by, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", [sourceId, targetId, request.adminUser.id, adminNote || "Confirmed duplicate product", JSON.stringify({ preserved: ["prices", "historical prices", "proof links", "aliases", "barcodes", "images", "quality reviews", "lists", "provenance"] }), now]);
+    await run("INSERT INTO product_merge_events (source_product_id, target_product_id, merged_by, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", [sourceId, targetId, request.adminUser.id, adminNote || "Confirmed duplicate product", JSON.stringify({ preserved: ["prices", "historical prices", "proof links", "aliases", "barcodes", "images", "quality reviews", "lists", "store locations", "provenance"] }), now]);
     await run("COMMIT");
   } catch (error) {
     await run("ROLLBACK").catch(() => {});

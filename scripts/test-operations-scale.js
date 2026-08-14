@@ -65,6 +65,7 @@ async function main() {
     const productB = await run(db, "INSERT INTO products (canonical_name,display_name,preferred_brand,default_size_text,default_unit,category,common_aliases,status,created_at,updated_at) VALUES ('coca cola 12 pack','Coca Cola 12pk','Coca-Cola','12 pack','pack','drinks','coke','active',?,?)", [now, now]);
     await run(db, "INSERT INTO product_barcodes (product_id,barcode_type,normalized_value,status,source,created_at,updated_at) VALUES (?, 'upc_a', '036000291452', 'verified', 'test', ?, ?)", [productA.lastID, now, now]);
     const report = await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at) VALUES (?,?,?,'Coca Cola 12pk','drinks',4.99,1,'pack',4.99,'12 pack','shelf_tag_photo','high','approved','regular',?,?,?,?)", [ownerRow.id, store.id, productB.lastID, now.slice(0, 10), now, now, new Date(Date.now() + 7 * 86400000).toISOString()]);
+    await run(db, "INSERT INTO store_product_locations (store_id,product_id,department,shelf,source_type,verified_at,created_at,updated_at,updated_by_staff_id,is_current) VALUES (?,?, 'Drinks','12','staff',?,?,?,?,1)", [store.id, productB.lastID, now, now, now, ownerRow.id]);
     for (let index = 1; index <= 4; index += 1) {
       const date = new Date(Date.now() - index * 7 * 86400000).toISOString();
       await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at) VALUES (?,?,?,'Coca-Cola 12 Pack','drinks',?,1,'pack',?,'12 pack','receipt','high','expired','regular',?,?,?,?)", [ownerRow.id, store.id, productA.lastID, 5 + index / 10, 5 + index / 10, date.slice(0, 10), date, date, date]);
@@ -87,11 +88,13 @@ async function main() {
     assert.equal(merge.response.status, 200, JSON.stringify(merge.body));
     const moved = await fetch(`${app.baseUrl}/api/products/${productB.lastID}`).then((response) => response.json());
     assert.equal(Number(moved.product.id), productA.lastID); assert.equal(Number(moved.redirected_from_product_id), productB.lastID);
+    assert.equal(moved.reports[0].store_product_location.label, "Drinks • Shelf 12", "Product merge must re-home the store-specific location.");
 
     const correction = await owner.post(`/api/admin/prices/${report.lastID}/correct`, { action: "correct", price: 3.99, product_id: productA.lastID, store_id: store.id, reason: "Incorrect digit fixture" });
     assert.equal(correction.response.status, 200, JSON.stringify(correction.body));
     const publicProduct = await fetch(`${app.baseUrl}/api/products/${productA.lastID}`).then((response) => response.json());
     assert.equal(Number(publicProduct.reports.find((item) => Number(item.id) === report.lastID).price), 3.99);
+    assert.equal(publicProduct.reports.find((item) => Number(item.id) === report.lastID).store_product_location.label, "Drinks • Shelf 12", "Price correction must not erase store location.");
     assert.equal(publicProduct.price_history.sufficient_history, true);
     const correctionDb = openDb(app.dataDir);
     assert.equal((await get(correctionDb, "SELECT COUNT(*) AS count FROM price_corrections WHERE price_report_id = ?", [report.lastID])).count, 1);
