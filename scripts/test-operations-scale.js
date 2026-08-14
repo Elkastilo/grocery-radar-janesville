@@ -132,7 +132,7 @@ async function main() {
     assert.equal(command.body.attention.groups.products.find((item) => item.key === "upc_conflict").count, 1);
     const attentionCards = Object.values(command.body.attention.groups).flat();
     for (const card of attentionCards) {
-      assert.ok(card.href.startsWith("/admin.html?tab="), `${card.key} must have a bookmarkable destination.`);
+      assert.ok(card.href.startsWith("/admin/"), `${card.key} must have a clean bookmarkable destination.`);
       assert.doesNotMatch(card.href, /pin|token|secret/i, `${card.key} URL must not contain a secret.`);
       if (["disk_warning", "backup_warning"].includes(card.key)) continue;
       const queue = await owner.get(`/api/admin/operations/attention?category=${encodeURIComponent(card.key)}`);
@@ -186,10 +186,11 @@ async function main() {
 
     const source = fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8");
     assert.match(source, /Price wrong\? Report price/); assert.match(source, /capture="environment"/); assert.match(source, /Not enough price history yet/);
-    assert.match(source, /href="\/privacy\.html"/); assert.match(source, /href="\/terms\.html"/);
+    assert.match(source, /href="\/privacy"/); assert.match(source, /href="\/terms"/);
     const adminSource = fs.readFileSync(path.join(ROOT, "public/admin.js"), "utf8");
     assert.doesNotMatch(adminSource, /params\.set\(["']pin["']/i, "Admin secrets must not enter URL query strings.");
     assert.match(adminSource, /openAttentionQueue\(link\.dataset\.loadAttention/);
+    assert.match(adminSource, /\/admin\/attention\/\$\{encodeURIComponent\(attentionRouteSlug/);
     assert.match(adminSource, /window\.history\[mode === "replace" \? "replaceState" : "pushState"\]/);
     assert.match(adminSource, /No items currently need this review\./, "Zero-count queues need an intentional empty state.");
     assert.match(adminSource, /attentionDetailTitle\.focus\(\{ preventScroll: true \}\)/, "Queue navigation must move keyboard focus to its heading.");

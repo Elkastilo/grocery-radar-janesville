@@ -77,21 +77,21 @@ assert.match(finishNextBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/)
 
 const finishStopBody = functionBody("doneReviewing", "renderWorkers");
 assert.match(finishStopBody, /\/complete/);
-assert.match(finishStopBody, /openAdminTab\("inboxTab"\)/);
+assert.match(finishStopBody, /openAdminTab\("inboxTab", \{ updateHistory: true, replaceHistory: true \}\)/);
 assert.match(finishStopBody, /loadAdminData\(\)/);
 assert.doesNotMatch(finishStopBody, /startReviewNext/, "Done Reviewing must stop at the Inbox instead of opening another proof.");
 
 const rejectBody = functionBody("rejectReceipt", "approveReviewRows");
 assert.match(rejectBody, /\/reject/);
 assert.match(rejectBody, /refreshReviewInbox\(\)/);
-assert.match(rejectBody, /openAdminTab\("inboxTab"\)/, "Terminal proof rejection must return to Inbox.");
+assert.match(rejectBody, /openAdminTab\("inboxTab", \{ updateHistory: true, replaceHistory: true \}\)/, "Terminal proof rejection must return to Inbox without preserving a terminal proof URL.");
 assert.doesNotMatch(rejectBody, /startReviewNext/, "Reject Proof must not trap the reviewer in another proof.");
 
 const managerBody = functionBody("managerDecision", "rejectReceipt");
 assert.match(managerBody, /\/manager-decision/);
 assert.match(managerBody, /Mark this proof as a duplicate\?/);
 assert.match(managerBody, /refreshReviewInbox\(\)/);
-assert.match(managerBody, /openAdminTab\("inboxTab"\)/);
+assert.match(managerBody, /openAdminTab\("inboxTab", \{ updateHistory: true, replaceHistory: true \}\)/);
 assert.match(managerBody, /renderReceiptReview\(review\)/, "Return to Review must immediately restore the canonical workspace.");
 
 const storeResolutionBody = functionBody("resolveReviewStore", "refreshResolvedReviewRows");

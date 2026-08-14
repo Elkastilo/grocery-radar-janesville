@@ -31,6 +31,8 @@ const attentionDetailTitle = document.querySelector("#attentionDetailTitle");
 const attentionQueueWorkspace = document.querySelector("#attentionQueueWorkspace");
 const attentionQueueStatus = document.querySelector("#attentionQueueStatus");
 const attentionQueueBack = document.querySelector("#attentionQueueBack");
+const attentionSearchDemand = document.querySelector("#attentionSearchDemand");
+const attentionDuplicateProducts = document.querySelector("#attentionDuplicateProducts");
 const attentionRefreshButton = document.querySelector("#attentionRefreshButton");
 const searchDemandList = document.querySelector("#searchDemandList");
 const duplicateProductList = document.querySelector("#duplicateProductList");
@@ -451,14 +453,51 @@ function openAdminTab(tabId, options = {}) {
   }
 
   window.setTimeout(() => highlightAdminTarget(options), 80);
+  if (options.focusRoute !== false && tabId !== "attentionCenterTab") window.setTimeout(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
+    const heading = document.querySelector(`#${CSS.escape(tabId)} h2`);
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  }, 0);
 }
 
+const adminTabPaths = {
+  dashboardTab: "/admin",
+  inboxTab: "/admin/inbox",
+  attentionCenterTab: "/admin/attention",
+  productToolsTab: "/admin/products",
+  storesTab: "/admin/stores",
+  workersTab: "/admin/workers",
+  advancedTab: "/admin/advanced",
+  operationsTab: "/admin/operations",
+  pricesTab: "/admin/prices",
+  priceImporterTab: "/admin/imports",
+  reviewTab: "/admin/reports",
+  usersTab: "/admin/legacy-users",
+  feedbackTab: "/admin/feedback",
+  announcementsTab: "/admin/announcements",
+  analyticsTab: "/admin/analytics",
+  sponsorsTab: "/admin/sponsors",
+  suggestionsTab: "/admin/suggestions",
+  emailTab: "/admin/email",
+  manualTab: "/admin/manual-price",
+  settingsTab: "/admin/settings",
+  betaReadinessTab: "/admin/readiness",
+  adminNotFoundTab: "/admin/not-found"
+};
+
+function attentionRouteSlug(key = "") { return String(key).replaceAll("_", "-"); }
+function attentionKeyFromSlug(slug = "") { return String(slug).replaceAll("-", "_"); }
+
 function adminRouteUrl(tabId, options = {}) {
+  if (tabId === "attentionCenterTab" && options.filter) return `/admin/attention/${encodeURIComponent(attentionRouteSlug(options.filter))}`;
+  if (tabId === "inboxTab" && options.priceImportBatchId) return `/admin/inbox/${encodeURIComponent(options.priceImportBatchId)}`;
+  if (tabId === "productToolsTab" && options.productId) return `/admin/products/${encodeURIComponent(options.productId)}`;
+  if (tabId === "pricesTab" && options.reportId) return `/admin/prices/reports/${encodeURIComponent(options.reportId)}`;
+  const path = adminTabPaths[tabId] || "/admin/not-found";
   const params = new URLSearchParams();
-  params.set("tab", tabId);
   const routeFields = [["filter", options.filter], ["report", options.reportId], ["product", options.productId], ["batch", options.priceImportBatchId]];
   for (const [name, value] of routeFields) if (value !== undefined && value !== null && String(value)) params.set(name, String(value));
-  return `/admin.html?${params.toString()}`;
+  return `${path}${params.toString() ? `?${params.toString()}` : ""}`;
 }
 
 function updateAdminRoute(tabId, options = {}, mode = "push") {
@@ -483,6 +522,9 @@ function openAttentionQueue(key, label = "Attention queue", options = {}) {
 
 function showAttentionOverview(options = {}) {
   openAdminTab("attentionCenterTab", { updateHistory: options.updateHistory !== false, focusQueue: false });
+  attentionCenterSummary.hidden = false;
+  attentionSearchDemand.hidden = false;
+  attentionDuplicateProducts.hidden = false;
   attentionDetailTitle.textContent = "Select an issue";
   attentionQueueStatus.textContent = "Every counter opens the matching work queue.";
   attentionQueueBack.hidden = true;
@@ -490,7 +532,7 @@ function showAttentionOverview(options = {}) {
 }
 
 function goToAdminTab(tabId, options = {}) {
-  openAdminTab(tabId, options);
+  openAdminTab(tabId, { ...options, updateHistory: options.updateHistory !== false });
 }
 
 async function markAdminNotificationRead(notificationId) {
@@ -833,6 +875,11 @@ function attentionLevelLabel(level) {
 function renderAttentionCenter() {
   if (!attentionCenterSummary) return;
   const groups = operationsCommandData?.attention?.groups || {};
+  const initialFilter = pendingAdminRoute.filter;
+  const filteredQueue = Boolean(initialFilter);
+  attentionCenterSummary.hidden = filteredQueue;
+  attentionSearchDemand.hidden = filteredQueue;
+  attentionDuplicateProducts.hidden = filteredQueue;
   const groupLabels = { proofs: "Proofs", prices: "Prices", products: "Products", import_ai: "Import / AI", system: "System" };
   attentionCenterSummary.innerHTML = Object.entries(groups).map(([group, entries]) => `<section class="admin-card compact-card"><h3>${escapeHtml(groupLabels[group] || titleCase(group))}</h3><div class="attention-command-grid">${entries.map((item) => `<a class="attention-card attention-level-${escapeHtml(item.level)}" href="${escapeHtml(item.href)}" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}" aria-label="Open ${escapeHtml(item.label)} queue, ${Number(item.count)} item${Number(item.count) === 1 ? "" : "s"}"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${Number(item.count)}</strong><span>${escapeHtml(item.label)}</span><span class="notification-open-affordance" aria-hidden="true">${Number(item.count) ? "Open queue →" : "View empty queue →"}</span></a>`).join("")}</div></section>`).join("") || '<div class="empty-state">Attention data is unavailable.</div>';
   for (const link of attentionCenterSummary.querySelectorAll("[data-load-attention]")) link.addEventListener("click", (event) => {
@@ -843,11 +890,17 @@ function renderAttentionCenter() {
   const demand = operationsCommandData?.search_demand?.could_not_find || [];
   searchDemandList.innerHTML = demand.length ? demand.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.display_query)}</strong><span>${Number(item.total_searches)} searches · ${Number(item.zero_result_searches)} with no results</span><span>Last searched ${escapeHtml(formatDate(item.last_searched_at))}</span></div><div class="card-actions"><button class="secondary-button" type="button" data-demand-add="${escapeHtml(item.display_query)}">Add Product</button><a class="quiet-button" href="/?q=${encodeURIComponent(item.display_query)}" target="_blank" rel="noopener">Search Existing Catalog</a></div></article>`).join("") : '<div class="empty-state">No zero-result search demand recorded yet.</div>';
   for (const button of searchDemandList.querySelectorAll("[data-demand-add]")) button.addEventListener("click", () => { openAdminTab("productToolsTab"); window.setTimeout(() => { const input = productToolsContent.querySelector('[data-product-create] [data-product-field="display_name"]'); if (input) { input.value = button.dataset.demandAdd; input.focus(); input.scrollIntoView({ behavior: "smooth", block: "center" }); } }, 100); });
-  loadDuplicateProductCandidates();
-  const initialFilter = pendingAdminRoute.filter;
+  if (!filteredQueue) loadDuplicateProductCandidates();
   if (initialFilter) {
     const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter);
-    loadAttentionDetails(initialFilter, pendingAdminRoute.attentionLabel || item?.label || titleCase(initialFilter), { focus: pendingAdminRoute.focusQueue !== false });
+    if (item) loadAttentionDetails(initialFilter, pendingAdminRoute.attentionLabel || item.label, { focus: pendingAdminRoute.focusQueue !== false });
+    else {
+      attentionDetailTitle.textContent = "Attention queue not found";
+      attentionQueueStatus.textContent = "This Attention Center route is not registered.";
+      attentionQueueBack.hidden = false;
+      attentionCenterDetails.innerHTML = '<div class="empty-state">Return to Attention Center and choose an available queue.</div>';
+      if (pendingAdminRoute.focusQueue !== false) { attentionDetailTitle.focus({ preventScroll: true }); window.scrollTo({ top: 0, behavior: "auto" }); }
+    }
   } else {
     attentionDetailTitle.textContent = "Select an issue";
     attentionQueueStatus.textContent = "Every counter opens the matching work queue.";
@@ -1034,14 +1087,15 @@ async function startReviewNext(options = {}) {
   if (!next.proof_id) {
     await refreshReviewInbox();
     setMessage(inboxMessage, "No more proofs waiting.", "success");
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
     return;
   }
   openAdminTab("inboxTab");
-  await openReceiptReview(next.proof_id);
+  await openReceiptReview(next.proof_id, { historyMode: "replace" });
 }
 
-async function openReceiptReview(batchId) {
+async function openReceiptReview(batchId, options = {}) {
+  if (options.updateHistory !== false) updateAdminRoute("inboxTab", { priceImportBatchId: batchId }, options.historyMode || "push");
   activeReviewState = { batchId: Number(batchId), phase: "opening" };
   setMessage(inboxMessage, "Opening receipt review...");
   try {
@@ -1439,7 +1493,7 @@ async function releaseAndExitReview(batchId) {
   activeReviewState = null;
   receiptReviewWorkspace.hidden = true;
   try { await refreshReviewInbox(); } catch (error) { setMessage(inboxMessage, error.message, "error"); }
-  openAdminTab("inboxTab");
+  openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
 }
 
 function applyAuthoritativeReviewRow(rowElement, row) {
@@ -1543,7 +1597,7 @@ async function quickRejectProof(batchId, reason) {
     activeReviewState = null;
     receiptReviewWorkspace.hidden = true;
     await refreshReviewInbox();
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
     setMessage(inboxMessage, data.message, "success");
   } catch (error) { setMessage(inboxMessage, error.message || "Could not close this proof.", "error"); }
 }
@@ -1565,7 +1619,7 @@ async function managerDecision(batchId, decision, note = "") {
     activeReviewState = null;
     receiptReviewWorkspace.hidden = true;
     await refreshReviewInbox();
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
     setMessage(inboxMessage, data.message, "success");
   } catch (error) { setMessage(inboxMessage, error.message || "Could not save the manager decision.", "error"); }
 }
@@ -1581,7 +1635,7 @@ async function rejectReceipt(batchId) {
     activeReviewState = null;
     receiptReviewWorkspace.hidden = true;
     await refreshReviewInbox();
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
     setMessage(inboxMessage, "Proof rejected and returned to Inbox.", "success");
   } catch (error) { setMessage(inboxMessage, error.message || "Could not reject this proof. Please try again.", "error"); }
 }
@@ -1600,7 +1654,7 @@ async function approveReviewRows(batch) {
       await fetchJson(`/api/admin/price-import-rows/bulk${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
     await loadAdminData();
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
 }
 
@@ -1634,7 +1688,7 @@ async function doneReviewing(batchId) {
     await fetchJson(`/api/admin/v2/reviews/${batchId}/complete${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
     activeReviewState = null;
     receiptReviewWorkspace.hidden = true;
-    openAdminTab("inboxTab");
+    openAdminTab("inboxTab", { updateHistory: true, replaceHistory: true });
     await loadAdminData();
     setMessage(inboxMessage, "Done reviewing. Returned to Inbox.", "success");
   } catch (error) {
@@ -6374,33 +6428,42 @@ async function boot() {
   applyAdminInitialRoute();
 }
 
-function applyAdminInitialRoute() {
+function parseAdminRoute() {
+  const path = window.location.pathname.replace(/\/$/, "") || "/";
   const params = new URLSearchParams(window.location.search);
-  const tab = params.get("tab");
-
-  if (!tab) {
-    return;
-  }
-
-  goToAdminTab(tab, {
+  if (path === "/admin.html") return {
+    tabId: params.get("tab") || "dashboardTab",
+    legacy: true,
     reportId: params.get("report") || "",
     userId: params.get("user") || "",
     storeRequestId: params.get("storeRequest") || "",
     suggestionId: params.get("suggestion") || "",
     productId: params.get("product") || "",
     filter: params.get("filter") || "",
-    priceImportBatchId: params.get("batch") || "",
-    focusQueue: false
-  });
-  if (tab === "inboxTab" && params.get("batch")) {
-    openReceiptReview(params.get("batch"));
-  }
+    priceImportBatchId: params.get("batch") || ""
+  };
+  const attention = path.match(/^\/admin\/attention\/([^/]+)$/);
+  if (attention) return { tabId: "attentionCenterTab", filter: attentionKeyFromSlug(decodeURIComponent(attention[1])) };
+  const proof = path.match(/^\/admin\/inbox\/(\d+)$/);
+  if (proof) return { tabId: "inboxTab", priceImportBatchId: proof[1] };
+  const product = path.match(/^\/admin\/products\/(\d+)$/);
+  if (product) return { tabId: "productToolsTab", productId: product[1] };
+  const report = path.match(/^\/admin\/prices\/reports\/(\d+)$/);
+  if (report) return { tabId: "pricesTab", reportId: report[1] };
+  const tabId = Object.entries(adminTabPaths).find(([, routePath]) => routePath === path)?.[0];
+  if (tabId) return { tabId, filter: params.get("filter") || "", reportId: params.get("report") || "" };
+  return { tabId: "adminNotFoundTab" };
+}
+
+function applyAdminInitialRoute(options = {}) {
+  const route = parseAdminRoute();
+  openAdminTab(route.tabId, { ...route, focusQueue: false, focusRoute: options.focusRoute !== false });
+  if (route.legacy) updateAdminRoute(route.tabId, route, "replace");
+  if (route.tabId === "inboxTab" && route.priceImportBatchId) openReceiptReview(route.priceImportBatchId, { updateHistory: false });
 }
 
 window.addEventListener("popstate", () => {
-  const params = new URLSearchParams(window.location.search);
-  if (!params.get("tab")) { openAdminTab("dashboardTab"); return; }
-  applyAdminInitialRoute();
+  applyAdminInitialRoute({ focusRoute: false });
 });
 
 pinForm.addEventListener("submit", (event) => {

@@ -22,9 +22,10 @@
     "test:owner-startup-repair": "node scripts/test-owner-startup-repair.js",
     "test:operations-scale": "node scripts/test-operations-scale.js",
     "test:price-arena": "node scripts/test-price-arena.js",
+    "test:routing": "node scripts/test-routing.js",
     "test:restore-drill": "node scripts/test-restore-drill.js",
     "restore:drill": "node scripts/restore-drill.js",
-    "test": "npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:public-products-null && npm run test:major-intake && npm run test:operations-scale && npm run test:price-arena && npm run test:restore-drill && npm run test:owner-repair && npm run test:owner-startup-repair && npm run test:operations",
+    "test": "npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:public-products-null && npm run test:major-intake && npm run test:operations-scale && npm run test:price-arena && npm run test:routing && npm run test:restore-drill && npm run test:owner-repair && npm run test:owner-startup-repair && npm run test:operations",
     "setup:email": "node scripts/setup-email.js",
     "debug:email": "node scripts/debug-email.js"
   },

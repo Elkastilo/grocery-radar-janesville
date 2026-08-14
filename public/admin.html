@@ -54,13 +54,18 @@
           <div id="adminNotifications" class="notification-grid"></div>
         </section>
 
+        <section id="adminNotFoundTab" class="admin-panel">
+          <div class="admin-panel-heading"><div><h2 tabindex="-1">Admin page not found</h2><p class="field-help">This Admin route does not exist or its link is no longer valid.</p></div></div>
+          <a class="primary-button" href="/admin">Go to Admin Home</a>
+        </section>
+
         <section id="attentionCenterTab" class="admin-panel" data-manager-only>
           <div class="admin-panel-heading"><div><h2>Attention Center</h2><p class="field-help">Human decisions, cleanup work, waiting jobs, and system warnings are separated by urgency.</p></div><button id="attentionRefreshButton" class="secondary-button" type="button">Refresh</button></div>
           <div id="attentionCenterMessage" class="message" aria-live="polite"></div>
           <div id="attentionCenterSummary" class="admin-list"></div>
-          <section id="attentionQueueWorkspace" class="admin-card compact-card" aria-labelledby="attentionDetailTitle"><div class="admin-panel-heading"><div><h3 id="attentionDetailTitle" tabindex="-1">Select an issue</h3><p id="attentionQueueStatus" class="field-help" role="status" aria-live="polite">Every counter opens the matching work queue.</p></div><a id="attentionQueueBack" class="quiet-button" href="/admin.html?tab=attentionCenterTab" hidden>All attention categories</a></div><div id="attentionCenterDetails" class="admin-list" aria-live="polite" aria-busy="false"></div></section>
-          <section class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>What people couldn't find</h3><p class="field-help">Aggregate searches only—no shopper identity, email, full IP, or device fingerprint.</p></div></div><div id="searchDemandList" class="admin-list"></div></section>
-          <section class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>Possible duplicate products</h3><p class="field-help">Human confirmation is required. Conflicting verified barcodes block merges.</p></div></div><div id="duplicateProductList" class="admin-list"></div></section>
+          <section id="attentionQueueWorkspace" class="admin-card compact-card" aria-labelledby="attentionDetailTitle"><div class="admin-panel-heading"><div><h3 id="attentionDetailTitle" tabindex="-1">Select an issue</h3><p id="attentionQueueStatus" class="field-help" role="status" aria-live="polite">Every counter opens the matching work queue.</p></div><a id="attentionQueueBack" class="quiet-button" href="/admin/attention" hidden>All attention categories</a></div><div id="attentionCenterDetails" class="admin-list" aria-live="polite" aria-busy="false"></div></section>
+          <section id="attentionSearchDemand" class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>What people couldn't find</h3><p class="field-help">Aggregate searches only—no shopper identity, email, full IP, or device fingerprint.</p></div></div><div id="searchDemandList" class="admin-list"></div></section>
+          <section id="attentionDuplicateProducts" class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>Possible duplicate products</h3><p class="field-help">Human confirmation is required. Conflicting verified barcodes block merges.</p></div></div><div id="duplicateProductList" class="admin-list"></div></section>
         </section>
 
         <section id="inboxTab" class="admin-panel">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   BadgeCheck,
@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import { apiFetch, getJson, postJson, putJson } from './api'
 import { isRenderableProduct, productCardViewModel, reportSize } from './productDisplay'
+import { legacyReplacement, parsePublicRoute, publicPathFor, savingsControlsFromParams, savingsUrl } from './routes'
 
 const categories = [
   { label: 'Fresh Produce', value: 'produce' },
@@ -331,7 +332,7 @@ function ScreenTitle({ eyebrow, title, subtitle }) {
   return (
     <div className="mb-5">
       <p className="text-sm font-black uppercase text-emerald-700">{eyebrow}</p>
-      <h1 className="mt-1 text-3xl font-black text-slate-950 sm:text-4xl">{title}</h1>
+      <h1 data-route-heading tabIndex="-1" className="mt-1 text-3xl font-black text-slate-950 outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:text-4xl">{title}</h1>
       <p className="mt-2 text-lg font-semibold text-slate-600">{subtitle}</p>
     </div>
   )
@@ -1180,7 +1181,7 @@ function SearchScreen({
   )
 }
 
-function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, reload, me }) {
+function ProductDetailScreen({ detail, loading, error, openScreen, onBack, addToCart, reload, me }) {
   const product = detail?.product
   const reports = (detail?.reports || []).filter(hasNumericApprovedReportPrice)
   const cheapest = [...reports].sort((a, b) => reportSortPrice(a) - reportSortPrice(b))[0]
@@ -1208,7 +1209,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
     <div className="mx-auto w-full max-w-4xl px-4 pt-5 sm:px-6">
       <button
         type="button"
-        onClick={() => openScreen('search')}
+        onClick={onBack}
         className="mb-4 inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 font-bold text-slate-700 shadow-sm ring-1 ring-slate-100"
       >
         <ChevronLeft className="h-5 w-5" />
@@ -1418,26 +1419,55 @@ function ActionButton({ label, icon: Icon, onClick }) {
   )
 }
 
-function DealsScreen({ arena, loading, error, openProduct, reload, onControlsChange }) {
-  const [section, setSection] = useState('drops')
+function DealsScreen({ arena, loading, error, openProduct, reload, onControlsChange, controls, section, onSectionChange }) {
   const leaderboard = arena?.leaderboard || {}
   const drops = arena?.price_drops || []
+  const routeTitle = { home: 'Savings across every store', drops: 'Price Drops', showdown: 'Janesville Store Showdown', categories: "Who's cheaper by category?" }[section] || 'Savings across every store'
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-    <ScreenTitle eyebrow="Janesville price arena" title="Savings across every store" subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
+    <ScreenTitle eyebrow="Janesville price arena" title={routeTitle} subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
+    {section === 'home' ? <section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <button key={id} type="button" onClick={() => onSectionChange(id)} className="min-h-40 rounded-2xl bg-white p-5 text-left shadow-soft ring-1 ring-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-black">{title}</p><p className="mt-2 font-semibold text-slate-600">{body}</p><span className="mt-4 block font-black text-emerald-700">Open page →</span></button>)}</section> : null}
+    {section !== 'home' ? <>
     <section className="mb-5 grid gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100 sm:grid-cols-2 lg:grid-cols-5">
-      <label className="font-black text-slate-700">Time window<select className="field mt-1" defaultValue="week" onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
-      <label className="font-black text-slate-700">Offer rules<select className="field mt-1" defaultValue="all" onChange={(event) => onControlsChange({ mode: event.target.value })}><option value="all">All valid offers</option><option value="unconditional">No special requirements</option></select></label>
-      <label className="font-black text-slate-700">Store<select className="field mt-1" defaultValue="" onChange={(event) => onControlsChange({ store_id: event.target.value })}><option value="">All stores</option>{(arena?.eligible_stores || []).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
-      <label className="font-black text-slate-700">Category<select className="field mt-1" defaultValue="" onChange={(event) => onControlsChange({ category: event.target.value })}><option value="">All categories</option>{categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></label>
-      <label className="font-black text-slate-700">Price-drop order<select className="field mt-1" defaultValue="newest" onChange={(event) => onControlsChange({ sort: event.target.value })}><option value="newest">Newest</option><option value="percent">Biggest % drop</option><option value="dollars">Biggest dollar savings</option><option value="ending">Ending soon</option></select></label>
+      <label className="font-black text-slate-700">Time window<select className="field mt-1" value={controls.window} onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
+      <label className="font-black text-slate-700">Offer rules<select className="field mt-1" value={controls.mode} onChange={(event) => onControlsChange({ mode: event.target.value })}><option value="all">All valid offers</option><option value="unconditional">No special requirements</option></select></label>
+      <label className="font-black text-slate-700">Store<select className="field mt-1" value={controls.store_id} onChange={(event) => onControlsChange({ store_id: event.target.value })}><option value="">All stores</option>{(arena?.eligible_stores || []).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
+      <label className="font-black text-slate-700">Category<select className="field mt-1" value={controls.category} onChange={(event) => onControlsChange({ category: event.target.value })}><option value="">All categories</option>{categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></label>
+      <label className="font-black text-slate-700">Price-drop order<select className="field mt-1" value={controls.sort} onChange={(event) => onControlsChange({ sort: event.target.value })}><option value="newest">Newest</option><option value="percent">Biggest % drop</option><option value="dollars">Biggest dollar savings</option><option value="ending">Ending soon</option></select></label>
     </section>
-    <div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Savings views">{[['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <button key={id} type="button" role="tab" aria-selected={section === id} onClick={() => setSection(id)} className={`min-h-12 rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</button>)}</div>
+    <nav className="mb-5 flex flex-wrap gap-2" aria-label="Savings pages">{[['home','Savings Home'],['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <button key={id} type="button" aria-current={section === id ? 'page' : undefined} onClick={() => onSectionChange(id)} className={`min-h-12 rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</button>)}</nav>
     {loading ? <LoadingCard label="Calculating current verified comparisons..." /> : null}
     {error ? <ApiError message={error} onRetry={reload} /> : null}
     {!loading && section === 'drops' ? <section><SectionHeader title="What got cheaper around Janesville?" />{drops.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drops.map((drop) => <article key={`${drop.type}-${drop.report.id}`} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="text-xs font-black uppercase text-emerald-700">{drop.label}</p><h2 className="mt-2 text-xl font-black">{drop.report.product_name}</h2><p className="font-bold text-slate-500">{drop.report.store_name}</p><p className="mt-3 text-sm font-bold text-slate-500">Was {money(drop.previous_price)}</p><p className="text-3xl font-black text-emerald-700">Now {money(drop.current_price)}</p><p className="mt-1 font-black">↓ {money(drop.dollar_drop)} / {drop.percent_drop}%</p><PromotionDetails report={drop.report} /><button type="button" onClick={() => openProduct(drop.report.product_id)} className="mt-4 min-h-11 w-full rounded-xl bg-slate-100 font-black">Compare stores</button></article>)}</div> : <EmptyState title="No verified price drops yet" body="A drop appears only after Grocery Radar has a legitimate comparable previous price." icon={Tag} />}</section> : null}
     {!loading && section === 'showdown' ? <section className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100"><SectionHeader title="Janesville Store Showdown" /><p className="font-bold text-slate-500">{arena?.window?.label} · {leaderboard.comparable_product_count || 0} comparable products</p><div className="mt-4 space-y-2">{(leaderboard.rankings || []).map((row,index) => <div key={row.store_id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3"><div><p className="font-black">#{index + 1} {row.store_name}</p><p className="text-sm font-bold text-slate-500">{row.current_price_count} current prices · {row.tied_lowest_count} ties</p></div><p className="text-right font-black text-emerald-800">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{leaderboard.status_message} Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></section> : null}
     {!loading && section === 'categories' ? <section><SectionHeader title="Who's cheaper by category?" /><div className="grid gap-4 sm:grid-cols-2">{(arena?.categories || []).map((category) => <article key={category.category} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><h2 className="text-xl font-black">{titleCase(category.category)}</h2><p className="text-sm font-bold text-slate-500">{category.comparable_product_count} comparable products</p><div className="mt-3 space-y-2">{category.rankings.slice(0,5).map((row) => <div key={row.store_id} className="flex justify-between gap-3"><span className="font-bold">{row.store_name}</span><span className="font-black">Lowest on {row.lowest_count}</span></div>)}</div></article>)}</div>{!arena?.categories?.length ? <EmptyState title="Limited category data" body="Category comparisons appear as comparable verified prices grow." icon={Store} /> : null}</section> : null}
     <p className="mt-5 text-sm font-bold text-slate-500">{arena?.disclaimer || 'Missing store prices are never treated as higher prices.'}</p>
+    </> : null}
+  </div>
+}
+
+function PolicyScreen({ type, openScreen }) {
+  const privacy = type === 'privacy'
+  return <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
+    <button type="button" onClick={() => openScreen('home')} className="mb-4 min-h-11 rounded-full bg-white px-4 font-black ring-1 ring-slate-200">Back to Grocery Radar</button>
+    <ScreenTitle eyebrow="Grocery Radar Janesville" title={privacy ? 'Privacy Policy' : 'Terms of Use'} subtitle={privacy ? 'How Grocery Radar handles public shopping, submissions, and operational data.' : 'Plain-language operating terms for this beta price-information service.'} />
+    <article className="space-y-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+      {privacy ? <>
+        <section><h2 className="text-xl font-black">No public shopper account required</h2><p className="mt-1 font-semibold text-slate-600">Anonymous submission tracking and My List data are stored locally in the shopper’s browser. Staff authentication remains separate.</p></section>
+        <section><h2 className="text-xl font-black">Proofs and search demand</h2><p className="mt-1 font-semibold text-slate-600">Proof uploads are private moderation evidence. Aggregate search demand stores normalized queries, result counts, counts, and time—not shopper accounts, emails, full IP addresses, or device fingerprints.</p></section>
+        <section><h2 className="text-xl font-black">Operational information</h2><p className="mt-1 font-semibold text-slate-600">Data is used to review submissions, publish approved prices, identify catalog gaps, and prevent abuse. This page describes the current architecture and may require formal legal review before broad commercial launch.</p></section>
+      </> : <>
+        <section><h2 className="text-xl font-black">Prices may change</h2><p className="mt-1 font-semibold text-slate-600">Always verify grocery prices, availability, and promotion conditions at the store before buying.</p></section>
+        <section><h2 className="text-xl font-black">Independent service</h2><p className="mt-1 font-semibold text-slate-600">Grocery Radar is not affiliated with or endorsed by listed retailers unless explicitly stated.</p></section>
+        <section><h2 className="text-xl font-black">Appropriate use</h2><p className="mt-1 font-semibold text-slate-600">Upload only lawful grocery evidence you may provide. Fabricated prices, spam, private documents, payment information, executable content, and abusive material are prohibited. Formal legal review is recommended before major commercial launch.</p></section>
+      </>}
+    </article>
+  </div>
+}
+
+function NotFoundScreen({ openScreen }) {
+  return <div className="mx-auto w-full max-w-2xl px-4 pt-10 text-center sm:px-6">
+    <ScreenTitle eyebrow="Grocery Radar" title="Page not found" subtitle="That Grocery Radar page does not exist or its link is no longer valid." />
+    <button type="button" onClick={() => openScreen('home')} className="min-h-12 rounded-2xl bg-emerald-700 px-6 font-black text-white">Go Home</button>
   </div>
 }
 
@@ -2613,15 +2643,16 @@ function ActivityList({ title, items, type }) {
   )
 }
 
-function StoreDetailScreen({ detail, loading, error, openProduct, openScreen }) {
+function StoreDetailScreen({ detail, loading, error, openProduct, onBack }) {
   const store = detail?.store
   const grouped = Object.entries((detail?.products || []).filter(isRenderableProduct).reduce((result, product) => {
     const key = product.category || 'other'; (result[key] ||= []).push(product); return result
   }, {}))
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-    <button type="button" onClick={() => openScreen('stores')} className="mb-4 rounded-full bg-white px-4 py-2 font-black ring-1 ring-slate-200">Back to stores</button>
+    <button type="button" onClick={onBack} className="mb-4 rounded-full bg-white px-4 py-2 font-black ring-1 ring-slate-200">Back to stores</button>
     {loading ? <LoadingCard label="Loading current store prices..." /> : null}
     {error ? <ApiError message={error} /> : null}
+    {!loading && !store ? <EmptyState title="Store not found" body="We could not find an active Janesville store for this link." icon={Store} /> : null}
     {store ? <><ScreenTitle eyebrow="Janesville store" title={store.name} subtitle={`${Number(store.current_price_count || 0)} current approved prices · Inventory is not live.`} />
       <section className="mb-6 grid gap-3 sm:grid-cols-4"><SummaryCard icon={CircleDollarSign} label="Current prices" value={store.current_price_count || 0} note="Verified and currently eligible" /><SummaryCard icon={Tag} label="Price drops this week" value={detail?.scorecard?.price_drops || 0} note="Verified decreases" /><SummaryCard icon={Store} label="Lowest among stores" value={detail?.scorecard?.lowest_count || 0} note={`${detail?.scorecard?.comparable_products || 0} comparable products`} /><SummaryCard icon={PackageCheck} label="Strongest observed category" value={titleCase(detail?.scorecard?.strongest_observed_category || 'Limited data')} note="Coverage varies by category" /></section>
       <p className="mb-5 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{detail?.scorecard?.disclaimer}</p>
@@ -2703,15 +2734,19 @@ function BottomNav({ active, openScreen }) {
 }
 
 function App() {
-  const [screen, setScreen] = useState('home')
+  const initialRouteRef = useRef(null)
+  if (!initialRouteRef.current) initialRouteRef.current = parsePublicRoute()
+  const [route, setRoute] = useState(initialRouteRef.current)
+  const screen = route.screen
+  const navigationTypeRef = useRef('initial')
   const [searchTerm, setSearchTerm] = useState('')
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [activeFilter, setActiveFilter] = useState('cheapest')
   const [activeCategory, setActiveCategory] = useState('')
   const [stores, setStores] = useState([])
-  const [selectedStoreId, setSelectedStoreId] = useState(null)
+  const [selectedStoreId, setSelectedStoreId] = useState(initialRouteRef.current.storeId || null)
   const [storeDetail, setStoreDetail] = useState(null)
-  const [storeState, setStoreState] = useState({ loading: false, error: '' })
+  const [storeState, setStoreState] = useState({ loading: initialRouteRef.current.screen === 'store', error: '' })
   const [releaseData, setReleaseData] = useState({ application_version: '', releases: [], has_unread: false })
   const [browse, setBrowse] = useState({ products: [], recently_approved_reports: [], needs_prices: [] })
   const [browseState, setBrowseState] = useState({ loading: true, error: '' })
@@ -2719,11 +2754,11 @@ function App() {
   const [homepageServiceState, setHomepageServiceState] = useState({ loading: true, error: '' })
   const [searchData, setSearchData] = useState({ products: [], reports: [] })
   const [searchState, setSearchState] = useState({ loading: false, error: '' })
-  const [selectedProductId, setSelectedProductId] = useState(null)
+  const [selectedProductId, setSelectedProductId] = useState(initialRouteRef.current.productId || null)
   const [productDetail, setProductDetail] = useState(null)
-  const [productState, setProductState] = useState({ loading: false, error: '' })
+  const [productState, setProductState] = useState({ loading: initialRouteRef.current.screen === 'product', error: '' })
   const [dealReports, setDealReports] = useState({ leaderboard: {}, categories: [], price_drops: [] })
-  const [arenaControls, setArenaControls] = useState({ window: 'week', mode: 'all' })
+  const [arenaControls, setArenaControls] = useState(() => savingsControlsFromParams(initialRouteRef.current.params))
   const [dealState, setDealState] = useState({ loading: false, error: '' })
   const [me, setMe] = useState({ loading: true, loggedIn: false })
   const [cart, setCart] = useState(null)
@@ -2744,16 +2779,51 @@ function App() {
   const [leaderboardView, setLeaderboardView] = useState('week')
   const [leaderboardState, setLeaderboardState] = useState({ loading: false, error: '' })
   const [profileState, setProfileState] = useState({ loading: false, error: '' })
-  const [selectedProofId, setSelectedProofId] = useState('')
+  const [selectedProofId, setSelectedProofId] = useState(initialRouteRef.current.proofId || '')
   const [toast, setToast] = useState('')
+
+  const applyRoute = useCallback((nextRoute, navigationType = 'push') => {
+    navigationTypeRef.current = navigationType
+    setRoute(nextRoute)
+    if (nextRoute.productId) {
+      setSelectedProductId(Number(nextRoute.productId))
+      setProductDetail(null)
+      setProductState({ loading: true, error: '' })
+    }
+    if (nextRoute.storeId) {
+      setSelectedStoreId(Number(nextRoute.storeId))
+      setStoreDetail(null)
+      setStoreState({ loading: true, error: '' })
+    }
+    if (nextRoute.proofId) setSelectedProofId(nextRoute.proofId)
+    if (nextRoute.screen === 'deals') setArenaControls(savingsControlsFromParams(nextRoute.params))
+    if (nextRoute.screen === 'search') {
+      setSearchTerm(String(nextRoute.params.get('q') || '').slice(0, 120))
+      setActiveCategory(String(nextRoute.params.get('category') || '').slice(0, 60))
+    }
+  }, [])
+
+  const navigateTo = useCallback((url, options = {}) => {
+    const target = new URL(url, window.location.origin)
+    const currentDepth = Number(window.history.state?.groceryRadarDepth || 0)
+    const state = { groceryRadar: true, groceryRadarDepth: options.replace ? currentDepth : currentDepth + 1 }
+    window.history[options.replace ? 'replaceState' : 'pushState'](state, '', `${target.pathname}${target.search}`)
+    applyRoute(parsePublicRoute(target.pathname, target.search), options.replace ? 'replace' : 'push')
+  }, [applyRoute])
 
   const openScreen = useCallback((nextScreen, options = {}) => {
     if (options.category) setActiveCategory(options.category)
     if (options.proofId) setSelectedProofId(options.proofId)
     if (options.productId) setSelectedProductId(Number(options.productId))
-    setScreen(nextScreen)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [])
+    let path = publicPathFor(nextScreen, options)
+    if (nextScreen === 'search' && options.category) path = `${path}?category=${encodeURIComponent(options.category)}`
+    navigateTo(path)
+  }, [navigateTo])
+
+  const goBack = useCallback((fallbackScreen) => {
+    if (Number(window.history.state?.groceryRadarDepth || 0) > 0) window.history.back()
+    else openScreen(fallbackScreen)
+  }, [openScreen])
 
   const loadMe = useCallback(async () => {
     setMe((current) => ({ ...current, loading: true }))
@@ -2854,6 +2924,12 @@ function App() {
       const data = await getJson(`/api/products/${selectedProductId}`)
       setProductDetail(data)
       setProductState({ loading: false, error: '' })
+      if (data.redirected_from_product_id && Number(data.product?.id) !== Number(selectedProductId)) {
+        const canonicalUrl = `/products/${data.product.id}`
+        window.history.replaceState(window.history.state, '', canonicalUrl)
+        setSelectedProductId(Number(data.product.id))
+        setRoute(parsePublicRoute(canonicalUrl, ''))
+      }
     } catch (error) {
       setProductState({ loading: false, error: error.message })
     }
@@ -2932,20 +3008,34 @@ function App() {
     loadHomepageService()
     loadReleases()
     getJson('/api/rewards').then(setRewards).catch(() => {})
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('q')) {
-      setSearchTerm(params.get('q').slice(0, 120))
-      setScreen('search')
+    window.history.scrollRestoration = 'auto'
+    const initial = initialRouteRef.current
+    if (!window.history.state?.groceryRadar) window.history.replaceState({ groceryRadar: true, groceryRadarDepth: 0 }, '', window.location.href)
+    if (initial.params.get('q')) setSearchTerm(initial.params.get('q').slice(0, 120))
+    if (initial.params.get('category')) setActiveCategory(initial.params.get('category').slice(0, 60))
+    const replacement = legacyReplacement(initial)
+    if (replacement) {
+      window.history.replaceState({ groceryRadar: true, groceryRadarDepth: 0 }, '', replacement)
+      applyRoute(parsePublicRoute(window.location.pathname, window.location.search), 'replace')
     }
-    if (params.get('product')) {
-      setSelectedProductId(Number(params.get('product')))
-      setScreen('product')
-    }
-    if (params.get('section') === 'proof' && params.get('proof')) {
-      setSelectedProofId(params.get('proof'))
-      setScreen('profile')
-    }
-  }, [loadMe, loadStores, loadHomepageService, loadReleases])
+  }, [applyRoute, loadMe, loadStores, loadHomepageService, loadReleases])
+
+  useEffect(() => {
+    const onPopState = () => applyRoute(parsePublicRoute(), 'pop')
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [applyRoute])
+
+  useEffect(() => {
+    if (navigationTypeRef.current === 'pop') return
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'auto' })
+      const heading = document.querySelector('[data-route-heading]')
+      if (heading) heading.focus({ preventScroll: true })
+      else document.querySelector('#publicRouteMain')?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [route.path, route.productId, route.storeId, route.savingsSection])
 
   useEffect(() => {
     let cancelled = false
@@ -2981,8 +3071,8 @@ function App() {
   }, [searchTerm])
 
   useEffect(() => {
-    loadBrowse()
-  }, [loadBrowse])
+    if (screen === 'home') loadBrowse()
+  }, [screen, loadBrowse])
 
   useEffect(() => {
     if (screen === 'search') loadSearch()
@@ -2995,10 +3085,18 @@ function App() {
   useEffect(() => { if (screen === 'store') loadStoreDetail() }, [screen, loadStoreDetail])
 
   useEffect(() => {
-    if (screen === 'deals') loadDeals()
-  }, [screen, loadDeals])
+    if (screen === 'home' || (screen === 'deals' && route.savingsSection !== 'home')) loadDeals()
+  }, [screen, route.savingsSection, loadDeals])
 
-  useEffect(() => { loadDeals() }, [loadDeals])
+  useEffect(() => {
+    if (screen !== 'deals' || !arenaControls.store_id || !stores.length) return
+    if (stores.some((store) => Number(store.id) === Number(arenaControls.store_id))) return
+    setArenaControls((current) => {
+      const updated = { ...current, store_id: '' }
+      window.history.replaceState(window.history.state, '', savingsUrl(window.location.pathname, updated))
+      return updated
+    })
+  }, [screen, stores, arenaControls.store_id])
 
   useEffect(() => {
     if (screen === 'cart') loadCart()
@@ -3013,11 +3111,19 @@ function App() {
   }, [screen, loadLeaderboard])
 
   const openProduct = (productId) => {
-    setSelectedProductId(productId)
-    openScreen('product')
+    openScreen('product', { productId })
   }
 
-  const openStore = (storeId) => { setSelectedStoreId(storeId); openScreen('store') }
+  const openStore = (storeId) => openScreen('store', { storeId })
+  const openSavingsSection = (savingsSection) => openScreen('deals', { savingsSection })
+  const changeArenaControls = (next) => {
+    setArenaControls((current) => {
+      const updated = { ...current, ...next }
+      const url = savingsUrl(window.location.pathname, updated)
+      window.history.replaceState(window.history.state, '', url)
+      return updated
+    })
+  }
   const markReleaseRead = async (release) => {
     window.localStorage.setItem('groceryRadarSeenReleaseId', String(release.id))
     if (me.loggedIn) { try { await postJson(`/api/releases/${release.id}/read`, {}) } catch { /* local seen-state remains available */ } }
@@ -3130,7 +3236,7 @@ function App() {
           {toast}
         </button>
       ) : null}
-      <main className="safe-bottom">
+      <main id="publicRouteMain" tabIndex="-1" className="safe-bottom outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
         {screen === 'home' ? (
           <HomeScreen
             browse={browse}
@@ -3165,7 +3271,7 @@ function App() {
           />
         ) : null}
         {screen === 'stores' ? <StoresScreen stores={stores} openStore={openStore} /> : null}
-        {screen === 'store' ? <StoreDetailScreen detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} openScreen={openScreen} /> : null}
+        {screen === 'store' ? <StoreDetailScreen detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} onBack={() => goBack('stores')} /> : null}
         {screen === 'updates' ? <UpdatesScreen releases={releaseData.releases || []} version={releaseData.application_version || homepageService.application_version} markRead={markReleaseRead} /> : null}
         {screen === 'product' ? (
           <ProductDetailScreen
@@ -3173,6 +3279,7 @@ function App() {
             loading={productState.loading}
             error={productState.error}
             openScreen={openScreen}
+            onBack={() => goBack('search')}
             addToCart={addToCart}
             reload={loadProductDetail}
             me={me}
@@ -3185,7 +3292,10 @@ function App() {
             error={dealState.error}
             openProduct={openProduct}
             reload={loadDeals}
-            onControlsChange={(next) => setArenaControls((current) => ({ ...current, ...next }))}
+            controls={arenaControls}
+            section={route.savingsSection || 'home'}
+            onSectionChange={openSavingsSection}
+            onControlsChange={changeArenaControls}
           />
         ) : null}
         {screen === 'cart' ? (
@@ -3219,6 +3329,9 @@ function App() {
           />
         ) : null}
         {screen === 'submissions' ? <MySubmissionsScreen openScreen={openScreen} /> : null}
+        {screen === 'privacy' ? <PolicyScreen type="privacy" openScreen={openScreen} /> : null}
+        {screen === 'terms' ? <PolicyScreen type="terms" openScreen={openScreen} /> : null}
+        {screen === 'notFound' ? <NotFoundScreen openScreen={openScreen} /> : null}
         {screen === 'profile' ? (
           <ProfileScreen
             me={me}
@@ -3254,7 +3367,7 @@ function App() {
       </main>
       <footer className="pb-28 pt-10 text-center text-sm font-bold text-slate-500">
         <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
-        <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy.html">Privacy</a><a className="underline" href="/terms.html">Terms &amp; acceptable use</a></p>
+        <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy" onClick={(event) => { event.preventDefault(); openScreen('privacy') }}>Privacy</a><a className="underline" href="/terms" onClick={(event) => { event.preventDefault(); openScreen('terms') }}>Terms &amp; acceptable use</a></p>
         <p className="mx-auto mt-3 max-w-2xl px-4">Grocery Radar is an independent price-information service and is not affiliated with or endorsed by listed retailers unless explicitly stated.</p>
       </footer>
       <BottomNav active={activeNav} openScreen={openScreen} unreadNotifications={unreadNotifications} />

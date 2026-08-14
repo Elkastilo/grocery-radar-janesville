@@ -7418,7 +7418,7 @@ app.get("/", (request, response) => {
   sendPublicApp(response);
 });
 
-app.get("/admin.html", asyncRoute(async (request, response) => {
+async function sendAdminApp(request, response) {
   const access = await getAdminAccess(request);
 
   if (!access.allowed) {
@@ -7430,7 +7430,10 @@ app.get("/admin.html", asyncRoute(async (request, response) => {
   }
 
   response.sendFile(path.join(PUBLIC_DIR, "admin.html"));
-}));
+}
+
+app.get("/admin.html", asyncRoute(sendAdminApp));
+app.get(/^\/admin(?:\/.*)?$/, asyncRoute(sendAdminApp));
 
 app.get("/uploads/:filename", asyncRoute(sendPublicUploadFile));
 app.get("/api/admin/uploads/:filename", requireAdminAccess, asyncRoute(sendAdminUploadFile));
@@ -18303,6 +18306,7 @@ function diskHealth() {
 
 function attentionEntry(key, label, count, level, tab, filter, description = "") {
   const hasRecordQueue = !["disk_warning", "backup_warning"].includes(key);
+  const targetPath = { inboxTab: "/admin/inbox", productToolsTab: "/admin/products", priceImporterTab: "/admin/imports", operationsTab: "/admin/operations", pricesTab: "/admin/prices" }[tab] || "/admin/attention";
   return {
     key,
     label,
@@ -18311,9 +18315,9 @@ function attentionEntry(key, label, count, level, tab, filter, description = "")
     description,
     target: { tab, filter },
     href: hasRecordQueue
-      ? `/admin.html?tab=attentionCenterTab&filter=${encodeURIComponent(key)}`
-      : `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}`,
-    workspace_href: `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}`
+      ? `/admin/attention/${encodeURIComponent(key.replaceAll("_", "-"))}`
+      : `${targetPath}?filter=${encodeURIComponent(filter || key)}`,
+    workspace_href: `${targetPath}?filter=${encodeURIComponent(filter || key)}`
   };
 }
 
@@ -18796,10 +18800,17 @@ app.post("/api/admin/substitutions/:sourceId/:targetId/decision", requireAdminAc
   response.json({ message: status === "rejected" ? "Products marked not related." : "Substitute relationship saved for public use.", status, confidence, safety_warnings: conflicts, size_comparable: compatible });
 }));
 
+app.use("/api", (request, response) => {
+  response.status(404).json({ error: "API endpoint was not found." });
+});
+
+app.get("/privacy.html", (request, response) => response.redirect(308, "/privacy"));
+app.get("/terms.html", (request, response) => response.redirect(308, "/terms"));
+
 app.use(express.static(CLIENT_DIST_DIR, { index: false }));
 app.use(express.static(PUBLIC_DIR));
 
-app.get(/^\/(?!api\/|admin\.html$|uploads\/|health$).*/, (request, response, next) => {
+app.get(/^\/(?!api\/|admin(?:\.html|\/|$)|uploads\/|health$).*/, (request, response, next) => {
   if (!hasTailwindBuild()) {
     next();
     return;
