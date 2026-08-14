@@ -126,6 +126,10 @@
 .review-action-status:focus { outline: 3px solid #1d6f42; outline-offset: 2px; }
 .review-completion-state { display: grid; gap: 0.5rem; margin-top: 0.85rem; padding: 1rem; border: 2px solid #4b9b6a; border-radius: 0.85rem; background: #edf9f1; }
 .review-completion-state strong { font-size: 1.15rem; text-transform: uppercase; }
+.manager-decision-panel { display: grid; gap: 0.75rem; margin-top: 0.85rem; padding: 1rem; border: 2px solid #b7791f; border-radius: 0.85rem; background: #fff9e8; }
+.manager-decision-panel strong { font-size: 1.15rem; }
+.manager-decision-panel[hidden] { display: none; }
+.review-completion-state:not([hidden]) { position: sticky; bottom: 0.75rem; z-index: 5; box-shadow: 0 0.75rem 2rem rgba(20, 83, 45, 0.18); }
 .product-photo-dialog { width: min(34rem, calc(100vw - 2rem)); border: 0; border-radius: 1rem; padding: 1.25rem; box-shadow: 0 1rem 3rem rgba(15, 23, 42, 0.3); }
 .product-photo-dialog::backdrop { background: rgba(15, 23, 42, 0.55); }
 .product-image-manager { grid-column: 1 / -1; }

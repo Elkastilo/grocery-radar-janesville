@@ -43,14 +43,21 @@ assert.match(source, /event\.preventDefault\(\)/);
 assert.match(source, /type="button" data-approve-row=/);
 assert.match(source, /type="button" data-open-reject=/);
 assert.match(source, /type="button" data-approve-ready/);
-for (const attribute of ["data-approve-row", "data-confirm-reject", "data-approve-ready", "data-store-resolution", "data-review-later", "data-finish-review", "data-finish-review-next", "data-reject-receipt"]) {
+for (const attribute of ["data-approve-row", "data-confirm-reject", "data-approve-ready", "data-store-resolution", "data-review-later", "data-done-reviewing", "data-done-review-next", "data-reject-receipt", "data-apply-manager-decision", "data-return-to-review"]) {
   assert.match(source, new RegExp(`type="button"[^>]*${attribute}|${attribute}[^>]*type="button"`), `${attribute} must never submit a surrounding form.`);
 }
 assert.match(source, /completed_rows/);
 assert.match(source, /data-proof-reject-form/);
 assert.match(source, /data-add-review-photo/);
 assert.match(source, /data-review-completion/);
-assert.match(source, /Finish &amp; Review Next/);
+assert.match(source, /REVIEW COMPLETE ✓/);
+assert.match(source, /Done &amp; Review Next/);
+assert.match(source, /data-review-approved/);
+assert.match(source, /data-review-not-approved/);
+assert.match(source, /MANAGER DECISION/);
+assert.match(source, /data-manager-decision-select/);
+assert.match(source, /data-return-to-review/);
+assert.match(source, /managerDecisionState \? "" : `[^`]*Needs Manager Help/, "Needs Manager Help must disappear once the proof is already in a manager-decision state.");
 assert.match(source, /data-open-proof-review/, "Legacy importer proofs must route terminal work through the canonical Review Workspace.");
 assert.doesNotMatch(source, /data-proof-action="(?:reviewed_no_prices|duplicate|reject)"/, "Legacy proof cards must not expose competing terminal transitions.");
 
@@ -59,25 +66,33 @@ assert.match(nextBody, /\/api\/admin\/v2\/reviews\/next/, "Review Next must use 
 assert.match(nextBody, /exclude_proof_id/, "Review Next must send the excluded proof ID to the server.");
 assert.doesNotMatch(nextBody, /adminV2InboxData\.items/, "Review Next must not scan stale client Inbox state.");
 
-const reviewLaterBody = functionBody("reviewLater", "finishAndReviewNext");
+const reviewLaterBody = functionBody("reviewLater", "doneAndReviewNext");
 assert.match(reviewLaterBody, /\/review-later/);
 assert.match(reviewLaterBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
 assert.doesNotMatch(source, /Save &(?:amp;)? Review Next/, "The ambiguous generic action must be removed.");
 
-const finishNextBody = functionBody("finishAndReviewNext", "finishReview");
+const finishNextBody = functionBody("doneAndReviewNext", "doneReviewing");
 assert.match(finishNextBody, /\/complete/);
 assert.match(finishNextBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
 
-const finishStopBody = functionBody("finishReview", "renderWorkers");
+const finishStopBody = functionBody("doneReviewing", "renderWorkers");
 assert.match(finishStopBody, /\/complete/);
 assert.match(finishStopBody, /openAdminTab\("inboxTab"\)/);
 assert.match(finishStopBody, /loadAdminData\(\)/);
-assert.doesNotMatch(finishStopBody, /startReviewNext/, "Finish Review must stop at the Inbox instead of opening another proof.");
+assert.doesNotMatch(finishStopBody, /startReviewNext/, "Done Reviewing must stop at the Inbox instead of opening another proof.");
 
 const rejectBody = functionBody("rejectReceipt", "approveReviewRows");
 assert.match(rejectBody, /\/reject/);
-assert.match(rejectBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
-assert.doesNotMatch(rejectBody, /loadAdminData\s*\(/, "Proof rejection must not refresh stale global state before choosing the next proof.");
+assert.match(rejectBody, /refreshReviewInbox\(\)/);
+assert.match(rejectBody, /openAdminTab\("inboxTab"\)/, "Terminal proof rejection must return to Inbox.");
+assert.doesNotMatch(rejectBody, /startReviewNext/, "Reject Proof must not trap the reviewer in another proof.");
+
+const managerBody = functionBody("managerDecision", "rejectReceipt");
+assert.match(managerBody, /\/manager-decision/);
+assert.match(managerBody, /Mark this proof as a duplicate\?/);
+assert.match(managerBody, /refreshReviewInbox\(\)/);
+assert.match(managerBody, /openAdminTab\("inboxTab"\)/);
+assert.match(managerBody, /renderReceiptReview\(review\)/, "Return to Review must immediately restore the canonical workspace.");
 
 const storeResolutionBody = functionBody("resolveReviewStore", "refreshResolvedReviewRows");
 assert.match(storeResolutionBody, /storeSelect\?\.value/);

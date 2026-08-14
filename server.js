@@ -1600,11 +1600,15 @@ async function ensureSubmissionOutcome(batchId, reviewerId, options = {}) {
     explanation: row.public_reviewer_explanation || ""
   }));
   const proofRejected = options.outcomeType === "proof_rejected" || TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || batch.review_status === "rejected";
+  const reviewedNoPrices = options.outcomeType === "reviewed_no_prices" || batch.status === "reviewed_no_prices";
   const summary = proofRejected && !approved.length
     ? { status: "reviewed", outcome: "not_approved", title: "Your submission could not be approved.", public_reason: options.publicReason || rejected[0]?.reason || "other", public_explanation: options.publicExplanation || "You can submit clearer evidence if available.", approved: [], not_approved: [] }
+    : reviewedNoPrices && !approved.length
+      ? { status: "reviewed", outcome: "not_approved", title: "Your submission was reviewed.", public_reason: options.publicReason || "No usable prices were found.", public_explanation: options.publicExplanation || "No prices could be verified from this proof.", approved: [], not_approved: rejected, reviewed_by: "Grocery Radar" }
     : { status: "reviewed", outcome: "reviewed", title: "Your submission was reviewed", approved, not_approved: rejected, reviewed_by: "Grocery Radar" };
   const now = options.finalizedAt || new Date().toISOString();
-  await run(`INSERT OR IGNORE INTO submission_outcomes (proof_id, outcome_type, approved_count, rejected_count, public_summary_json, finalized_by, finalized_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [batchId, proofRejected ? "proof_rejected" : "reviewed", approved.length, rejected.length, JSON.stringify(summary), reviewerId || null, now, now, now]);
+  const outcomeType = proofRejected ? (batch.status === "duplicate" ? "duplicate" : "proof_rejected") : reviewedNoPrices ? "reviewed_no_prices" : "reviewed";
+  await run(`INSERT OR IGNORE INTO submission_outcomes (proof_id, outcome_type, approved_count, rejected_count, public_summary_json, finalized_by, finalized_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [batchId, outcomeType, approved.length, rejected.length, JSON.stringify(summary), reviewerId || null, now, now, now]);
   if (batch.created_by) {
     await createUniqueUserNotification(batch.created_by, "proof_final_outcome", "proof_submission", batchId, "Your submission was reviewed", approved.length ? `${approved.length} price${approved.length === 1 ? "" : "s"} approved; ${rejected.length} not approved.` : "Your proof review is complete.", { related_import_batch_id: batchId, target_tab: "profile", target_url: `/?tab=accountView&section=proof&proof=${batchId}` });
   }
@@ -14246,6 +14250,7 @@ function deriveProofReviewState({ batch = {}, job = null, analysis = null, rows 
   }
 
   const terminal = state === "COMPLETED" || state === "REJECTED";
+  const notApprovedRows = Math.max(0, totalRows - approvedRows);
   return {
     state,
     label,
@@ -14255,6 +14260,7 @@ function deriveProofReviewState({ batch = {}, job = null, analysis = null, rows 
     resolved_rows: Math.max(0, totalRows - unresolvedRows),
     approved_rows: approvedRows,
     rejected_rows: rejectedRows,
+    not_approved_rows: notApprovedRows,
     ai_job_status: jobStatus || "not_started",
     ai_started: Boolean(job || analysis),
     ai_finished: analysisCompleted || Boolean(job?.completed_at),
@@ -14266,6 +14272,7 @@ function deriveProofReviewState({ batch = {}, job = null, analysis = null, rows 
     claimed_by_username: activeClaim ? batch.review_claimed_by_username || "" : "",
     claim_expires_at: activeClaim ? batch.review_claim_expires_at : "",
     can_finish: state === "READY_TO_FINISH",
+    can_manager_resolve: state === "MANAGER_HELP" || state === "AI_ZERO_RESULTS",
     can_review_later: !terminal,
     can_reject: !terminal,
     can_run_ai: ["AI_NOT_STARTED", "AI_FAILED", "AI_ZERO_RESULTS"].includes(state),
@@ -14615,6 +14622,7 @@ async function reviewSnapshotForBatchId(batchId, user = null) {
     proof_url: batch.photo_path ? `/api/admin/uploads/${encodeURIComponent(path.basename(batch.photo_path))}` : "",
     can_review: user ? staffCan(user, "review") : false,
     can_approve: user ? staffCan(user, "approve") : false,
+    can_manage: user ? staffCan(user, "manage") : false,
     can_manage_images: user ? staffCan(user, "manage") : false,
     focus_mode_available: true
   };
@@ -14716,6 +14724,40 @@ app.post("/api/admin/v2/reviews/:batchId/approve-ready", requireAdminAccess, req
   response.json({ message: `${results.length} ready item${results.length === 1 ? "" : "s"} approved. Flagged items were left unresolved.`, proof_id: batchId, approved_count: results.length, approved_row_ids: results.map((result) => result.row.id), results, review_state: review?.review_state || null, approval_summary: review?.approval_summary || null, completed_rows: review?.completed_rows || [] });
 }));
 
+async function finalizeRejectedProofDisposition({ batch, reviewer, status = "proof_rejected", decision = "rejected", reason, publicExplanation = "", note = "" }) {
+  const batchId = batch.id;
+  const now = new Date().toISOString();
+  const unresolved = await all("SELECT id FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [batchId]);
+  await run("UPDATE price_import_rows SET status = 'rejected', rejection_reason = ?, public_rejection_reason = ?, public_reviewer_explanation = ?, admin_rejection_note = ?, rejected_by = ?, rejected_at = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [reason, reason, publicExplanation, note, reviewer.id, now, reviewer.id, now, batchId]);
+  await run("UPDATE price_import_batches SET status = ?, review_status = ?, review_decision = ?, review_completed_at = ?, rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, notes = COALESCE(notes, '') || ?, updated_at = ? WHERE id = ?", [status, status === "duplicate" ? "completed" : "rejected", decision, now, batchId, `\nProof ${decision}: ${reason}${note ? ` — ${note}` : ""}`, now, batchId]);
+  for (const row of unresolved) await recordPriceEvent({ batchId, rowId: row.id, eventType: decision === "duplicate" ? "DUPLICATE" : "REJECTED", actorUserId: reviewer.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true } });
+  await recordPriceEvent({ batchId, eventType: decision === "duplicate" ? "DUPLICATE" : "REJECTED", actorUserId: reviewer.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true, rejected_draft_count: unresolved.length, duplicate_of_batch_id: batch.duplicate_of_batch_id || null, proof_file_hash_retained: Boolean(batch.proof_file_hash) } });
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, ?, ?, ?)", [batchId, reviewer.id, decision === "duplicate" ? "duplicate" : "rejected", reason, now]);
+  await run("UPDATE ai_proof_jobs SET status = 'human_complete', updated_at = ? WHERE proof_id = ?", [now, batchId]);
+  const outcome = await ensureSubmissionOutcome(batchId, reviewer.id, { outcomeType: "proof_rejected", publicReason: reason, publicExplanation, finalizedAt: now });
+  return { now, unresolved, outcome, review: await reviewSnapshotForBatchId(batchId, reviewer) };
+}
+
+async function finalizeNoUsablePrices({ batch, reviewer, publicExplanation = "" }) {
+  const batchId = batch.id;
+  const approved = await get("SELECT COUNT(*) AS count FROM price_import_rows WHERE batch_id = ? AND status = 'approved'", [batchId]);
+  if (Number(approved?.count || 0)) {
+    const error = new Error("This proof already has approved prices. Resolve remaining rows and use Done Reviewing instead.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  const unresolved = await all("SELECT id FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [batchId]);
+  await run("UPDATE price_import_rows SET status = 'removed', updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [reviewer.id, now, batchId]);
+  await run("UPDATE price_import_batches SET status = 'reviewed_no_prices', review_status = 'completed', review_decision = 'completed_no_usable_prices', review_completed_at = ?, review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, updated_at = ? WHERE id = ?", [now, now, batchId]);
+  for (const row of unresolved) await recordPriceEvent({ batchId, rowId: row.id, eventType: "REMOVED", actorUserId: reviewer.id, submitterUserId: batch.created_by, reason: "Manager confirmed no usable prices in the proof.", metadata: { proof_level_decision: true } });
+  await recordPriceEvent({ batchId, eventType: "REVIEW_COMPLETED", actorUserId: reviewer.id, submitterUserId: batch.created_by, reason: "Manager confirmed no usable prices.", metadata: { total_rows: unresolved.length, approved_rows: 0, disposition: "no_usable_prices" } });
+  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'completed', 'No usable prices confirmed', ?)", [batchId, reviewer.id, now]);
+  await run("UPDATE ai_proof_jobs SET status = 'human_complete', completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE proof_id = ?", [now, now, batchId]);
+  const outcome = await ensureSubmissionOutcome(batchId, reviewer.id, { outcomeType: "reviewed_no_prices", publicReason: "No usable prices were found.", publicExplanation, finalizedAt: now });
+  return { now, unresolved, outcome, review: await reviewSnapshotForBatchId(batchId, reviewer) };
+}
+
 app.post("/api/admin/v2/reviews/:batchId/complete", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
   const batchId = Number.parseInt(request.params.batchId, 10);
   const batch = await priceImportBatchById(batchId);
@@ -14754,18 +14796,54 @@ app.post("/api/admin/v2/reviews/:batchId/reject", requireAdminAccess, requireLog
   const reason = normalizeReviewRejectionReason(request.body.reason);
   if (!REVIEW_PROOF_REJECTION_REASONS.includes(reason)) { response.status(400).json({ error: "Choose a valid proof rejection reason." }); return; }
   const note = cleanText(request.body.note || "", 500);
-  const now = new Date().toISOString();
-  const unresolved = await all("SELECT id FROM price_import_rows WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [batchId]);
   const publicExplanation = cleanText(request.body.public_explanation || "", 300);
-  await run("UPDATE price_import_rows SET status = 'rejected', rejection_reason = ?, public_rejection_reason = ?, public_reviewer_explanation = ?, admin_rejection_note = ?, rejected_by = ?, rejected_at = ?, updated_by = ?, updated_at = ? WHERE batch_id = ? AND status NOT IN ('approved','rejected','removed')", [reason, reason, publicExplanation, note, request.adminUser.id, now, request.adminUser.id, now, batchId]);
-  await run("UPDATE price_import_batches SET status = 'proof_rejected', review_status = 'rejected', review_decision = 'rejected', review_completed_at = ?, rejected_item_count = (SELECT COUNT(*) FROM price_import_rows WHERE batch_id = ? AND status = 'rejected'), review_claimed_by = NULL, review_claimed_at = NULL, review_claim_expires_at = NULL, notes = COALESCE(notes, '') || ?, updated_at = ? WHERE id = ?", [now, batchId, `\nProof rejected: ${reason}${note ? ` — ${note}` : ""}`, now, batchId]);
-  for (const row of unresolved) await recordPriceEvent({ batchId, rowId: row.id, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true } });
-  await recordPriceEvent({ batchId, eventType: "REJECTED", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason, metadata: { reviewer_note: note, proof_level_decision: true, rejected_draft_count: unresolved.length } });
-  await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'rejected', ?, ?)", [batchId, request.adminUser.id, reason, now]);
-  await run("UPDATE ai_proof_jobs SET status = 'human_complete', updated_at = ? WHERE proof_id = ?", [now, batchId]);
-  const outcome = await ensureSubmissionOutcome(batchId, request.adminUser.id, { outcomeType: "proof_rejected", publicReason: reason, publicExplanation, finalizedAt: now });
-  const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
-  response.json({ message: "Proof rejected and removed from the review queue.", proof_id: batchId, rejected_row_count: unresolved.length, outcome_created: Boolean(outcome), review_state: review?.review_state || null });
+  const finalized = await finalizeRejectedProofDisposition({ batch, reviewer: request.adminUser, reason, publicExplanation, note });
+  response.json({ message: "Proof rejected and removed from the review queue.", proof_id: batchId, rejected_row_count: finalized.unresolved.length, outcome_created: Boolean(finalized.outcome), review_state: finalized.review?.review_state || null });
+}));
+
+app.post("/api/admin/v2/reviews/:batchId/manager-decision", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const batchId = Number.parseInt(request.params.batchId, 10);
+  const batch = await priceImportBatchById(batchId);
+  if (!batch || !isProofSubmissionBatch(batch)) { response.status(404).json({ error: "Receipt review was not found." }); return; }
+  const decision = cleanText(request.body.decision, 50).toLowerCase();
+  if (batch.status === "duplicate" && decision === "duplicate") {
+    const outcome = await ensureSubmissionOutcome(batchId, request.adminUser.id, { outcomeType: "proof_rejected", publicReason: "duplicate submission", publicExplanation: "This proof was already submitted." });
+    response.json({ message: "Proof was already marked duplicate.", proof_id: batchId, terminal: true, outcome_created: Boolean(outcome) });
+    return;
+  }
+  if (TERMINAL_REJECTED_PROOF_STATUSES.has(batch.status) || TERMINAL_COMPLETED_PROOF_STATUSES.has(batch.status) || ["completed", "rejected"].includes(batch.review_status)) {
+    response.status(409).json({ error: "This proof is already closed." });
+    return;
+  }
+  if (decision === "return_to_review") {
+    const now = new Date().toISOString();
+    await run("UPDATE price_import_batches SET review_status = CASE WHEN review_decision = 'ready_to_finish' THEN 'ready_to_finish' ELSE 'in_review' END, review_decision = CASE WHEN review_decision = 'ready_to_finish' THEN review_decision ELSE '' END, review_escalated_at = NULL, review_escalation_reason = '', updated_at = ? WHERE id = ?", [now, batchId]);
+    await run("INSERT INTO review_task_events (batch_id, worker_user_id, event_type, reason, created_at) VALUES (?, ?, 'manager_returned', 'Manager returned proof to normal review', ?)", [batchId, request.adminUser.id, now]);
+    await recordPriceEvent({ batchId, eventType: "MANAGER_RETURNED_TO_REVIEW", actorUserId: request.adminUser.id, submitterUserId: batch.created_by, reason: "Manager cleared the escalation and returned the proof to normal review." });
+    const review = await reviewSnapshotForBatchId(batchId, request.adminUser);
+    response.json({ message: "Manager help cleared. Continue normal review.", proof_id: batchId, terminal: false, review_state: review?.review_state || null, approval_summary: review?.approval_summary || null, completed_rows: review?.completed_rows || [] });
+    return;
+  }
+  if (decision === "no_usable_prices") {
+    const finalized = await finalizeNoUsablePrices({ batch, reviewer: request.adminUser, publicExplanation: cleanText(request.body.public_explanation, 300) });
+    response.json({ message: "Review closed with no usable prices.", proof_id: batchId, terminal: true, removed_row_count: finalized.unresolved.length, outcome_created: Boolean(finalized.outcome), review_state: finalized.review?.review_state || null });
+    return;
+  }
+  const dispositions = {
+    duplicate: { status: "duplicate", reviewDecision: "duplicate", reason: "duplicate submission", explanation: "This proof was already submitted." },
+    cant_verify: { reason: "price not actually shown", explanation: "The proof did not provide enough verifiable price evidence." },
+    cant_read: { reason: "proof too blurry", explanation: "The proof could not be read clearly enough to verify prices." },
+    wrong_store_unusable: { reason: "store could not be verified", explanation: "The store shown in the proof could not be verified." },
+    reject: { reason: "other", explanation: "The proof could not be approved." },
+    other: { reason: normalizeReviewRejectionReason(request.body.reason || "other"), explanation: cleanText(request.body.public_explanation, 300) || "The proof could not be approved." }
+  };
+  const disposition = dispositions[decision];
+  if (!disposition || !REVIEW_PROOF_REJECTION_REASONS.includes(disposition.reason)) {
+    response.status(400).json({ error: "Choose a valid final manager disposition." });
+    return;
+  }
+  const finalized = await finalizeRejectedProofDisposition({ batch, reviewer: request.adminUser, status: disposition.status || "proof_rejected", decision: disposition.reviewDecision || "rejected", reason: disposition.reason, publicExplanation: disposition.explanation, note: cleanText(request.body.note, 500) });
+  response.json({ message: decision === "duplicate" ? "Marked duplicate ✓" : "Manager decision saved and proof closed.", proof_id: batchId, terminal: true, rejected_row_count: finalized.unresolved.length, outcome_created: Boolean(finalized.outcome), review_state: finalized.review?.review_state || null });
 }));
 
 app.get("/api/admin/operations/ai-settings", requireSuperAdminAccess, asyncRoute(async (request, response) => {
