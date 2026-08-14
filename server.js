@@ -186,6 +186,7 @@ const REVIEW_CLAIM_MINUTES = Math.max(10, Number.parseInt(process.env.REVIEW_CLA
 const APP_TIME_ZONE = "America/Chicago";
 const PRICE_FRESHNESS_DAYS = Object.freeze({ receipt_photo: { current: 14, aging: 30 }, shelf_tag_photo: { current: 10, aging: 21 }, weekly_ad: { current: 7, aging: 14 }, no_photo: { current: 7, aging: 14 } });
 const PRICE_REPORT_REASONS = new Set(["price changed", "wrong store", "wrong item", "sale ended", "promotion conditions missing", "other"]);
+const PRICE_ISSUE_DISMISS_REASONS = new Set(["price still correct", "duplicate report", "insufficient evidence", "spam/abuse", "other"]);
 const DEAL_HISTORY_MIN_OBSERVATIONS = 4;
 const DEAL_HISTORY_WINDOW_DAYS = 84;
 const STORAGE_CONDITIONS = ["shelf stable", "refrigerated", "frozen", "fresh produce", "hot prepared food", "cold prepared food", "not applicable", "unknown"];
@@ -18437,7 +18438,15 @@ function attentionQueueSql(key) {
     missing_upc: `${productBase} AND NULLIF(upc,'') IS NULL AND NOT EXISTS (SELECT 1 FROM product_barcodes WHERE product_barcodes.product_id = products.id AND product_barcodes.status = 'verified') ORDER BY display_name`,
     missing_size: `${productBase} AND NULLIF(default_size_text,'') IS NULL ORDER BY display_name`,
     missing_category: `${productBase} AND (NULLIF(category,'') IS NULL OR category = 'other') ORDER BY display_name`,
-    reported_price: "SELECT issues.id, issues.price_report_id, products.display_name AS title, issues.reason AS detail, issues.duplicate_count AS count, issues.updated_at FROM price_issue_reports issues LEFT JOIN products ON products.id = issues.product_id WHERE issues.status IN ('open','in_review') ORDER BY issues.duplicate_count DESC, issues.updated_at DESC",
+    reported_price: `SELECT issues.id, issues.price_report_id, products.display_name AS title,
+      stores.name || ' · ' || printf('$%.2f', reports.price) || ' · ' || upper(issues.reason) AS detail,
+      issues.duplicate_count AS count, issues.status, issues.public_note, issues.created_at, issues.updated_at
+      FROM price_issue_reports issues
+      JOIN price_reports reports ON reports.id = issues.price_report_id
+      LEFT JOIN products ON products.id = COALESCE(issues.product_id, reports.product_id)
+      LEFT JOIN stores ON stores.id = reports.store_id
+      WHERE issues.status IN ('open','in_review')
+      ORDER BY issues.duplicate_count DESC, issues.updated_at DESC`,
     ai_failed: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.last_error AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status = 'ai_failed' ORDER BY jobs.updated_at DESC",
     failed_image: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC",
     unmatched_image: "SELECT items.id, items.original_name AS title, items.match_confidence AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'needs_review' AND items.suggested_product_id IS NULL ORDER BY items.updated_at DESC",
@@ -18567,30 +18576,97 @@ app.post("/api/price-reports/:id/issues", asyncRoute(async (request, response) =
   const reportId = Number.parseInt(request.params.id, 10);
   const reason = cleanText(request.body.reason, 80).toLowerCase();
   if (!PRICE_REPORT_REASONS.has(reason)) { response.status(400).json({ error: "Choose a valid price report reason." }); return; }
-  const report = await get("SELECT id, product_id, status FROM price_reports WHERE id = ?", [reportId]);
+  const report = await get(`SELECT reports.id, reports.product_id, reports.store_id, reports.status, reports.price,
+    products.display_name AS product_name, stores.name AS store_name
+    FROM price_reports reports
+    LEFT JOIN products ON products.id = reports.product_id
+    LEFT JOIN stores ON stores.id = reports.store_id
+    WHERE reports.id = ?`, [reportId]);
   if (!report || report.status !== "approved") { response.status(404).json({ error: "The approved price was not found." }); return; }
   const note = cleanText(request.body.note, 300);
   const day = localDateFor();
   const rateHash = crypto.createHmac("sha256", SESSION_SECRET).update(`${day}:${request.ip || "unknown"}`).digest("hex");
   const recent = await get("SELECT COUNT(*) AS count FROM price_issue_reports WHERE rate_limit_bucket_hash = ? AND created_at >= ?", [rateHash, `${day}T00:00:00.000Z`]);
   if (Number(recent?.count || 0) >= 10) { response.status(429).json({ error: "Too many reports were submitted from this connection today. Try again later." }); return; }
-  const fingerprint = crypto.createHash("sha256").update(`${reportId}:${reason}:${normalizeProductName(note)}`).digest("hex");
-  const existing = await get("SELECT id FROM price_issue_reports WHERE fingerprint = ? AND status IN ('open','in_review')", [fingerprint]);
+  const fingerprint = crypto.createHash("sha256").update(`${reportId}:${reason}`).digest("hex");
+  const duplicateCutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+  const existing = await get("SELECT id, duplicate_count, rate_limit_bucket_hash FROM price_issue_reports WHERE price_report_id = ? AND reason = ? AND status IN ('open','in_review') AND created_at >= ? ORDER BY created_at DESC LIMIT 1", [reportId, reason, duplicateCutoff]);
   const now = new Date().toISOString();
-  if (existing) await run("UPDATE price_issue_reports SET duplicate_count = duplicate_count + 1, updated_at = ? WHERE id = ?", [now, existing.id]);
-  else await run("INSERT INTO price_issue_reports (price_report_id, product_id, reason, public_note, status, rate_limit_bucket_hash, fingerprint, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)", [reportId, report.product_id || null, reason, note, rateHash, fingerprint, now, now]);
-  response.status(201).json({ message: "Thanks. Grocery Radar staff will review this price report. The public price was not changed automatically." });
+  if (existing && existing.rate_limit_bucket_hash === rateHash && Number(existing.duplicate_count || 0) >= 10) { response.status(429).json({ error: "Too many equivalent reports were submitted from this connection today. Try again later." }); return; }
+  let issueId;
+  let consolidated = false;
+  if (existing) {
+    await run("UPDATE price_issue_reports SET duplicate_count = duplicate_count + 1, public_note = CASE WHEN NULLIF(public_note,'') IS NULL THEN ? ELSE public_note END, updated_at = ? WHERE id = ?", [note, now, existing.id]);
+    issueId = existing.id;
+    consolidated = true;
+  } else {
+    await run("BEGIN IMMEDIATE");
+    try {
+      const result = await run("INSERT INTO price_issue_reports (price_report_id, product_id, reason, public_note, status, rate_limit_bucket_hash, fingerprint, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)", [reportId, report.product_id || null, reason, note, rateHash, fingerprint, now, now]);
+      issueId = result.lastID;
+      await createAdminNotification("price_issue_report", `Price report: ${reason.charAt(0).toUpperCase()}${reason.slice(1)} — ${report.product_name || "Grocery price"}`, `${report.store_name || "Store unresolved"} · $${Number(report.price).toFixed(2)}`, { related_type: "price_issue_report", related_id: issueId, related_report_id: reportId, target_tab: "attentionCenterTab", target_url: `/admin/attention/reported-price/${issueId}` });
+      await run("COMMIT");
+    } catch (error) { await run("ROLLBACK").catch(() => {}); throw error; }
+  }
+  response.status(consolidated ? 200 : 201).json({ issue_id: issueId, consolidated, message: "Thanks. Grocery Radar staff will review this price report. The public price was not changed automatically." });
 }));
 
-app.post("/api/admin/price-issues/:id/resolve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+async function priceIssueDetail(issueId) {
+  const row = await get(`SELECT issues.id, issues.price_report_id, issues.product_id AS reported_product_id, issues.reason, issues.public_note,
+    issues.status, issues.duplicate_count, issues.created_at, issues.updated_at, issues.resolved_at, issues.resolution_note,
+    reports.product_id, reports.store_id, reports.price, reports.unit, reports.size_text, reports.price_type,
+    reports.valid_from_date, reports.valid_through_date, reports.promotion_conditions, reports.promotion_schedule_text,
+    reports.display_offer_text, reports.source_date, reports.submitted_at AS price_submitted_at,
+    reports.source_import_batch_id AS proof_id, reports.source_import_row_id, reports.proof_type, reports.source_url,
+    products.display_name AS product_name, products.preferred_brand AS brand, products.default_size_text,
+    stores.name AS store_name,
+    (SELECT id FROM product_images images WHERE images.product_id = reports.product_id AND images.status = 'approved' ORDER BY images.is_primary DESC, images.id DESC LIMIT 1) AS product_image_id
+    FROM price_issue_reports issues
+    JOIN price_reports reports ON reports.id = issues.price_report_id
+    LEFT JOIN products ON products.id = reports.product_id
+    LEFT JOIN stores ON stores.id = reports.store_id
+    WHERE issues.id = ?`, [issueId]);
+  return row ? { ...row, product_image_url: row.product_image_id ? `/api/product-images/${row.product_image_id}/file` : "" } : null;
+}
+
+app.get("/api/admin/price-issues/:id", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const issueId = Number.parseInt(request.params.id, 10);
+  const issue = await priceIssueDetail(issueId);
+  if (!issue) { response.status(404).json({ error: "Price report task was not found." }); return; }
+  response.json({ issue });
+}));
+
+app.post("/api/admin/price-issues/:id/review", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const issueId = Number.parseInt(request.params.id, 10);
   const issue = await get("SELECT * FROM price_issue_reports WHERE id = ?", [issueId]);
   if (!issue) { response.status(404).json({ error: "Price report task was not found." }); return; }
+  if (["resolved", "dismissed"].includes(issue.status)) { response.status(409).json({ error: "This price report task is already closed." }); return; }
   const now = new Date().toISOString();
-  await run("UPDATE price_issue_reports SET status = 'resolved', resolved_by = ?, resolution_note = ?, resolved_at = ?, updated_at = ? WHERE id = ?", [request.adminUser.id, cleanText(request.body.resolution_note || "Reviewed", 500), now, now, issueId]);
-  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRICE_ISSUE_RESOLVED", affectedType: "price_issue_report", affectedId: issueId, metadata: { price_report_id: issue.price_report_id } });
-  response.json({ message: "Price report task resolved. Audit history was preserved." });
+  await run("UPDATE price_issue_reports SET status = 'in_review', updated_at = ? WHERE id = ? AND status = 'open'", [now, issueId]);
+  response.json({ issue: await priceIssueDetail(issueId) });
 }));
+
+async function closePriceIssue(request, response, forcedStatus = "") {
+  const issueId = Number.parseInt(request.params.id, 10);
+  const issue = await get("SELECT * FROM price_issue_reports WHERE id = ?", [issueId]);
+  if (!issue) { response.status(404).json({ error: "Price report task was not found." }); return; }
+  if (["resolved", "dismissed"].includes(issue.status)) { response.json({ message: "Price report task was already closed.", status: issue.status, idempotent: true }); return; }
+  const status = forcedStatus || cleanText(request.body.status || "resolved", 30).toLowerCase();
+  if (!new Set(["resolved", "dismissed"]).has(status)) { response.status(400).json({ error: "Choose resolved or dismissed." }); return; }
+  const dismissReason = cleanText(request.body.dismiss_reason, 80).toLowerCase();
+  if (status === "dismissed" && !PRICE_ISSUE_DISMISS_REASONS.has(dismissReason)) { response.status(400).json({ error: "Choose a valid dismissal reason." }); return; }
+  const correctionId = Number.parseInt(request.body.correction_id, 10);
+  const correction = Number.isInteger(correctionId) ? await get("SELECT id, price_report_id, action FROM price_corrections WHERE id = ?", [correctionId]) : null;
+  if (Number.isInteger(correctionId) && (!correction || Number(correction.price_report_id) !== Number(issue.price_report_id))) { response.status(400).json({ error: "The correction does not belong to this reported price." }); return; }
+  const now = new Date().toISOString();
+  const note = cleanText(request.body.resolution_note || (status === "dismissed" ? `${dismissReason.charAt(0).toUpperCase()}${dismissReason.slice(1)}` : "Reviewed by staff"), 500);
+  await run("UPDATE price_issue_reports SET status = ?, resolved_by = ?, resolution_note = ?, resolved_at = ?, updated_at = ? WHERE id = ?", [status, request.adminUser.id, note, now, now, issueId]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: status === "dismissed" ? "PRICE_ISSUE_DISMISSED" : "PRICE_ISSUE_RESOLVED", affectedType: "price_issue_report", affectedId: issueId, metadata: { price_report_id: issue.price_report_id, dismiss_reason: dismissReason || null, correction_id: correction?.id || null, correction_action: correction?.action || null } });
+  response.json({ message: status === "dismissed" ? "Price report dismissed. Moderation history was preserved." : "Price report resolved. Audit history was preserved.", status, correction_id: correction?.id || null });
+}
+
+app.post("/api/admin/price-issues/:id/decision", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => closePriceIssue(request, response)));
+app.post("/api/admin/price-issues/:id/resolve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => closePriceIssue(request, response, "resolved")));
 
 app.post("/api/admin/prices/:id/correct", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const reportId = Number.parseInt(request.params.id, 10);
@@ -18610,14 +18686,16 @@ app.post("/api/admin/prices/:id/correct", requireAdminAccess, requireLoggedInAdm
   const before = { price: report.price, product_id: report.product_id, store_id: report.store_id, status: report.status, valid_from_date: report.valid_from_date, valid_through_date: report.valid_through_date, promotion_conditions: report.promotion_conditions };
   const after = { price: nextPrice, product_id: nextProduct.id, store_id: nextStore.id, status: nextStatus, valid_from_date: dateInputValue(request.body.valid_from_date ?? report.valid_from_date), valid_through_date: dateInputValue(request.body.valid_through_date ?? report.valid_through_date), promotion_conditions: cleanText(request.body.promotion_conditions ?? report.promotion_conditions, 500) };
   const now = new Date().toISOString();
+  let correctionId = null;
   await run("BEGIN IMMEDIATE");
   try {
-    await run("INSERT INTO price_corrections (price_report_id, action, before_json, after_json, reason, corrected_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [reportId, action, JSON.stringify(before), JSON.stringify(after), reason, request.adminUser.id, now]);
+    const correction = await run("INSERT INTO price_corrections (price_report_id, action, before_json, after_json, reason, corrected_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [reportId, action, JSON.stringify(before), JSON.stringify(after), reason, request.adminUser.id, now]);
+    correctionId = correction.lastID;
     await run("UPDATE price_reports SET price = ?, product_id = ?, store_id = ?, status = ?, valid_from_date = ?, valid_through_date = ?, promotion_conditions = ?, last_edited_by = ?, last_edited_at = ?, edit_note = ? WHERE id = ?", [after.price, after.product_id, after.store_id, after.status, after.valid_from_date, after.valid_through_date, after.promotion_conditions, request.adminUser.id, now, reason, reportId]);
     await recordPriceEvent({ reportId, eventType: action === "expire" ? "EXPIRED_BY_OWNER" : action === "invalidate" ? "INVALIDATED_BY_OWNER" : "PRICE_CORRECTED", actorUserId: request.adminUser.id, submitterUserId: report.submitted_by_user_id || report.user_id, reason, metadata: { before, after } });
     await run("COMMIT");
   } catch (error) { await run("ROLLBACK").catch(() => {}); throw error; }
-  response.json({ success: true, report_id: reportId, publication_state: after.status, approved_price: after.status === "approved" ? after.price : null, product_id: after.product_id, store_id: after.store_id, validity: { valid_from_date: after.valid_from_date, valid_through_date: after.valid_through_date }, message: action === "correct" ? "Published price corrected. Public queries now use the corrected value." : action === "expire" ? "Price expired and removed from current results." : "Price marked invalid and removed from public results." });
+  response.json({ success: true, correction_id: correctionId, report_id: reportId, publication_state: after.status, approved_price: after.status === "approved" ? after.price : null, product_id: after.product_id, store_id: after.store_id, validity: { valid_from_date: after.valid_from_date, valid_through_date: after.valid_through_date }, message: action === "correct" ? "Published price corrected. Public queries now use the corrected value." : action === "expire" ? "Price expired and removed from current results." : "Price marked invalid and removed from public results." });
 }));
 
 app.get("/api/admin/operations/freshness", requireSuperAdminAccess, asyncRoute(async (request, response) => response.json({ settings: await all("SELECT proof_type, current_days, aging_days, updated_at FROM source_freshness_settings ORDER BY proof_type") })));

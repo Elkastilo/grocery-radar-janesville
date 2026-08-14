@@ -483,20 +483,31 @@ function PriceIssueReporter({ reportId, compact = false }) {
   const [reason, setReason] = useState('price changed')
   const [note, setNote] = useState('')
   const [status, setStatus] = useState('')
+  const [failed, setFailed] = useState(false)
   const [sending, setSending] = useState(false)
+  const triggerRef = useRef(null)
+  const reasonRef = useRef(null)
+  const formId = `price-issue-${reportId}`
+
+  useEffect(() => {
+    if (open) reasonRef.current?.focus()
+  }, [open])
 
   if (!reportId) return null
   const submit = async (event) => {
     event.preventDefault()
     setSending(true)
     setStatus('')
+    setFailed(false)
     try {
       await postJson(`/api/price-reports/${reportId}/issues`, { reason, note })
       setStatus('Thanks. Staff will review this price; it was not changed automatically.')
       setOpen(false)
       setNote('')
-    } catch (error) {
-      setStatus(error.message || 'The report could not be sent. Please try again.')
+      window.requestAnimationFrame(() => triggerRef.current?.focus())
+    } catch {
+      setFailed(true)
+      setStatus("Couldn't send your report. Please try again.")
     } finally {
       setSending(false)
     }
@@ -504,13 +515,13 @@ function PriceIssueReporter({ reportId, compact = false }) {
 
   return (
     <div className={compact ? 'mt-2' : 'mt-3'}>
-      <button type="button" onClick={() => setOpen((value) => !value)} className="min-h-11 rounded-xl bg-amber-50 px-3 font-black text-amber-900 ring-1 ring-amber-200">
+      <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={formId} onClick={() => setOpen((value) => !value)} className="min-h-11 rounded-xl bg-amber-50 px-3 font-black text-amber-900 ring-1 ring-amber-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-amber-300">
         Price wrong? Report price
       </button>
       {open ? (
-        <form onSubmit={submit} className="mt-3 space-y-3 rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
+        <form id={formId} onSubmit={submit} className="mt-3 space-y-3 rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
           <label className="block font-black text-slate-900">What is wrong?
-            <select className="field mt-1" value={reason} onChange={(event) => setReason(event.target.value)}>
+            <select ref={reasonRef} className="field mt-1" value={reason} onChange={(event) => setReason(event.target.value)}>
               <option value="price changed">Price changed</option>
               <option value="wrong store">Wrong store</option>
               <option value="wrong item">Wrong item</option>
@@ -524,11 +535,11 @@ function PriceIssueReporter({ reportId, compact = false }) {
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="submit" disabled={sending} className="min-h-11 rounded-xl bg-slate-900 px-4 font-black text-white disabled:opacity-60">{sending ? 'Sending…' : 'Send report'}</button>
-            <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-xl bg-white px-4 font-black text-slate-700 ring-1 ring-slate-200">Cancel</button>
+            <button type="button" disabled={sending} onClick={() => { setOpen(false); window.requestAnimationFrame(() => triggerRef.current?.focus()) }} className="min-h-11 rounded-xl bg-white px-4 font-black text-slate-700 ring-1 ring-slate-200 disabled:opacity-60">Cancel</button>
           </div>
         </form>
       ) : null}
-      {status ? <p role="status" aria-live="polite" className="mt-2 text-sm font-bold text-slate-700">{status}</p> : null}
+      {status ? <p role={failed ? 'alert' : 'status'} aria-live="polite" className={`mt-2 text-sm font-bold ${failed ? 'text-red-700' : 'text-slate-700'}`}>{status}</p> : null}
     </div>
   )
 }

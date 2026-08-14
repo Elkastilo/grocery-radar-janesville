@@ -489,6 +489,7 @@ function attentionRouteSlug(key = "") { return String(key).replaceAll("_", "-");
 function attentionKeyFromSlug(slug = "") { return String(slug).replaceAll("-", "_"); }
 
 function adminRouteUrl(tabId, options = {}) {
+  if (tabId === "attentionCenterTab" && options.filter && options.attentionRecordId) return `/admin/attention/${encodeURIComponent(attentionRouteSlug(options.filter))}/${encodeURIComponent(options.attentionRecordId)}`;
   if (tabId === "attentionCenterTab" && options.filter) return `/admin/attention/${encodeURIComponent(attentionRouteSlug(options.filter))}`;
   if (tabId === "inboxTab" && options.priceImportBatchId) return `/admin/inbox/${encodeURIComponent(options.priceImportBatchId)}`;
   if (tabId === "productToolsTab" && options.productId) return `/admin/products/${encodeURIComponent(options.productId)}`;
@@ -856,6 +857,7 @@ function renderDashboard(notifications = {}, home = null) {
       await markAdminNotificationRead(button.dataset.adminNotification);
       const relatedType = button.dataset.adminRelatedType;
       const relatedId = button.dataset.adminRelatedId;
+      if (relatedType === "price_issue_report") { openPriceIssueDetail(relatedId); return; }
       openAdminTab(button.dataset.adminTargetTab || "dashboardTab", {
         reportId: relatedType === "report" ? relatedId : "",
         userId: relatedType === "user" ? relatedId : "",
@@ -893,7 +895,8 @@ function renderAttentionCenter() {
   if (!filteredQueue) loadDuplicateProductCandidates();
   if (initialFilter) {
     const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter);
-    if (item) loadAttentionDetails(initialFilter, pendingAdminRoute.attentionLabel || item.label, { focus: pendingAdminRoute.focusQueue !== false });
+    if (item && initialFilter === "reported_price" && pendingAdminRoute.attentionRecordId) openPriceIssueDetail(pendingAdminRoute.attentionRecordId, { updateHistory: false, focus: pendingAdminRoute.focusQueue !== false });
+    else if (item) loadAttentionDetails(initialFilter, pendingAdminRoute.attentionLabel || item.label, { focus: pendingAdminRoute.focusQueue !== false });
     else {
       attentionDetailTitle.textContent = "Attention queue not found";
       attentionQueueStatus.textContent = "This Attention Center route is not registered.";
@@ -931,15 +934,14 @@ async function loadAttentionDetails(key, label = "Attention queue", options = {}
     const shown = offset + items.length;
     attentionQueueStatus.textContent = total ? `Showing ${Math.min(shown, total)} of ${total} item${total === 1 ? "" : "s"} in this queue.` : "No items currently need this review.";
     const itemMarkup = items.map((item) => {
-      const openId = key === "substitute_uncertain" ? item.source_product_id : item.price_report_id || item.id;
+      const openId = key === "substitute_uncertain" ? item.source_product_id : key === "reported_price" ? item.id : item.price_report_id || item.id;
       const showOpen = key !== "upc_conflict";
-      return `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions">${showOpen ? `<button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">Open record</button>` : ""}${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`;
+      return `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${key === "reported_price" && item.public_note ? `<span>Shopper note: ${escapeHtml(item.public_note)}</span>` : ""}${item.count ? `<span>${Number(item.count)} similar report${Number(item.count) === 1 ? "" : "s"}</span>` : ""}${item.created_at ? `<span>Submitted ${escapeHtml(formatDate(item.created_at))}</span>` : item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions">${showOpen ? `<button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">${key === "reported_price" ? "Review" : "Open record"}</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`;
     }).join("");
     if (append) attentionCenterDetails.insertAdjacentHTML("beforeend", itemMarkup);
     else attentionCenterDetails.innerHTML = itemMarkup || '<div class="empty-state">No items currently need this review.</div>';
     if (data.has_more) attentionCenterDetails.insertAdjacentHTML("beforeend", `<div class="card-actions"><button class="secondary-button" type="button" data-attention-load-more="${shown}">Load more</button></div>`);
     for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId)); }
-    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-price-issue]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolvePriceIssue(button.dataset.resolvePriceIssue, key, label)); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label)); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label)); }
     for (const button of attentionCenterDetails.querySelectorAll("[data-substitute-decision]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveSubstitute(button.dataset.sourceProduct, button.dataset.targetProduct, button.dataset.substituteDecision, key, label)); }
@@ -967,18 +969,104 @@ async function retryFailedJob(type, id, key, label) {
   try { const data = await fetchJson(`/api/admin/operations/failed-jobs/${type}/${id}/retry`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
 }
 
-async function resolvePriceIssue(issueId, key, label) {
-  const note = window.prompt("Internal resolution note:", "Reviewed by staff"); if (!note) return;
-  try { const data = await fetchJson(`/api/admin/price-issues/${issueId}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), resolution_note: note }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+function priceIssueDetailMarkup(issue) {
+  const proofLink = issue.proof_id ? `<a class="quiet-button" href="/admin/inbox/${issue.proof_id}">Open source proof</a>` : issue.source_url ? `<a class="quiet-button" href="${escapeHtml(issue.source_url)}" target="_blank" rel="noopener noreferrer">Open source reference</a>` : '<span class="field-help">No staff proof shortcut is available for this legacy price.</span>';
+  const conditions = [issue.promotion_schedule_text, issue.display_offer_text, issue.promotion_conditions].filter(Boolean).join(" · ");
+  const closed = ["resolved", "dismissed"].includes(issue.status);
+  const correctionLabel = { "price changed": "Correct Price & resolve", "wrong store": "Move / Correct Store & resolve", "wrong item": "Move / Correct Product & resolve", "promotion conditions missing": "Edit Conditions & resolve" }[issue.reason] || "Save correction & resolve";
+  return `<article class="admin-card compact-card" aria-labelledby="priceIssueProductTitle">
+    <div class="admin-panel-heading"><div>${issue.product_image_url ? `<img src="${escapeHtml(issue.product_image_url)}" alt="" class="product-admin-thumbnail">` : ""}<span class="badge status-warning">${escapeHtml(titleCase(issue.status))}</span><h3 id="priceIssueProductTitle">${escapeHtml(issue.product_name || "Reported grocery price")}</h3><p>${escapeHtml(issue.store_name || "Store unresolved")}</p></div></div>
+    <div class="simple-status-list">
+      <div class="simple-status-row"><span>Current verified price</span><strong>$${Number(issue.price).toFixed(2)}${issue.unit ? ` / ${escapeHtml(issue.unit)}` : ""}</strong></div>
+      <div class="simple-status-row"><span>Price type</span><strong>${escapeHtml(titleCase(issue.price_type || "regular"))}</strong></div>
+      ${issue.valid_through_date ? `<div class="simple-status-row"><span>Valid through</span><strong>${escapeHtml(issue.valid_through_date)}</strong></div>` : ""}
+      ${conditions ? `<div class="simple-status-row"><span>Conditions / offer</span><strong>${escapeHtml(conditions)}</strong></div>` : ""}
+      <div class="simple-status-row"><span>Shopper report</span><strong>${escapeHtml(titleCase(issue.reason))}</strong></div>
+      <div class="simple-status-row"><span>Shopper note</span><strong>${escapeHtml(issue.public_note || "No note supplied")}</strong></div>
+      <div class="simple-status-row"><span>Similar unresolved reports</span><strong>${Number(issue.duplicate_count || 1)}</strong></div>
+      <div class="simple-status-row"><span>Submitted</span><strong>${escapeHtml(formatDate(issue.created_at))}</strong></div>
+      <div class="simple-status-row"><span>Price freshness</span><strong>${escapeHtml(issue.source_date ? `Verified ${formatDate(issue.source_date)}` : `Published ${formatDate(issue.price_submitted_at)}`)}</strong></div>
+    </div>
+    <div class="card-actions">${proofLink}</div>
+    ${closed ? `<div class="message success" role="status">This report is ${escapeHtml(issue.status)}. ${escapeHtml(issue.resolution_note || "Moderation history was preserved.")}</div>` : `
+      <form data-price-issue-correction class="stack-form">
+        <h4>Correct the published price</h4><p class="field-help">A shopper report never changes public data. These actions use the audited correction workflow.</p>
+        <label><span>Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(issue.price)}" required></label>
+        <label><span>Product</span><select name="product_id" required>${productOptions(issue.product_id)}</select></label>
+        <label><span>Store</span><select name="store_id" required>${storeOptions(issue.store_id)}</select></label>
+        <label><span>Valid from</span><input name="valid_from_date" type="date" value="${escapeHtml(issue.valid_from_date || "")}"></label>
+        <label><span>Valid through</span><input name="valid_through_date" type="date" value="${escapeHtml(issue.valid_through_date || "")}"></label>
+        <label><span>Promotion conditions</span><textarea name="promotion_conditions" rows="3">${escapeHtml(issue.promotion_conditions || "")}</textarea></label>
+        <label><span>Required audit reason</span><textarea name="reason" rows="2" required placeholder="What staff verified and changed"></textarea></label>
+        <div class="card-actions"><button class="primary-button" type="submit" data-price-issue-correction-action="correct">${escapeHtml(correctionLabel)}</button><button class="danger-button" type="button" data-price-issue-correction-action="expire">Expire Promotion &amp; resolve</button><button class="quiet-button" type="button" data-price-issue-correction-action="invalidate">Mark invalid &amp; resolve</button></div>
+      </form>
+      <form data-price-issue-close class="stack-form">
+        <h4>Close without changing the price</h4>
+        <label><span>Internal resolution note</span><textarea name="resolution_note" rows="2" required placeholder="What staff verified"></textarea></label>
+        <button class="secondary-button" type="submit" data-price-issue-decision="resolved">Resolve</button>
+        <label><span>Dismissal reason</span><select name="dismiss_reason"><option value="price still correct">Price still correct</option><option value="duplicate report">Duplicate report</option><option value="insufficient evidence">Insufficient evidence</option><option value="spam/abuse">Spam/abuse</option><option value="other">Other</option></select></label>
+        <button class="quiet-button" type="submit" data-price-issue-decision="dismissed">Dismiss Report</button>
+      </form>`}
+  </article>`;
+}
+
+async function openPriceIssueDetail(issueId, options = {}) {
+  const id = Number(issueId); if (!Number.isInteger(id)) return;
+  pendingAdminRoute = { filter: "reported_price", attentionRecordId: id, attentionLabel: "Reported incorrect price" };
+  if (options.updateHistory !== false) updateAdminRoute("attentionCenterTab", pendingAdminRoute);
+  attentionDetailTitle.textContent = "Reported price review";
+  attentionQueueStatus.textContent = "Loading shopper report and published-price context…";
+  attentionQueueBack.hidden = false; attentionQueueBack.textContent = "Reported price queue";
+  attentionCenterDetails.setAttribute("aria-busy", "true"); attentionCenterDetails.innerHTML = '<div class="empty-state">Loading report details…</div>';
+  if (options.focus !== false) { attentionDetailTitle.focus({ preventScroll: true }); attentionQueueWorkspace?.scrollIntoView({ block: "start" }); }
+  try {
+    let data = await fetchJson(`/api/admin/price-issues/${id}${adminQuery()}`);
+    if (data.issue?.status === "open") data = await fetchJson(`/api/admin/price-issues/${id}/review${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+    const issue = data.issue;
+    attentionQueueStatus.textContent = `${titleCase(issue.reason)} · ${issue.store_name || "Store unresolved"}`;
+    attentionCenterDetails.innerHTML = priceIssueDetailMarkup(issue);
+    const correctionForm = attentionCenterDetails.querySelector("[data-price-issue-correction]");
+    correctionForm?.addEventListener("submit", (event) => { event.preventDefault(); applyPriceIssueCorrection(issue, correctionForm, event.submitter?.dataset.priceIssueCorrectionAction || "correct"); });
+    for (const button of correctionForm?.querySelectorAll("[data-price-issue-correction-action][type='button']") || []) button.addEventListener("click", () => applyPriceIssueCorrection(issue, correctionForm, button.dataset.priceIssueCorrectionAction));
+    const closeForm = attentionCenterDetails.querySelector("[data-price-issue-close]");
+    closeForm?.addEventListener("submit", (event) => { event.preventDefault(); closePriceIssueFromAdmin(issue, closeForm, event.submitter?.dataset.priceIssueDecision || "resolved"); });
+  } catch (error) {
+    attentionQueueStatus.textContent = "Unable to load this reported price.";
+    attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)} <button class="quiet-button" type="button" data-price-issue-retry>Try Again</button></div>`;
+    attentionCenterDetails.querySelector("[data-price-issue-retry]")?.addEventListener("click", () => openPriceIssueDetail(id, { updateHistory: false }));
+  } finally { attentionCenterDetails.setAttribute("aria-busy", "false"); }
+}
+
+async function applyPriceIssueCorrection(issue, form, action) {
+  const body = Object.fromEntries(new FormData(form).entries());
+  if (!String(body.reason || "").trim()) { form.elements.reason.focus(); setMessage(attentionCenterMessage, "Enter the required audit reason.", "warning"); return; }
+  if (action === "expire" && !window.confirm("Expire this promotion or price after staff verification? Historical price data will remain.")) return;
+  try {
+    const correction = await fetchJson(`/api/admin/prices/${issue.price_report_id}/correct${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, action, pin: getPin() }) });
+    const closed = await fetchJson(`/api/admin/price-issues/${issue.id}/decision${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status: "resolved", correction_id: correction.correction_id, resolution_note: `${correction.message} ${body.reason}` }) });
+    setMessage(attentionCenterMessage, `${correction.message} ${closed.message}`, "success");
+    openAttentionQueue("reported_price", "Reported incorrect price", { replaceHistory: true }); await loadAdminData();
+  } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+async function closePriceIssueFromAdmin(issue, form, status) {
+  const fields = Object.fromEntries(new FormData(form).entries());
+  if (!String(fields.resolution_note || "").trim()) { form.elements.resolution_note.focus(); setMessage(attentionCenterMessage, "Enter an internal resolution note.", "warning"); return; }
+  try {
+    const data = await fetchJson(`/api/admin/price-issues/${issue.id}/decision${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), status, dismiss_reason: fields.dismiss_reason, resolution_note: fields.resolution_note }) });
+    setMessage(attentionCenterMessage, data.message, "success");
+    openAttentionQueue("reported_price", "Reported incorrect price", { replaceHistory: true }); await loadAdminData();
+  } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
 }
 
 function openAttentionRecord(key, id) {
   if (key === "location_unresolved") { resolveArenaLocation(id); return; }
+  if (key === "reported_price") { openPriceIssueDetail(id); return; }
   if (["proofs_ready", "manager_help", "possible_duplicate_proof", "ai_zero_results"].includes(key)) {
     openAdminTab("inboxTab", { filter: key, priceImportBatchId: id, updateHistory: true });
     window.setTimeout(() => openReceiptReview(id), 0);
   } else if (["missing_current_price", "missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product", "family_missing", "substitute_uncertain"].includes(key)) openAdminTab("productToolsTab", { productId: id, filter: key, updateHistory: true });
-  else if (["reported_price", "package_mismatch"].includes(key)) openAdminTab("pricesTab", { filter: key === "reported_price" ? "reported" : key, reportId: id, updateHistory: true });
+  else if (key === "package_mismatch") openAdminTab("pricesTab", { filter: key, reportId: id, updateHistory: true });
   else if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) openAdminTab("operationsTab", { filter: key, updateHistory: true });
   else openAdminTab("priceImporterTab", { priceImportRowId: id, filter: key, updateHistory: true });
 }
@@ -1037,7 +1125,10 @@ function renderAdminNotificationPanel(notifications = {}) {
     button.addEventListener("click", async () => {
       await markAdminNotificationRead(button.dataset.panelNotification);
       closeAdminNotifications();
-      if (button.dataset.targetUrl?.startsWith("/admin.html")) window.location.assign(button.dataset.targetUrl);
+      if (button.dataset.targetUrl?.startsWith("/admin/attention/reported-price/")) {
+        const issueId = button.dataset.targetUrl.split("/").filter(Boolean).at(-1);
+        openAdminTab("attentionCenterTab", { filter: "reported_price", attentionRecordId: issueId, updateHistory: true });
+      } else if (button.dataset.targetUrl?.startsWith("/admin")) window.location.assign(button.dataset.targetUrl);
       else openAdminTab(button.dataset.targetTab || "dashboardTab");
     });
   }
@@ -6442,8 +6533,8 @@ function parseAdminRoute() {
     filter: params.get("filter") || "",
     priceImportBatchId: params.get("batch") || ""
   };
-  const attention = path.match(/^\/admin\/attention\/([^/]+)$/);
-  if (attention) return { tabId: "attentionCenterTab", filter: attentionKeyFromSlug(decodeURIComponent(attention[1])) };
+  const attention = path.match(/^\/admin\/attention\/([^/]+)(?:\/(\d+))?$/);
+  if (attention) return { tabId: "attentionCenterTab", filter: attentionKeyFromSlug(decodeURIComponent(attention[1])), attentionRecordId: attention[2] || "" };
   const proof = path.match(/^\/admin\/inbox\/(\d+)$/);
   if (proof) return { tabId: "inboxTab", priceImportBatchId: proof[1] };
   const product = path.match(/^\/admin\/products\/(\d+)$/);
@@ -6501,7 +6592,8 @@ attentionRefreshButton?.addEventListener("click", () => loadAdminData().catch((e
 attentionQueueBack?.addEventListener("click", (event) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
-  showAttentionOverview();
+  if (pendingAdminRoute.attentionRecordId) openAttentionQueue(pendingAdminRoute.filter || "reported_price", pendingAdminRoute.attentionLabel || "Reported incorrect price", { replaceHistory: true });
+  else showAttentionOverview();
 });
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 reviewNextButton?.addEventListener("click", startReviewNext);

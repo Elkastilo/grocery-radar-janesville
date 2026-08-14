@@ -89,7 +89,7 @@ async function main() {
     const owner = new Client(app.baseUrl);
     const login = await owner.post("/api/auth/login", { email: OWNER_EMAIL, password: OWNER_PASSWORD });
     assert.equal(login.response.status, 200, login.body);
-    const adminPaths = ["/admin", "/admin/inbox", "/admin/attention", "/admin/attention/missing-photo", "/admin/attention/missing-current-price", "/admin/attention/missing-upc", "/admin/attention/stale-price", "/admin/attention/location-unresolved", "/admin/attention/family-missing", "/admin/attention/substitute-uncertain", "/admin/products", "/admin/stores", "/admin/workers", "/admin/advanced"];
+    const adminPaths = ["/admin", "/admin/inbox", "/admin/attention", "/admin/attention/missing-photo", "/admin/attention/missing-current-price", "/admin/attention/missing-upc", "/admin/attention/stale-price", "/admin/attention/location-unresolved", "/admin/attention/family-missing", "/admin/attention/substitute-uncertain", "/admin/attention/reported-price/123", "/admin/products", "/admin/stores", "/admin/workers", "/admin/advanced"];
     for (const pathname of adminPaths) {
       const result = await owner.get(pathname);
       assert.equal(result.response.status, 200, pathname);
@@ -106,6 +106,7 @@ async function main() {
     const publicSource = fs.readFileSync(path.join(ROOT, "client/src/routes.js"), "utf8");
     assert.match(adminSource, /window\.addEventListener\("popstate"/);
     assert.match(adminSource, /attentionKeyFromSlug/);
+    assert.match(adminSource, /attentionRecordId: attention\[2\] \|\| ""/);
     assert.match(adminSource, /updateAdminRoute\(route\.tabId, route, "replace"\)/, "Legacy Admin URLs must normalize with replaceState.");
     assert.match(fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8"), /window\.addEventListener\('popstate'/);
     for (const source of [adminSource, publicSource]) assert.doesNotMatch(source, /params\.set\(["'](?:pin|token|submissionToken|auth|session|api_key|AI_API_KEY)["']/i, "Routing must never serialize secrets.");
