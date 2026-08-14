@@ -24,6 +24,13 @@ const productStatuses = [
 const pinForm = document.querySelector("#adminPinForm");
 const pinInput = document.querySelector("#adminPin");
 const adminNotifications = document.querySelector("#adminNotifications");
+const attentionCenterSummary = document.querySelector("#attentionCenterSummary");
+const attentionCenterDetails = document.querySelector("#attentionCenterDetails");
+const attentionCenterMessage = document.querySelector("#attentionCenterMessage");
+const attentionDetailTitle = document.querySelector("#attentionDetailTitle");
+const attentionRefreshButton = document.querySelector("#attentionRefreshButton");
+const searchDemandList = document.querySelector("#searchDemandList");
+const duplicateProductList = document.querySelector("#duplicateProductList");
 const betaReadinessGenerated = document.querySelector("#betaReadinessGenerated");
 const betaReadinessSummary = document.querySelector("#betaReadinessSummary");
 const phoneTestingCard = document.querySelector("#phoneTestingCard");
@@ -139,6 +146,7 @@ let operationsWidgetLayout = { order: [], hidden: [], sizes: {} };
 let operationsRefreshTimer = null;
 let adminSession = { loggedIn: false, is_admin: false };
 let adminV2HomeData = null;
+let operationsCommandData = null;
 let adminV2InboxData = { items: [] };
 let adminV2WorkersData = { workers: [] };
 let adminV2FeedbackData = { feedback: [] };
@@ -430,6 +438,10 @@ function openAdminTab(tabId, options = {}) {
     loadOperationsCenter();
   }
 
+  if (tabId === "attentionCenterTab") {
+    renderAttentionCenter();
+  }
+
   if (tabId === "advancedTab" && (adminSession.staff_role || adminSession.admin_role) === "owner") {
     loadAiSettings();
   }
@@ -573,7 +585,7 @@ async function loadAdminData() {
         cleanup_needed: false,
         recommendation: "Owner / Super Admin access is required to view or change admin roles."
       });
-  const [notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData, v2Home, v2Inbox, v2Workers, v2Feedback, v2Announcements] = await Promise.all([
+  const [notificationData, betaData, analyticsResponse, sponsorResponse, emailData, reportData, userData, adminAccessResponse, usernameData, storeData, suggestionData, productData, priceImportData, v2Home, commandCenter, v2Inbox, v2Workers, v2Feedback, v2Announcements] = await Promise.all([
     fetchJson(`/api/admin/notifications${adminQuery()}`),
     managerAllowed ? fetchJson(`/api/admin/beta-readiness${adminQuery()}`) : Promise.resolve({}),
     managerAllowed ? fetchJson(`/api/admin/analytics${adminQuery()}`) : Promise.resolve({}),
@@ -588,6 +600,7 @@ async function loadAdminData() {
     fetchJson(`/api/admin/product-tools${adminQuery()}`),
     fetchJson(`/api/admin/price-imports${adminQuery()}`),
     safeFetch(`/api/admin/v2/home${adminQuery()}`, null),
+    managerAllowed ? safeFetch(`/api/admin/operations/command-center${adminQuery()}`, null) : Promise.resolve(null),
     safeFetch(`/api/admin/v2/inbox${adminQuery()}`, { items: [] }),
     managerAllowed ? fetchJson(`/api/admin/v2/workers${adminQuery()}`) : Promise.resolve({ workers: [] }),
     managerAllowed ? safeFetch(`/api/admin/v2/feedback${adminQuery()}`, { feedback: [] }) : Promise.resolve({ feedback: [] }),
@@ -607,6 +620,7 @@ async function loadAdminData() {
   sponsorData = sponsorResponse || {};
   priceImporterData = priceImportData || { batches: [] };
   adminV2HomeData = v2Home;
+  operationsCommandData = commandCenter;
   adminV2InboxData = v2Inbox || { items: [] };
   adminV2WorkersData = v2Workers || { workers: [] };
   adminV2FeedbackData = v2Feedback || { feedback: [] };
@@ -615,6 +629,7 @@ async function loadAdminData() {
 
   populatePriceIntakeControls();
   renderDashboard(notificationData.notifications, adminV2HomeData);
+  renderAttentionCenter();
   renderAdminNotificationPanel(notificationData.notifications);
   renderInbox();
   renderWorkers();
@@ -641,13 +656,20 @@ function renderDashboard(notifications = {}, home = null) {
     const today = home.today || {};
     const live = home.live || {};
     const role = home.role || "reviewer";
-    const attentionCount = Number(attention.proofs_waiting || 0) + Number(attention.worker_escalations || 0) + Number(attention.price_disputes || 0) + Number(attention.system_problems || 0);
     const isManager = ["owner", "manager"].includes(role);
+    const command = operationsCommandData || {};
+    const commandAttention = command.attention || {};
+    const attentionCount = isManager ? Number(commandAttention.totals?.needs_action || 0) + Number(commandAttention.totals?.system || 0) : Number(attention.proofs_waiting || 0);
+    const attentionBreakdown = Object.values(commandAttention.groups || {}).flat().filter((item) => item.count > 0 && item.level !== "waiting").sort((a, b) => b.count - a.count).slice(0, 5);
+    const coverage = command.coverage?.catalog || {};
+    const storeGaps = (command.coverage?.stores || []).slice(0, 4);
+    const since = command.since_last_visit || {};
     adminNotifications.innerHTML = `
       <section class="admin-home-section">
         <p class="field-help">Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, ${escapeHtml(home.greeting_name || "")}</p>
         <h2>${isManager ? `${attentionCount} thing${attentionCount === 1 ? "" : "s"} need attention` : `${attention.proofs_waiting || 0} proofs waiting`}</h2>
-        <button class="primary-button large-primary-action" type="button" data-start-review>${isManager ? "Review Next Proof" : "Start Reviewing"}</button>
+        <div class="card-actions"><button class="primary-button large-primary-action" type="button" data-start-review>${isManager ? "Review Next" : "Start Reviewing"}</button>${isManager ? '<button class="secondary-button" type="button" data-jump-tab="attentionCenterTab">View Attention Center</button>' : ""}</div>
+        ${attentionBreakdown.length ? `<div class="simple-status-list operational-breakdown">${attentionBreakdown.map((item) => `<button class="simple-status-row actionable-row" type="button" data-attention-key="${escapeHtml(item.key)}"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></button>`).join("")}</div>` : '<p class="success">No human-action or system warnings right now.</p>'}
         ${home.team?.unfinished_reviews ? '<button class="quiet-button" type="button" data-start-review>Continue unfinished review</button>' : ""}
       </section>
       <section class="admin-home-section"><h3>Today</h3><div class="simple-status-list">
@@ -655,10 +677,14 @@ function renderDashboard(notifications = {}, home = null) {
         <div class="simple-status-row"><span>Prices approved</span><strong>${escapeHtml(today.prices_approved || 0)}</strong></div>
         ${isManager ? `<div class="simple-status-row"><span>People using Grocery Radar</span><strong>${escapeHtml(live.active_now || 0)}</strong></div>` : ""}
       </div></section>
-      ${isManager ? `<section class="admin-home-section"><h3>Manage</h3><div class="manage-grid">${[["Products","productToolsTab"],["Stores","storesTab"],["Users","usersTab"],["Workers","workersTab"],["Advanced","advancedTab"]].map(([label,tab]) => `<button class="attention-card" type="button" data-jump-tab="${tab}"><strong>${label}</strong></button>`).join("")}</div></section>` : `<section class="admin-home-section"><h3>Work</h3><div class="manage-grid"><button class="attention-card" type="button" data-jump-tab="workersTab"><strong>My Hours</strong></button><button class="attention-card" type="button" data-open-home-notifications><strong>Notifications</strong></button></div><div class="card-actions"><button class="quiet-button" type="button" data-shift-home="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift-home="take-break">Take Break</button><button class="quiet-button" type="button" data-shift-home="return">Return</button><button class="quiet-button" type="button" data-shift-home="clock-out">Clock Out</button></div></section>`}
+      ${isManager ? `<section class="admin-home-section"><h3>Since your last visit</h3><div class="simple-status-list">${[["New proofs",since.new_proofs],["Candidate prices prepared",since.candidate_prices],["Prices approved",since.prices_approved],["Proofs needing your decision",since.manager_decisions],["Prices expired",since.prices_expired],["AI jobs failed",since.ai_failed]].map(([label,value]) => `<div class="simple-status-row"><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}</div></section>
+      <section class="admin-home-section"><h3>Catalog coverage</h3><div class="simple-status-list">${[["Products",coverage.products],["Current prices",coverage.current_prices],["Products with no current price",coverage.products_without_current_price],["Missing photos",coverage.products_missing_images],["Missing UPC",coverage.products_missing_upc],["Stale prices",coverage.stale_prices],["Promotions ending today",coverage.promotions_ending_today]].map(([label,value]) => `<div class="simple-status-row"><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}</div></section>
+      <section class="admin-home-section"><h3>Stores needing attention</h3><div class="simple-status-list">${storeGaps.map((store) => `<button class="simple-status-row actionable-row" type="button" data-jump-tab="storesTab"><span>${escapeHtml(store.name)} · ${escapeHtml(store.priority_label)}</span><strong>${store.current_prices} current</strong></button>`).join("") || '<div class="empty-state">No active stores configured.</div>'}</div></section>
+      <section class="admin-home-section"><h3>System</h3><button class="attention-card" type="button" data-jump-tab="operationsTab"><strong>${Number(commandAttention.totals?.system || 0) ? "Needs attention" : "Healthy"}</strong><span>Open system health</span></button></section>` : `<section class="admin-home-section"><h3>Work</h3><div class="manage-grid"><button class="attention-card" type="button" data-jump-tab="workersTab"><strong>My Hours</strong></button><button class="attention-card" type="button" data-open-home-notifications><strong>Notifications</strong></button></div><div class="card-actions"><button class="quiet-button" type="button" data-shift-home="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift-home="take-break">Take Break</button><button class="quiet-button" type="button" data-shift-home="return">Return</button><button class="quiet-button" type="button" data-shift-home="clock-out">Clock Out</button></div></section>`}
     `;
     for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
     for (const button of adminNotifications.querySelectorAll("[data-start-review]")) button.addEventListener("click", startReviewNext);
+    for (const button of adminNotifications.querySelectorAll("[data-attention-key]")) button.addEventListener("click", () => openAdminTab("attentionCenterTab", { filter: button.dataset.attentionKey }));
     for (const button of adminNotifications.querySelectorAll("[data-shift-home]")) button.addEventListener("click", () => updateShift(button.dataset.shiftHome));
     adminNotifications.querySelector("[data-open-home-notifications]")?.addEventListener("click", () => adminNotificationBell?.click());
     const unread = Number(notifications.unread_admin_notifications || notifications.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
@@ -758,6 +784,93 @@ function renderDashboard(notifications = {}, home = null) {
       });
     });
   }
+}
+
+function attentionLevelLabel(level) {
+  return { needs_action: "Needs action", waiting: "Waiting", cleanup: "Cleanup", system: "System" }[level] || titleCase(level);
+}
+
+function renderAttentionCenter() {
+  if (!attentionCenterSummary) return;
+  const groups = operationsCommandData?.attention?.groups || {};
+  const groupLabels = { proofs: "Proofs", prices: "Prices", products: "Products", import_ai: "Import / AI", system: "System" };
+  attentionCenterSummary.innerHTML = Object.entries(groups).map(([group, entries]) => `<section class="admin-card compact-card"><h3>${escapeHtml(groupLabels[group] || titleCase(group))}</h3><div class="attention-command-grid">${entries.map((item) => `<button class="attention-card attention-level-${escapeHtml(item.level)}" type="button" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${item.count}</strong><span>${escapeHtml(item.label)}</span><span class="notification-open-affordance">Open queue →</span></button>`).join("")}</div></section>`).join("") || '<div class="empty-state">Attention data is unavailable.</div>';
+  for (const button of attentionCenterSummary.querySelectorAll("[data-load-attention]")) button.addEventListener("click", () => loadAttentionDetails(button.dataset.loadAttention, button.dataset.attentionLabel));
+  const demand = operationsCommandData?.search_demand?.could_not_find || [];
+  searchDemandList.innerHTML = demand.length ? demand.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.display_query)}</strong><span>${Number(item.total_searches)} searches · ${Number(item.zero_result_searches)} with no results</span><span>Last searched ${escapeHtml(formatDate(item.last_searched_at))}</span></div><div class="card-actions"><button class="secondary-button" type="button" data-demand-add="${escapeHtml(item.display_query)}">Add Product</button><a class="quiet-button" href="/?q=${encodeURIComponent(item.display_query)}" target="_blank" rel="noopener">Search Existing Catalog</a></div></article>`).join("") : '<div class="empty-state">No zero-result search demand recorded yet.</div>';
+  for (const button of searchDemandList.querySelectorAll("[data-demand-add]")) button.addEventListener("click", () => { openAdminTab("productToolsTab"); window.setTimeout(() => { const input = productToolsContent.querySelector('[data-product-create] [data-product-field="display_name"]'); if (input) { input.value = button.dataset.demandAdd; input.focus(); input.scrollIntoView({ behavior: "smooth", block: "center" }); } }, 100); });
+  loadDuplicateProductCandidates();
+  const initialFilter = pendingAdminRoute.filter;
+  if (initialFilter) { const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter); loadAttentionDetails(initialFilter, item?.label || titleCase(initialFilter)); }
+}
+
+async function loadAttentionDetails(key, label = "Attention queue") {
+  if (!attentionCenterDetails) return;
+  if (["disk_warning", "backup_warning"].includes(key)) { openAdminTab("operationsTab", { filter: key }); return; }
+  attentionDetailTitle.textContent = label;
+  attentionCenterDetails.innerHTML = '<div class="empty-state">Loading matching records…</div>';
+  try {
+    const data = await fetchJson(`/api/admin/operations/attention?category=${encodeURIComponent(key)}${adminQuery("&")}`);
+    const items = data.items || [];
+    attentionCenterDetails.innerHTML = items.length ? items.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions"><button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${item.price_report_id || item.id}">Open</button>${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`).join("") : '<div class="empty-state">No matching records remain in this queue.</div>';
+    for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]")) button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId));
+    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-price-issue]")) button.addEventListener("click", () => resolvePriceIssue(button.dataset.resolvePriceIssue, key, label));
+    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]")) button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label));
+    for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]")) button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label));
+  } catch (error) { attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`; }
+}
+
+async function resolveUpcConflict(conflictId, key, label) {
+  const note = window.prompt("Resolution note", "Existing verified barcode assignment retained.");
+  if (note === null) return;
+  try { const data = await fetchJson(`/api/admin/barcode-conflicts/${conflictId}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), resolution_note: note }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+async function retryFailedJob(type, id, key, label) {
+  try { const data = await fetchJson(`/api/admin/operations/failed-jobs/${type}/${id}/retry`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+async function resolvePriceIssue(issueId, key, label) {
+  const note = window.prompt("Internal resolution note:", "Reviewed by staff"); if (!note) return;
+  try { const data = await fetchJson(`/api/admin/price-issues/${issueId}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), resolution_note: note }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadAttentionDetails(key, label); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+function openAttentionRecord(key, id) {
+  if (["missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product"].includes(key)) openAdminTab("productToolsTab", { productId: id, filter: key });
+  else if (key === "reported_price") openAdminTab("pricesTab", { filter: "reported", reportId: id });
+  else if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) openAdminTab("operationsTab", { filter: key });
+  else openAdminTab("priceImporterTab", { priceImportRowId: id, filter: key });
+}
+
+async function loadDuplicateProductCandidates() {
+  if (!duplicateProductList) return;
+  try {
+    const data = await fetchJson(`/api/admin/products/duplicates${adminQuery()}`);
+    const rows = data.candidates || [];
+    duplicateProductList.innerHTML = rows.length ? rows.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.product_a_name)} ↔ ${escapeHtml(item.product_b_name)}</strong><span>${escapeHtml(item.reason)} · ${escapeHtml(titleCase(item.confidence))} confidence</span><span>${escapeHtml([item.product_a_brand, item.product_a_size].filter(Boolean).join(" · ") || "Product A metadata incomplete")}</span><span>${escapeHtml([item.product_b_brand, item.product_b_size].filter(Boolean).join(" · ") || "Product B metadata incomplete")}</span></div><div class="card-actions"><button class="secondary-button" type="button" data-duplicate-compare="${item.product_a_id}" data-target="${item.product_b_id}">Compare</button><button class="danger-button" type="button" data-duplicate-merge="${item.product_b_id}" data-target="${item.product_a_id}">Merge B → A</button><button class="quiet-button" type="button" data-not-duplicate="${item.product_a_id}" data-target="${item.product_b_id}">Not Duplicate</button></div></article>`).join("") : '<div class="empty-state">No high-confidence duplicate product candidates.</div>';
+    for (const button of duplicateProductList.querySelectorAll("[data-duplicate-compare]")) button.addEventListener("click", () => compareDuplicateProducts(button.dataset.duplicateCompare, button.dataset.target));
+    for (const button of duplicateProductList.querySelectorAll("[data-duplicate-merge]")) button.addEventListener("click", () => mergeDuplicateCandidate(button.dataset.duplicateMerge, button.dataset.target));
+    for (const button of duplicateProductList.querySelectorAll("[data-not-duplicate]")) button.addEventListener("click", () => markNotDuplicate(button.dataset.notDuplicate, button.dataset.target));
+  } catch (error) { duplicateProductList.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`; }
+}
+
+async function compareDuplicateProducts(sourceId, targetId) {
+  try { const data = await fetchJson(`/api/admin/products/${sourceId}/merge-preview?target_product_id=${targetId}${adminQuery("&")}`); const line = (product) => `${product.display_name}\nBrand: ${product.brand || "Not set"}\nSize: ${product.size || "Not set"}\nUPC: ${product.upc || "Not set"}\nImages: ${product.image_count}\nPrices/history: ${product.price_count}\nAliases: ${product.aliases.join(", ") || "None"}`; window.alert(`${line(data.source)}\n\n${line(data.target)}${data.blocked ? `\n\nBLOCKED: ${data.block_reason}` : ""}`); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+async function mergeDuplicateCandidate(sourceId, targetId) {
+  try {
+    const preview = await fetchJson(`/api/admin/products/${sourceId}/merge-preview?target_product_id=${targetId}${adminQuery("&")}`);
+    if (preview.blocked) { setMessage(attentionCenterMessage, preview.block_reason, "error"); return; }
+    if (!window.confirm(`Merge ${preview.source.display_name} into ${preview.target.display_name}? History is preserved and the duplicate becomes a redirect.`)) return;
+    const reason = window.prompt("Audit reason for this merge:", "Confirmed duplicate catalog product"); if (!reason) return;
+    const data = await fetchJson(`/api/admin/products/${sourceId}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), target_product_id: targetId, admin_note: reason }) });
+    setMessage(attentionCenterMessage, data.message, "success"); await loadAdminData();
+  } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
+}
+
+async function markNotDuplicate(a, b) {
+  try { const data = await fetchJson(`/api/admin/products/duplicates/not-duplicate${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), product_a_id: a, product_b_id: b, reason: "Human confirmed distinct products" }) }); setMessage(attentionCenterMessage, data.message, "success"); await loadDuplicateProductCandidates(); } catch (error) { setMessage(attentionCenterMessage, error.message, "error"); }
 }
 
 function inboxItems() {
@@ -1516,11 +1629,13 @@ async function loadOperationsCenter() {
   setOperationsMessage("Loading Operations Center...");
 
   try {
-    const [overview, widgets] = await Promise.all([
+    const [overview, widgets, scaleHealth, freshness] = await Promise.all([
       fetchJson(`/api/admin/operations/overview${adminQuery()}`),
-      fetchJson(`/api/admin/operations/widgets${adminQuery()}`)
+      fetchJson(`/api/admin/operations/widgets${adminQuery()}`),
+      fetchJson(`/api/admin/operations/health${adminQuery()}`),
+      fetchJson(`/api/admin/operations/freshness${adminQuery()}`)
     ]);
-    operationsData = overview;
+    operationsData = { ...overview, scale_health: scaleHealth, freshness_settings: freshness.settings || [] };
     operationsWidgetLayout = {
       order: widgets.layout?.order?.length ? widgets.layout.order : widgets.widget_ids || [],
       hidden: widgets.layout?.hidden || [],
@@ -1591,6 +1706,7 @@ function renderOperationWidget(id, title, body) {
 
 function renderSystemHealth(data) {
   const health = data.system_health || {};
+  const scale = data.scale_health || {};
   const rows = [
     ["Website Status", health.website_status],
     ["Database Status", health.database_status],
@@ -1614,9 +1730,16 @@ function renderSystemHealth(data) {
       <div><dt>Current Commit</dt><dd>${escapeHtml(health.current_commit_hash || "Unavailable")}</dd></div>
       <div><dt>Server Uptime</dt><dd>${escapeHtml(health.server_uptime_label || "")}</dd></div>
       <div><dt>Render Environment</dt><dd>${health.render_environment?.is_render ? "Render" : "Local/dev"} ${escapeHtml(health.render_environment?.service_name || "")}</dd></div>
+      <div><dt>Persistent disk</dt><dd>${escapeHtml(titleCase(scale.disk?.status || "unknown"))}${scale.disk?.used_percent == null ? "" : ` · ${scale.disk.used_percent}% used`}</dd></div>
+      <div><dt>AI queue</dt><dd>${Number(scale.ai_queue?.waiting || 0)} waiting · ${Number(scale.ai_queue?.failed || 0)} failed</dd></div>
+      <div><dt>Recent errors</dt><dd>${(scale.recent_errors || []).reduce((sum, item) => sum + Number(item.count || 0), 0)}</dd></div>
+      <div><dt>Last backup</dt><dd>${escapeHtml(scale.backup?.created_at ? formatDate(scale.backup.created_at) : scale.backup?.message || "None recorded")}${scale.backup?.size_bytes ? ` · ${formatBytes(scale.backup.size_bytes)}` : ""}</dd></div>
     </dl>
     <div class="warning">Local backups are a same-disk safety layer, not disaster recovery. Off-site backups should be added later.</div>
-    <div class="card-actions"><button class="primary-button" type="button" data-create-backup>Create Backup</button><button class="quiet-button" type="button" data-list-backups>Backup History</button></div>
+    <h4>Source freshness defaults</h4>
+    <p class="field-help">Hard promotion end dates always override these regular-price defaults.</p>
+    <div class="admin-list">${(data.freshness_settings || []).map((setting) => `<form class="inbox-card" data-freshness-form><input type="hidden" name="proof_type" value="${escapeHtml(setting.proof_type)}"><div class="inbox-card-main"><strong>${escapeHtml(titleCase(setting.proof_type.replaceAll("_", " ")))}</strong><span>Updated ${escapeHtml(formatDate(setting.updated_at))}</span></div><label><span>Current days</span><input name="current_days" type="number" min="1" max="365" value="${Number(setting.current_days)}" required></label><label><span>Stale after days</span><input name="aging_days" type="number" min="1" max="730" value="${Number(setting.aging_days)}" required></label><button class="quiet-button" type="submit">Save policy</button></form>`).join("")}</div>
+    <div class="card-actions"><button class="primary-button" type="button" data-create-backup>Create Backup</button><button class="quiet-button" type="button" data-list-backups>Backup History</button><a class="quiet-button" href="/api/admin/exports/products">Products CSV</a><a class="quiet-button" href="/api/admin/exports/current-prices">Current Prices CSV</a><a class="quiet-button" href="/api/admin/exports/historical-prices">Historical Prices CSV</a><a class="quiet-button" href="/api/admin/exports/stores">Stores CSV</a><a class="quiet-button" href="/api/admin/exports/catalog-json">Catalog JSON</a></div>
     <div id="operationsBackupList" class="admin-list"></div>
   `;
 }
@@ -2051,6 +2174,18 @@ function renderOperationsCenter() {
 function bindOperationsControls() {
   let draggedWidget = "";
 
+  for (const form of operationsCenter.querySelectorAll("[data-freshness-form]")) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(form));
+      try {
+        const data = await fetchJson(`/api/admin/operations/freshness${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...values, pin: getPin() }) });
+        setOperationsMessage(data.message, "success");
+        await loadOperationsCenter();
+      } catch (error) { setOperationsMessage(error.message, "error"); }
+    });
+  }
+
   for (const widget of operationsCenter.querySelectorAll("[data-operation-widget]")) {
     widget.addEventListener("dragstart", (event) => {
       draggedWidget = widget.dataset.operationWidget;
@@ -2111,8 +2246,6 @@ function bindOperationsControls() {
     event.preventDefault();
     const q = new FormData(event.currentTarget).get("q") || "";
     const params = new URLSearchParams();
-    const pin = getPin();
-    if (pin) params.set("pin", pin);
     if (q) params.set("q", q);
     const data = await fetchJson(`/api/admin/operations/users?${params.toString()}`);
     const table = operationsCenter.querySelector("#operationsUsersTable");
@@ -2124,8 +2257,6 @@ function bindOperationsControls() {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     const params = new URLSearchParams();
-    const pin = getPin();
-    if (pin) params.set("pin", pin);
     for (const field of ["q", "status", "category"]) {
       const value = String(formData.get(field) || "").trim();
       if (value) params.set(field, value);
@@ -2874,7 +3005,7 @@ function reportTechnicalDetails(report) {
 function reportEditControls(report, mode) {
   return `
     <details class="technical-details report-edit-details">
-      <summary>${mode === "review" ? "Edit before approving" : "Edit price"}</summary>
+      <summary>${mode === "review" ? "Edit before approving" : "Correct live price / product / store"}</summary>
       <div class="admin-control-grid" data-edit-form="${report.id}">
         <label><span>Item</span><input data-edit-field="item_name" type="text" maxlength="120" value="${escapeHtml(report.item_name)}"></label>
         <label><span>Brand</span><input data-edit-field="brand" type="text" maxlength="80" value="${escapeHtml(report.brand)}"></label>
@@ -2892,8 +3023,8 @@ function reportEditControls(report, mode) {
         <label class="span-full"><span>Allergen note</span><input data-edit-field="allergen_note" type="text" maxlength="500" value="${escapeHtml(report.allergen_note || "")}"></label>
         <label class="span-full"><span>Admin safety note</span><input data-edit-field="admin_safety_note" type="text" maxlength="500" value="${escapeHtml(report.admin_safety_note || "")}"></label>
         <label class="span-full"><span>Notes</span><textarea data-edit-field="notes" rows="3" maxlength="500">${escapeHtml(report.notes)}</textarea></label>
-        <label class="span-full"><span>Audit note</span><input data-edit-field="admin_edit_note" type="text" maxlength="500" placeholder="Why this edit was made"></label>
-        <button class="secondary-button" type="button" data-edit-report="${report.id}" data-approve-after-edit="0">Save edits</button>
+        <label class="span-full"><span>${mode === "approved" ? "Correction reason required" : "Audit note"}</span><input data-edit-field="admin_edit_note" type="text" maxlength="500" placeholder="Why this edit was made"></label>
+        <button class="secondary-button" type="button" data-edit-report="${report.id}" data-approve-after-edit="0">${mode === "approved" ? "Correct Published Price" : "Save edits"}</button>
         ${mode === "review" ? `<button class="primary-button" type="button" data-edit-report="${report.id}" data-approve-after-edit="1">Save edits and approve</button>` : ""}
       </div>
     </details>
@@ -2935,9 +3066,9 @@ function reportActionControls(report, mode) {
   if (mode === "approved") {
     return `
       <div class="card-actions">
-        <button class="quiet-button" type="button" data-status="expired" data-id="${report.id}">Mark expired</button>
+        <button class="quiet-button" type="button" data-price-correction-action="expire" data-id="${report.id}">Expire Price</button>
         <button class="quiet-button" type="button" data-status="needs_update" data-id="${report.id}">Needs update</button>
-        <button class="danger-button" type="button" data-status="removed" data-id="${report.id}">Remove from public</button>
+        <button class="danger-button" type="button" data-price-correction-action="invalidate" data-id="${report.id}">Mark Invalid</button>
         ${report.photo_path ? `<a class="quiet-button" href="${escapeHtml(adminUploadUrl(report.photo_path))}" target="_blank" rel="noopener">View proof</a>` : ""}
       </div>
       ${reportEditControls(report, "approved")}
@@ -2994,6 +3125,14 @@ function bindReportActions(container) {
       editReport(button.dataset.editReport, button.dataset.approveAfterEdit === "1");
     });
   }
+  for (const button of container.querySelectorAll("[data-price-correction-action]")) button.addEventListener("click", () => applyPublishedPriceAction(button.dataset.id, button.dataset.priceCorrectionAction));
+}
+
+async function applyPublishedPriceAction(reportId, action) {
+  const report = allReports.find((item) => String(item.id) === String(reportId));
+  const reason = window.prompt(`Audit reason to ${action === "expire" ? "expire" : "mark invalid"} this price:`);
+  if (!reason) return;
+  try { const data = await fetchJson(`/api/admin/prices/${reportId}/correct`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), action, reason, product_id: report?.product_id, store_id: report?.store_id }) }); await loadAdminData(); setAdminMessage(data.message, "success"); } catch (error) { setAdminMessage(error.message, "error"); }
 }
 
 function renderReportList(container, reports, mode, emptyText) {
@@ -3386,6 +3525,12 @@ function renderProductTools() {
 
   productToolsContent.innerHTML = `
     <article class="admin-card compact-card">
+      <h3>Scan / Enter Barcode</h3>
+      <p class="field-help">Exact UPC-A, EAN-8, EAN-13, and GTIN-14 matches are preferred. Camera scanning is progressive enhancement; manual entry always works.</p>
+      <div class="admin-control-grid"><label><span>UPC / barcode</span><input data-barcode-entry inputmode="numeric" autocomplete="off" maxlength="24" aria-label="UPC or barcode"></label><button class="primary-button" type="button" data-barcode-lookup>Find Product</button><button class="secondary-button" type="button" data-barcode-camera>Scan with Camera</button></div>
+      <video data-barcode-video playsinline muted hidden aria-label="Barcode camera preview"></video><div data-barcode-result class="message" aria-live="polite"></div>
+    </article>
+    <article class="admin-card compact-card">
       <h3>Create product</h3>
       <p class="field-help">${escapeHtml(productTools?.message || "Product tools coming next.")}</p>
       <div class="admin-control-grid" data-product-create>
@@ -3474,6 +3619,9 @@ function renderProductTools() {
 
   bindReportActions(productToolsContent);
 
+  productToolsContent.querySelector("[data-barcode-lookup]")?.addEventListener("click", lookupProductBarcode);
+  productToolsContent.querySelector("[data-barcode-camera]")?.addEventListener("click", startProductBarcodeCamera);
+
   productToolsContent.querySelector("[data-create-product]").addEventListener("click", createProduct);
 
   for (const button of productToolsContent.querySelectorAll("[data-save-product]")) {
@@ -3514,6 +3662,32 @@ function renderProductTools() {
   for (const button of productToolsContent.querySelectorAll("[data-unlink-report-product]")) {
     button.addEventListener("click", () => unlinkReportProduct(button.dataset.unlinkReportProduct));
   }
+}
+
+async function lookupProductBarcode() {
+  const input = productToolsContent.querySelector("[data-barcode-entry]");
+  const result = productToolsContent.querySelector("[data-barcode-result]");
+  const value = String(input?.value || "").replace(/\D/g, "");
+  if (!value) { setMessage(result, "Enter or scan a barcode.", "warning"); return; }
+  try {
+    const data = await fetchJson(`/api/admin/products/barcode/${encodeURIComponent(value)}${adminQuery()}`);
+    if (data.match) { result.innerHTML = `<span class="success">Exact match: ${escapeHtml(data.match.display_name)}</span> <button class="quiet-button" type="button" data-open-barcode-product="${data.match.id}">Open product</button>`; result.querySelector("[data-open-barcode-product]")?.addEventListener("click", () => openAdminTab("productToolsTab", { productId: data.match.id })); }
+    else setMessage(result, "UPC not recognized. Create or match a product with human confirmation; nothing was created automatically.", "warning");
+  } catch (error) { setMessage(result, error.message, "error"); }
+}
+
+async function startProductBarcodeCamera() {
+  const result = productToolsContent.querySelector("[data-barcode-result]");
+  if (!("BarcodeDetector" in window) || !navigator.mediaDevices?.getUserMedia) { setMessage(result, "Camera barcode scanning is not supported in this browser. Enter the UPC manually.", "info"); return; }
+  const video = productToolsContent.querySelector("[data-barcode-video]");
+  try {
+    const detector = new window.BarcodeDetector({ formats: ["upc_a", "ean_8", "ean_13", "itf"] });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = stream; video.hidden = false; await video.play(); setMessage(result, "Point the camera at the barcode.", "info");
+    const stop = () => { stream.getTracks().forEach((track) => track.stop()); video.hidden = true; };
+    const scan = async () => { const matches = await detector.detect(video); if (matches[0]?.rawValue) { productToolsContent.querySelector("[data-barcode-entry]").value = matches[0].rawValue; stop(); await lookupProductBarcode(); return; } if (!video.hidden) window.setTimeout(scan, 250); };
+    scan(); window.setTimeout(() => { if (!video.hidden) { stop(); setMessage(result, "No barcode detected. Enter it manually or try again.", "warning"); } }, 20000);
+  } catch (error) { video.hidden = true; setMessage(result, "Camera scanning could not start. Enter the UPC manually.", "warning"); }
 }
 
 function collectProductPayload(container, overrides = {}) {
@@ -5977,7 +6151,8 @@ function renderCatalogImport(batch) {
   catalogImagesForm.hidden = false;
   catalogImagesForm.elements.batch_id.value = batch.id;
   const rows = batch.rows || [];
-  catalogImportResults.innerHTML = `<div class="admin-panel-heading"><div><h4>${escapeHtml(batch.title || `Catalog #${batch.id}`)}</h4><p>${rows.length} draft product${rows.length === 1 ? "" : "s"}. Nothing is public yet.</p></div><button class="primary-button" type="button" data-publish-catalog>Publish reviewed drafts</button></div>${rows.map((row) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml([row.brand, row.variant, row.size_text].filter(Boolean).join(" · ") || "No extra details")}</span><span>${escapeHtml(titleCase(row.category || "other"))} · Image: ${escapeHtml(titleCase(row.image_match_confidence || "not matched"))}</span>${row.duplicate_product_id ? `<span class="warning">Possible duplicate of product #${row.duplicate_product_id}</span>` : ""}${(row.warnings || []).map((warning) => `<span class="warning">${escapeHtml(warning)}</span>`).join("")}</div><span class="badge ${row.status === "published" ? "confidence-high" : "status-ready"}">${escapeHtml(titleCase(row.status))}</span></article>`).join("")}`;
+  const summary = batch.summary || {};
+  catalogImportResults.innerHTML = `<div class="admin-panel-heading"><div><h4>${escapeHtml(batch.title || `Catalog #${batch.id}`)}</h4><p>${rows.length} rows · ${Number(summary.ready || 0)} ready · ${Number(summary.likely_existing || 0)} likely existing · ${Number(summary.needs_review || 0)} need review · ${Number(summary.invalid || 0)} invalid. Nothing is public yet.</p></div><button class="primary-button" type="button" data-publish-catalog>Import Ready</button></div>${rows.map((row) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(row.product_name)}</strong><span>${escapeHtml([row.brand, row.variant, row.size_text, row.unit, row.upc].filter(Boolean).join(" · ") || "No extra details")}</span><span>${escapeHtml(titleCase(row.category || "other"))}${row.subcategory ? ` / ${escapeHtml(row.subcategory)}` : ""} · Image: ${escapeHtml(titleCase(row.image_match_confidence || "not matched"))}</span>${row.duplicate_product_id ? `<span class="warning">Possible duplicate of product #${row.duplicate_product_id}</span>` : ""}${(row.warnings || []).map((warning) => `<span class="warning">${escapeHtml(warning)}</span>`).join("")}</div><span class="badge ${row.status === "published" ? "confidence-high" : (row.warnings || []).length ? "confidence-low" : "status-ready"}">${escapeHtml(row.status === "published" ? "Published" : (row.warnings || []).length ? "Review" : "Ready")}</span></article>`).join("")}`;
   catalogImportResults.querySelector("[data-publish-catalog]")?.addEventListener("click", () => publishCatalog(batch.id));
 }
 
@@ -5986,7 +6161,11 @@ async function submitCatalogImport(event) {
   const form = new FormData(catalogImportForm);
   try {
     setMessage(catalogImportMessage, "Creating draft catalog...");
-    const data = await fetchJson(`/api/admin/catalog-imports${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), title: form.get("title"), csv_text: form.get("catalog_text") }) });
+    const file = form.get("catalog_file");
+    let options;
+    if (file && file.size) { form.append("pin", getPin()); options = { method: "POST", body: form }; }
+    else options = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), title: form.get("title"), csv_text: form.get("catalog_text") }) };
+    const data = await fetchJson(`/api/admin/catalog-imports${adminQuery()}`, options);
     setMessage(catalogImportMessage, data.message, "success");
     renderCatalogImport(data.batch);
   } catch (error) { setMessage(catalogImportMessage, error.message, "error"); }
@@ -6150,6 +6329,7 @@ aiSettingsForm?.addEventListener("submit", saveAiSettings);
 bulkPriceIntakeForm?.addEventListener("submit", submitBulkPriceIntake);
 bulkProductImagesForm?.addEventListener("submit", submitBulkProductImages);
 operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
+attentionRefreshButton?.addEventListener("click", () => loadAdminData().catch((error) => setMessage(attentionCenterMessage, error.message, "error")));
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 reviewNextButton?.addEventListener("click", startReviewNext);
 for (const button of inboxFilters?.querySelectorAll("[data-inbox-filter]") || []) {

@@ -438,7 +438,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
             <StatusPill report={bestReport} />
           ) : (
             <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-              No approved price yet
+              Help verify this price
             </span>
           )}
           {storeName ? (
@@ -480,6 +480,61 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
         </button>
       ) : null}
     </article>
+  )
+}
+
+function PriceIssueReporter({ reportId, compact = false }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('price changed')
+  const [note, setNote] = useState('')
+  const [status, setStatus] = useState('')
+  const [sending, setSending] = useState(false)
+
+  if (!reportId) return null
+  const submit = async (event) => {
+    event.preventDefault()
+    setSending(true)
+    setStatus('')
+    try {
+      await postJson(`/api/price-reports/${reportId}/issues`, { reason, note })
+      setStatus('Thanks. Staff will review this price; it was not changed automatically.')
+      setOpen(false)
+      setNote('')
+    } catch (error) {
+      setStatus(error.message || 'The report could not be sent. Please try again.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className={compact ? 'mt-2' : 'mt-3'}>
+      <button type="button" onClick={() => setOpen((value) => !value)} className="min-h-11 rounded-xl bg-amber-50 px-3 font-black text-amber-900 ring-1 ring-amber-200">
+        Price wrong? Report price
+      </button>
+      {open ? (
+        <form onSubmit={submit} className="mt-3 space-y-3 rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-200">
+          <label className="block font-black text-slate-900">What is wrong?
+            <select className="field mt-1" value={reason} onChange={(event) => setReason(event.target.value)}>
+              <option value="price changed">Price changed</option>
+              <option value="wrong store">Wrong store</option>
+              <option value="wrong item">Wrong item</option>
+              <option value="sale ended">Sale ended</option>
+              <option value="promotion conditions missing">Promotion conditions missing</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label className="block font-black text-slate-900">Optional note
+            <textarea className="field mt-1" rows="2" maxLength="500" value={note} onChange={(event) => setNote(event.target.value)} />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" disabled={sending} className="min-h-11 rounded-xl bg-slate-900 px-4 font-black text-white disabled:opacity-60">{sending ? 'Sending…' : 'Send report'}</button>
+            <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-xl bg-white px-4 font-black text-slate-700 ring-1 ring-slate-200">Cancel</button>
+          </div>
+        </form>
+      ) : null}
+      {status ? <p role="status" aria-live="polite" className="mt-2 text-sm font-bold text-slate-700">{status}</p> : null}
+    </div>
   )
 }
 
@@ -542,6 +597,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
           <ExternalLink className="h-4 w-4" />
         </a>
       ) : null}
+      <PriceIssueReporter reportId={report.id} compact={compact} />
       {onAddToCart ? (
         <button
           type="button"
@@ -1140,7 +1196,8 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
       const bBest = [...b.reports].sort((left, right) => reportSortPrice(left) - reportSortPrice(right))[0]
       return reportSortPrice(aBest) - reportSortPrice(bBest)
     })
-  const chartReports = reports.slice(0, 8)
+  const priceHistory = detail?.price_history || { sufficient_history: false, observations: [] }
+  const chartReports = priceHistory.sufficient_history ? (priceHistory.observations || []).slice(0, 12) : []
   const maxPrice = Math.max(...chartReports.map((report) => Number(report.price) || 0), 1)
   const brand = productBrand(product, cheapest)
   const nutritionRows = product ? [
@@ -1199,11 +1256,12 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
                   <StatusPill report={cheapest} />
                 </div>
                 <SourceTrust report={cheapest} />
+                <PriceIssueReporter reportId={cheapest.id} />
               </div>
             ) : (
               <div className="mt-5 rounded-2xl bg-amber-50 p-5 text-amber-900">
                 <p className="font-black">No approved price yet</p>
-                <p className="mt-1 font-semibold">Submit proof to help fill this gap.</p>
+                <p className="mt-1 font-semibold">Help verify this price. Submit proof to help fill this gap.</p>
               </div>
             )}
 
@@ -1279,9 +1337,15 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
           </section>
 
           <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
-            <SectionHeader title="Recent approved prices" />
-            {chartReports.length ? (
+            <SectionHeader title="Price history" />
+            {priceHistory.sufficient_history && chartReports.length ? (
               <>
+                <div className="mb-4 grid gap-3 sm:grid-cols-4">
+                  <SummaryCard icon={CircleDollarSign} label="Current" value={money(priceHistory.current_price)} note={priceHistory.label || 'Recent comparison'} />
+                  <SummaryCard icon={Clock3} label="Recent typical" value={money(priceHistory.recent_typical_price)} note={`${priceHistory.observation_count} comparable observations`} />
+                  <SummaryCard icon={ChevronLeft} label="Recent low" value={money(priceHistory.recent_low)} note={`${priceHistory.distinct_date_count} different dates`} />
+                  <SummaryCard icon={ChevronLeft} label="Recent high" value={money(priceHistory.recent_high)} note="Comparable size and unit only" />
+                </div>
                 <div className="flex h-28 items-end gap-2 rounded-2xl bg-emerald-50 p-4">
                   {chartReports.map((report) => (
                     <div key={report.id} className="flex flex-1 flex-col items-center gap-2">
@@ -1294,11 +1358,11 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
                   ))}
                 </div>
                 <p className="mt-3 text-sm font-bold text-slate-500">
-                  Based on approved prices for this item.
+                  Based on approved comparable prices within the recent analysis window. Promotion conditions remain attached to their observations.
                 </p>
               </>
             ) : (
-              <EmptyState title="No price trend yet" body="More approved reports are needed for this product." icon={Clock3} />
+              <EmptyState title="Not enough price history yet" body="At least four comparable observations across multiple dates are required before Grocery Radar makes a factual price comparison." icon={Clock3} />
             )}
           </section>
 
@@ -1935,6 +1999,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                capture="environment"
                 className="sr-only"
                 aria-label="Proof image"
                 onChange={(event) => update('proof_photo', event.target.files?.[0] || null)}
@@ -2985,6 +3050,10 @@ function App() {
     loadReleases()
     getJson('/api/rewards').then(setRewards).catch(() => {})
     const params = new URLSearchParams(window.location.search)
+    if (params.get('q')) {
+      setSearchTerm(params.get('q').slice(0, 120))
+      setScreen('search')
+    }
     if (params.get('product')) {
       setSelectedProductId(Number(params.get('product')))
       setScreen('product')
@@ -3273,7 +3342,11 @@ function App() {
           />
         ) : null}
       </main>
-      <footer className="pb-28 pt-10 text-center text-sm font-bold text-slate-500">Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</footer>
+      <footer className="pb-28 pt-10 text-center text-sm font-bold text-slate-500">
+        <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
+        <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy.html">Privacy</a><a className="underline" href="/terms.html">Terms &amp; acceptable use</a></p>
+        <p className="mx-auto mt-3 max-w-2xl px-4">Grocery Radar is an independent price-information service and is not affiliated with or endorsed by listed retailers unless explicitly stated.</p>
+      </footer>
       <BottomNav active={activeNav} openScreen={openScreen} unreadNotifications={unreadNotifications} />
     </div>
   )

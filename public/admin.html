@@ -25,9 +25,9 @@
         <div class="admin-nav-group"><span>Work</span>
           <button class="admin-tab is-active" type="button" data-admin-tab="dashboardTab">Home</button>
           <button class="admin-tab" type="button" data-admin-tab="inboxTab">Inbox</button>
+          <button class="admin-tab" type="button" data-admin-tab="attentionCenterTab" data-manager-only>Attention Center</button>
           <button class="admin-tab" type="button" data-admin-tab="productToolsTab" data-manager-only>Products</button>
           <button class="admin-tab" type="button" data-admin-tab="storesTab" data-manager-only>Stores</button>
-          <button class="admin-tab" type="button" data-admin-tab="usersTab" data-manager-only>Users</button>
           <button id="workersNavButton" class="admin-tab" type="button" data-admin-tab="workersTab">Workers</button>
           <button class="admin-tab" type="button" data-admin-tab="advancedTab" data-manager-only>Advanced</button>
         </div>
@@ -52,6 +52,15 @@
             <h2>Dashboard</h2>
           </div>
           <div id="adminNotifications" class="notification-grid"></div>
+        </section>
+
+        <section id="attentionCenterTab" class="admin-panel" data-manager-only>
+          <div class="admin-panel-heading"><div><h2>Attention Center</h2><p class="field-help">Human decisions, cleanup work, waiting jobs, and system warnings are separated by urgency.</p></div><button id="attentionRefreshButton" class="secondary-button" type="button">Refresh</button></div>
+          <div id="attentionCenterMessage" class="message" aria-live="polite"></div>
+          <div id="attentionCenterSummary" class="admin-list"></div>
+          <section class="admin-card compact-card"><div class="admin-panel-heading"><div><h3 id="attentionDetailTitle">Select an issue</h3><p class="field-help">Every counter opens the matching work queue.</p></div></div><div id="attentionCenterDetails" class="admin-list" aria-live="polite"></div></section>
+          <section class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>What people couldn't find</h3><p class="field-help">Aggregate searches only—no shopper identity, email, full IP, or device fingerprint.</p></div></div><div id="searchDemandList" class="admin-list"></div></section>
+          <section class="admin-card compact-card"><div class="admin-panel-heading"><div><h3>Possible duplicate products</h3><p class="field-help">Human confirmation is required. Conflicting verified barcodes block merges.</p></div></div><div id="duplicateProductList" class="admin-list"></div></section>
         </section>
 
         <section id="inboxTab" class="admin-panel">
@@ -90,6 +99,7 @@
             <button class="attention-card" type="button" data-jump-tab="feedbackTab"><strong>Feedback</strong><span>Community messages</span></button>
             <button class="attention-card" type="button" data-jump-tab="announcementsTab"><strong>Announcements</strong><span>Service messaging</span></button>
             <button class="attention-card" type="button" data-jump-tab="analyticsTab"><strong>Analytics</strong><span>Aggregate usage</span></button>
+            <button class="attention-card" type="button" data-jump-tab="usersTab"><strong>Legacy / Historical Users</strong><span>Historical account administration</span></button>
             <button class="attention-card" type="button" data-jump-tab="emailTab" data-owner-only><strong>Email</strong><span>Diagnostics and setup</span></button>
             <button class="attention-card" type="button" data-jump-tab="settingsTab" data-owner-only><strong>Settings</strong><span>Owner controls</span></button>
           </div>
@@ -98,8 +108,10 @@
             <p class="field-help">Create product drafts from CSV or JSON. Nothing publishes automatically.</p>
             <form id="catalogImportForm" class="form-grid">
               <label><span>Import title</span><input name="title" maxlength="160" value="Product catalog import"></label>
+              <label><span>CSV or JSON file</span><input name="catalog_file" type="file" accept=".csv,.json,text/csv,application/json"></label>
               <label class="span-full"><span>CSV or JSON</span><textarea name="catalog_text" rows="8" placeholder="product_name,brand,variant,size,category,upc,image_filename"></textarea></label>
               <button class="primary-button" type="submit">Create Draft Catalog</button>
+              <a class="quiet-button" href="/api/admin/catalog-template.csv">Download CSV template</a>
             </form>
             <form id="catalogImagesForm" class="admin-toolbar" hidden enctype="multipart/form-data">
               <input name="batch_id" type="hidden">

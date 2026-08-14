@@ -17,7 +17,7 @@ const database = new sqlite3.Database(path.join(dataDir, "grocery_radar.sqlite")
 database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows) => {
   if (error) throw error;
   const names = new Set(rows.map((row) => row.name));
-  for (const name of ["price_provenance_events", "quality_reviews", "quality_review_reports", "quality_review_helpful_votes", "ai_processing_settings", "ai_proof_jobs", "ai_proof_analyses", "ai_proof_attempts", "product_images", "catalog_import_batches", "catalog_import_rows", "catalog_import_images", "product_normalization_rules", "user_release_reads", "submission_outcomes", "bulk_intake_batches", "bulk_intake_items", "product_image_upload_batches", "product_image_upload_items"]) assert.ok(names.has(name), name);
+  for (const name of ["price_provenance_events", "quality_reviews", "quality_review_reports", "quality_review_helpful_votes", "ai_processing_settings", "ai_proof_jobs", "ai_proof_analyses", "ai_proof_attempts", "product_images", "catalog_import_batches", "catalog_import_rows", "catalog_import_images", "product_normalization_rules", "user_release_reads", "submission_outcomes", "bulk_intake_batches", "bulk_intake_items", "product_image_upload_batches", "product_image_upload_items", "admin_dashboard_visits", "search_demand", "search_aliases", "category_nodes", "product_barcodes", "product_barcode_conflicts", "product_merge_events", "product_duplicate_decisions", "price_corrections", "price_issue_reports", "source_freshness_settings"]) assert.ok(names.has(name), name);
   database.all("PRAGMA table_info(price_reports)", (columnError, columns) => {
     if (columnError) throw columnError;
     const columnNames = new Set(columns.map((column) => column.name));
@@ -36,7 +36,7 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
       database.all("PRAGMA table_info(products)", (productError, productColumns) => {
         if (productError) throw productError;
         const productColumnNames = new Set(productColumns.map((column) => column.name));
-        for (const name of ["variant", "upc", "description", "default_storage_condition"]) assert.ok(productColumnNames.has(name), name);
+        for (const name of ["variant", "upc", "description", "default_storage_condition", "category_node_id", "subcategory"]) assert.ok(productColumnNames.has(name), name);
         database.all("SELECT version_label, status, published_at, fixed_json FROM homepage_patch_notes WHERE version_label = 'v0.9.4'", (releaseError, releases) => {
           if (releaseError) throw releaseError;
           assert.equal(releases.length, 1);
@@ -49,8 +49,16 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
           assert.equal(fixedItems.filter((item) => item === "AI-not-started, zero-result, active-review, and completed proofs now display distinct states.").length, 1);
           assert.equal(fixedItems.filter((item) => item === "Completing or rejecting a proof reliably removes it from the active review queue.").length, 1);
           assert.equal(fixedItems.filter((item) => item === "Review actions no longer unexpectedly move the reviewer around the page.").length, 1);
-          database.close();
-          console.log("Workflow schema migration tests passed.");
+          database.get("SELECT status,published_at FROM homepage_patch_notes WHERE version_label = 'v0.9.6'", (operationsReleaseError, operationsRelease) => {
+            if (operationsReleaseError) throw operationsReleaseError;
+            assert.deepEqual(operationsRelease, { status: "draft", published_at: null });
+            database.get("SELECT COUNT(*) AS count FROM source_freshness_settings", (freshnessError, freshness) => {
+              if (freshnessError) throw freshnessError;
+              assert.ok(freshness.count >= 4);
+              database.close();
+              console.log("Workflow schema migration tests passed.");
+            });
+          });
         });
       });
       });

@@ -65,6 +65,44 @@
 .manage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
 .manage-grid .attention-card { min-height: 5.5rem; text-align: left; }
 .manage-grid .attention-card strong { font-size: 1.1rem; }
+
+.attention-command-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.attention-command-grid .attention-card {
+  min-height: 9rem;
+  text-align: left;
+  border-left: 5px solid #64748b;
+}
+
+.attention-command-grid .attention-card strong { font-size: 2rem; }
+.attention-level-needs_action { border-left-color: #dc2626 !important; }
+.attention-level-waiting { border-left-color: #2563eb !important; }
+.attention-level-cleanup { border-left-color: #d97706 !important; }
+.attention-level-system { border-left-color: #7c3aed !important; }
+
+.attention-command-grid .badge {
+  display: inline-block;
+  width: fit-content;
+  margin-bottom: 0.4rem;
+}
+
+.notification-open-affordance {
+  color: #166534;
+  font-size: 0.78rem;
+}
+
+[data-barcode-video] {
+  width: min(100%, 34rem);
+  max-height: 20rem;
+  object-fit: cover;
+  border-radius: 1rem;
+  background: #0f172a;
+}
 .simple-status-list { display: grid; gap: 0.6rem; }
 .simple-status-row,
 .inbox-card,

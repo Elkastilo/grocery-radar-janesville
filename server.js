@@ -175,6 +175,9 @@ const ACTIVE_USAGE_WINDOW_MINUTES = Math.max(2, Number.parseInt(process.env.ACTI
 const REVIEW_CLAIM_MINUTES = Math.max(10, Number.parseInt(process.env.REVIEW_CLAIM_MINUTES || "30", 10) || 30);
 const APP_TIME_ZONE = "America/Chicago";
 const PRICE_FRESHNESS_DAYS = Object.freeze({ receipt_photo: { current: 14, aging: 30 }, shelf_tag_photo: { current: 10, aging: 21 }, weekly_ad: { current: 7, aging: 14 }, no_photo: { current: 7, aging: 14 } });
+const PRICE_REPORT_REASONS = new Set(["price changed", "wrong store", "wrong item", "sale ended", "promotion conditions missing", "other"]);
+const DEAL_HISTORY_MIN_OBSERVATIONS = 4;
+const DEAL_HISTORY_WINDOW_DAYS = 84;
 const STORAGE_CONDITIONS = ["shelf stable", "refrigerated", "frozen", "fresh produce", "hot prepared food", "cold prepared food", "not applicable", "unknown"];
 const OPERATIONS_WIDGET_IDS = [
   "system_health",
@@ -1219,6 +1222,95 @@ function publicPriceEligibilitySql(alias = "pr") {
   `;
 }
 
+async function loadSourceFreshnessSettings() {
+  const rows = await all("SELECT proof_type, current_days, aging_days FROM source_freshness_settings");
+  for (const row of rows) {
+    if (!PRICE_FRESHNESS_DAYS[row.proof_type]) continue;
+    PRICE_FRESHNESS_DAYS[row.proof_type].current = Math.max(1, Number(row.current_days) || PRICE_FRESHNESS_DAYS[row.proof_type].current);
+    PRICE_FRESHNESS_DAYS[row.proof_type].aging = Math.max(PRICE_FRESHNESS_DAYS[row.proof_type].current, Number(row.aging_days) || PRICE_FRESHNESS_DAYS[row.proof_type].aging);
+  }
+}
+
+function normalizeBarcode(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (![8, 12, 13, 14].includes(digits.length)) return { valid: false, value: digits, type: "unknown", error: "Barcode must contain 8, 12, 13, or 14 digits." };
+  const payload = digits.slice(0, -1).split("").reverse();
+  const sum = payload.reduce((total, digit, index) => total + Number(digit) * (index % 2 === 0 ? 3 : 1), 0);
+  const expected = (10 - (sum % 10)) % 10;
+  if (expected !== Number(digits.at(-1))) return { valid: false, value: digits, type: "unknown", error: "Barcode check digit is invalid." };
+  return { valid: true, value: digits, type: digits.length === 12 ? "upc_a" : digits.length === 8 ? "ean_8" : digits.length === 13 ? "ean_13" : "gtin_14" };
+}
+
+async function recordBarcodeConflict(barcodeValue, existingProductId, attemptedProductId, source = "staff") {
+  const now = new Date().toISOString();
+  await run(`INSERT INTO product_barcode_conflicts
+    (normalized_value, existing_product_id, attempted_product_id, source, status, occurrence_count, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'open', 1, ?, ?)
+    ON CONFLICT(normalized_value, attempted_product_id, status) DO UPDATE SET
+      existing_product_id = excluded.existing_product_id,
+      occurrence_count = product_barcode_conflicts.occurrence_count + 1,
+      updated_at = excluded.updated_at`, [barcodeValue, existingProductId, attemptedProductId || null, cleanText(source, 40), now, now]);
+}
+
+async function assignBarcodeToProduct(productId, rawValue, actorUserId = null, source = "staff") {
+  const text = cleanText(rawValue, 40);
+  if (!text) return null;
+  const barcode = normalizeBarcode(text);
+  if (!barcode.valid) {
+    const error = new Error(barcode.error);
+    error.statusCode = 400;
+    throw error;
+  }
+  const conflict = await get("SELECT id, product_id FROM product_barcodes WHERE normalized_value = ? AND status = 'verified'", [barcode.value]);
+  if (conflict && Number(conflict.product_id) !== Number(productId)) {
+    await recordBarcodeConflict(barcode.value, conflict.product_id, productId, source);
+    const error = new Error("This barcode is already assigned to another product. Resolve the UPC conflict in Attention Center.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const now = new Date().toISOString();
+  await run("INSERT INTO product_barcodes (product_id, barcode_type, normalized_value, status, source, created_by, created_at, updated_at) VALUES (?, ?, ?, 'verified', ?, ?, ?, ?) ON CONFLICT(normalized_value) WHERE status = 'verified' DO UPDATE SET updated_at = excluded.updated_at", [productId, barcode.type, barcode.value, cleanText(source, 40), actorUserId || null, now, now]);
+  await run("UPDATE products SET upc = ?, updated_at = ? WHERE id = ?", [barcode.value, now, productId]);
+  return barcode;
+}
+
+async function assertBarcodeAvailable(productId, rawValue) {
+  const text = cleanText(rawValue, 40);
+  if (!text) return null;
+  const barcode = normalizeBarcode(text);
+  if (!barcode.valid) {
+    const error = new Error(barcode.error);
+    error.statusCode = 400;
+    throw error;
+  }
+  const conflict = await get("SELECT product_id FROM product_barcodes WHERE normalized_value = ? AND status = 'verified'", [barcode.value]);
+  if (conflict && Number(conflict.product_id) !== Number(productId || 0)) {
+    await recordBarcodeConflict(barcode.value, conflict.product_id, productId, "staff_edit");
+    const error = new Error("This barcode is already assigned to another product. Resolve the UPC conflict in Attention Center.");
+    error.statusCode = 409;
+    throw error;
+  }
+  return barcode;
+}
+
+async function resolvedSearchQuery(rawQuery) {
+  const normalized = normalizeProductName(rawQuery);
+  if (!normalized) return { normalized: "", effective: "", alias: null };
+  const alias = await get("SELECT replacement_query, product_id, category FROM search_aliases WHERE normalized_alias = ? AND status = 'verified'", [normalized]);
+  return { normalized, effective: alias?.replacement_query || normalized, alias: alias || null };
+}
+
+async function recordSearchDemand(rawQuery, resultCount) {
+  const normalized = normalizeProductName(rawQuery);
+  if (!normalized || normalized.length < 2) return;
+  const display = cleanText(rawQuery, 120);
+  const count = Math.max(0, Number(resultCount) || 0);
+  const now = new Date().toISOString();
+  await run(`INSERT INTO search_demand (normalized_query, display_query, total_searches, zero_result_searches, weak_result_searches, last_result_count, first_searched_at, last_searched_at)
+    VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+    ON CONFLICT(normalized_query) DO UPDATE SET display_query = excluded.display_query, total_searches = search_demand.total_searches + 1, zero_result_searches = search_demand.zero_result_searches + excluded.zero_result_searches, weak_result_searches = search_demand.weak_result_searches + excluded.weak_result_searches, last_result_count = excluded.last_result_count, last_searched_at = excluded.last_searched_at`, [normalized, display, count === 0 ? 1 : 0, count > 0 && count <= 2 ? 1 : 0, count, now, now]);
+}
+
 async function recordPriceEvent(input = {}) {
   await run(`INSERT INTO price_provenance_events (price_report_id, import_batch_id, import_row_id, event_type, actor_user_id, submitter_user_id, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [input.reportId || null, input.batchId || null, input.rowId || null, cleanText(input.eventType, 40).toUpperCase(), input.actorUserId || null, input.submitterUserId || null, cleanText(input.reason || "", 300), metadataJson(input.metadata || {}), input.createdAt || new Date().toISOString()]);
 }
@@ -1830,8 +1922,10 @@ async function getProductById(productId, includeHidden = false) {
     return null;
   }
 
+  const merged = await get("SELECT id, merged_into_product_id, status FROM products WHERE id = ?", [productId]);
+  const resolvedId = merged?.status === "merged" && merged.merged_into_product_id ? merged.merged_into_product_id : productId;
   const filters = ["products.id = ?"];
-  const params = [productId];
+  const params = [resolvedId];
 
   if (!includeHidden) {
     filters.push("products.status = 'active'");
@@ -8683,7 +8777,9 @@ app.get("/api/browse", asyncRoute(async (request, response) => {
 app.get("/api/search", asyncRoute(async (request, response) => {
   await refreshExpiredReports();
 
-  const q = cleanText(request.query.q, 120).toLowerCase();
+  const rawQuery = cleanText(request.query.q, 120);
+  const searchResolution = await resolvedSearchQuery(rawQuery);
+  const q = searchResolution.effective;
   const storeId = Number.parseInt(request.query.store, 10);
   const category = cleanText(request.query.category, 30).toLowerCase();
   const sort = cleanText(request.query.sort, 40) || "cheapest_unit_price";
@@ -8764,21 +8860,14 @@ app.get("/api/search", asyncRoute(async (request, response) => {
     productParams
   );
 
-  await trackAnalyticsEvent(request, {
-    event_type: "search_performed",
-    cart_item_name: q,
-    store_id: Number.isInteger(storeId) ? storeId : null,
-    category: CATEGORIES.includes(category) ? category : "",
-    metadata: {
-      sort,
-      result_count: reports.length,
-      product_count: products.length
-    }
-  });
+  // Search demand is intentionally aggregate-only. Do not attach this query to a
+  // user or session through the legacy per-event analytics table.
+  await recordSearchDemand(rawQuery, products.length + reports.length);
 
   response.json({
     products: products.map(formatPublicProduct),
-    reports: reports.map(formatPublicReport)
+    reports: reports.map(formatPublicReport),
+    search: { normalized_query: searchResolution.normalized, matched_alias: searchResolution.alias ? searchResolution.effective : "" }
   });
 }));
 
@@ -8852,7 +8941,18 @@ async function catalogBatchPayload(batchId) {
   const batch = await get("SELECT * FROM catalog_import_batches WHERE id = ?", [batchId]);
   if (!batch) return null;
   const [rows, images] = await Promise.all([all("SELECT * FROM catalog_import_rows WHERE batch_id = ? ORDER BY id", [batchId]), all("SELECT id, original_name, matched_row_id, match_confidence, status, created_at FROM catalog_import_images WHERE batch_id = ? ORDER BY id", [batchId])]);
-  return { ...batch, rows: rows.map(formatCatalogRow), images };
+  const formatted = rows.map(formatCatalogRow);
+  const summary = formatted.reduce((counts, row) => {
+    const warnings = row.warnings || [];
+    const invalid = warnings.some((warning) => /invalid|malformed|required/i.test(warning));
+    if (row.status === "published") counts.published += 1;
+    else if (invalid) counts.invalid += 1;
+    else if (row.duplicate_product_id) counts.likely_existing += 1;
+    else if (warnings.length) counts.needs_review += 1;
+    else counts.ready += 1;
+    return counts;
+  }, { ready: 0, likely_existing: 0, needs_review: 0, invalid: 0, published: 0 });
+  return { ...batch, summary, rows: formatted, images };
 }
 
 app.post("/api/admin/catalog-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), catalogDataUpload.single("catalog_file"), asyncRoute(async (request, response) => {
@@ -8865,10 +8965,14 @@ app.post("/api/admin/catalog-imports", requireAdminAccess, requireLoggedInAdminA
     const productName = cleanText(input.product_name || input.display_name || input.name, 160);
     if (!productName) continue;
     const brand = cleanText(input.brand, 100);
-    const upc = cleanText(input.upc || input.barcode, 40);
-    const duplicate = await get("SELECT id FROM products WHERE lower(display_name) = lower(?) OR (NULLIF(?, '') IS NOT NULL AND upc = ?) LIMIT 1", [productName, upc, upc]);
-    const warnings = duplicate ? [`Possible duplicate of product #${duplicate.id}.`] : [];
-    await run("INSERT INTO catalog_import_rows (batch_id, product_name, brand, variant, size_text, category, upc, image_filename, duplicate_product_id, warnings_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)", [batchResult.lastID, productName, brand, cleanText(input.variant, 100), cleanText(input.size || input.size_text, 100), normalizedCatalogCategory(input.category), upc, cleanText(input.image_filename, 180), duplicate?.id || null, JSON.stringify(warnings), now, now]);
+    const rawUpc = cleanText(input.upc || input.barcode, 40);
+    const barcode = rawUpc ? normalizeBarcode(rawUpc) : null;
+    const upc = barcode?.valid ? barcode.value : rawUpc;
+    const duplicate = await get("SELECT products.id FROM products LEFT JOIN product_barcodes barcodes ON barcodes.product_id = products.id AND barcodes.status = 'verified' WHERE lower(products.display_name) = lower(?) OR (NULLIF(?, '') IS NOT NULL AND (products.upc = ? OR barcodes.normalized_value = ?)) LIMIT 1", [productName, upc, upc, upc]);
+    const warnings = [];
+    if (duplicate) warnings.push(`Possible duplicate of product #${duplicate.id}.`);
+    if (barcode && !barcode.valid) warnings.push(barcode.error);
+    await run("INSERT INTO catalog_import_rows (batch_id, product_name, brand, variant, size_text, unit, category, subcategory, upc, upc_type, aliases, storage_condition, image_filename, duplicate_product_id, warnings_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)", [batchResult.lastID, productName, brand, cleanText(input.variant, 100), cleanText(input.size || input.size_text, 100), cleanText(input.unit, 30), normalizedCatalogCategory(input.category), cleanText(input.subcategory, 80), upc, barcode?.valid ? barcode.type : "", cleanText(input.aliases, 1000), cleanText(input.storage_condition, 80), cleanText(input.image_filename, 180), duplicate?.id || null, JSON.stringify(warnings), now, now]);
   }
   response.status(201).json({ message: "Draft catalog created. Nothing is public until authorized publication.", batch: await catalogBatchPayload(batchResult.lastID) });
 }));
@@ -8905,8 +9009,15 @@ app.post("/api/admin/catalog-imports/:id/publish", requireAdminAccess, requireLo
   const now = new Date().toISOString();
   const published = [];
   for (const row of rows) {
+    const warnings = parseMetadataJson(row.warnings_json);
+    if (warnings.some((warning) => /invalid|malformed|required/i.test(warning))) continue;
     if (row.duplicate_product_id && request.body.keep_duplicates !== true) continue;
-    const result = await run("INSERT INTO products (canonical_name, display_name, category, default_size_text, preferred_brand, variant, upc, status, created_by_admin_id, admin_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)", [normalizeProductName(row.product_name), row.product_name, row.category, row.size_text || "", row.brand || "", row.variant || "", row.upc || "", request.adminUser.id, `Published from catalog import #${batchId}, row #${row.id}.`, now, now]);
+    if (row.upc) {
+      const conflict = await get("SELECT product_id FROM product_barcodes WHERE normalized_value = ? AND status = 'verified'", [row.upc]);
+      if (conflict) continue;
+    }
+    const result = await run("INSERT INTO products (canonical_name, display_name, category, subcategory, default_size_text, default_unit, default_storage_condition, preferred_brand, variant, upc, common_aliases, status, created_by_admin_id, admin_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)", [normalizeProductName(row.product_name), row.product_name, row.category, row.subcategory || "", row.size_text || "", row.unit || "", row.storage_condition || "unknown", row.brand || "", row.variant || "", row.upc || "", row.aliases || "", request.adminUser.id, `Published from catalog import #${batchId}, row #${row.id}.`, now, now]);
+    if (row.upc) await assignBarcodeToProduct(result.lastID, row.upc, request.adminUser.id, "catalog_import");
     if (row.matched_image_path && (row.image_match_confidence === "high" || request.body.confirm_image_matches === true)) await run("INSERT INTO product_images (product_id, image_path, original_image_path, alt_text, source_type, source_note, status, is_primary, uploaded_by, moderated_by, moderated_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'catalog_import', ?, 'approved', 1, ?, ?, ?, ?, ?)", [result.lastID, row.matched_image_path, row.matched_image_path, `${row.product_name} product image`, `Catalog import #${batchId}`, request.adminUser.id, request.adminUser.id, now, now, now]);
     await run("UPDATE catalog_import_rows SET suggested_product_id = ?, status = 'published', updated_at = ? WHERE id = ?", [result.lastID, now, row.id]);
     published.push(result.lastID);
@@ -9050,6 +9161,43 @@ app.get("/api/product-images/:id/file", asyncRoute(async (request, response) => 
   sendUploadFileByFilename(filename, response);
 }));
 
+async function priceHistoryForProduct(product) {
+  if (!product?.id) return { sufficient_history: false, observation_count: 0, minimum_observations: DEAL_HISTORY_MIN_OBSERVATIONS, message: "Not enough price history yet" };
+  const since = new Date(Date.now() - DEAL_HISTORY_WINDOW_DAYS * 86400000).toISOString();
+  const rows = await all(`SELECT id, store_id, price, comparison_price, comparison_unit, unit, size_text, price_type, promotion_conditions, display_offer_text, status, source_date, reviewed_at, submitted_at, valid_from_date, valid_through_date
+    FROM price_reports WHERE product_id = ? AND status IN ('approved','expired') AND datetime(COALESCE(NULLIF(source_date,''), NULLIF(reviewed_at,''), submitted_at)) >= datetime(?) ORDER BY datetime(COALESCE(NULLIF(source_date,''), NULLIF(reviewed_at,''), submitted_at)) ASC`, [product.id, since]);
+  const targetUnit = String(product.default_unit || "").toLowerCase();
+  const targetSize = String(product.default_size_text || "").trim().toLowerCase();
+  const comparable = rows.filter((row) => {
+    const unit = String(row.comparison_unit || row.unit || "").toLowerCase();
+    if (targetUnit && unit !== targetUnit) return false;
+    if (["each", "package"].includes(unit) && targetSize && row.size_text && String(row.size_text).trim().toLowerCase() !== targetSize) return false;
+    return Number.isFinite(Number(row.comparison_price ?? row.price));
+  });
+  const observations = [];
+  const seen = new Set();
+  for (const row of comparable) {
+    const observedDate = dateInputValue(row.source_date || row.reviewed_at || row.submitted_at);
+    const value = Number(row.comparison_price ?? row.price);
+    const key = `${observedDate}:${row.store_id}:${value}`;
+    if (!observedDate || seen.has(key)) continue;
+    seen.add(key);
+    observations.push({ date: observedDate, price: value, store_id: row.store_id, price_type: normalizePriceType(row.price_type), conditions: row.promotion_conditions || row.display_offer_text || "" });
+  }
+  const distinctDates = new Set(observations.map((item) => item.date)).size;
+  if (observations.length < DEAL_HISTORY_MIN_OBSERVATIONS || distinctDates < 3) return { sufficient_history: false, observation_count: observations.length, distinct_date_count: distinctDates, minimum_observations: DEAL_HISTORY_MIN_OBSERVATIONS, window_days: DEAL_HISTORY_WINDOW_DAYS, message: "Not enough price history yet" };
+  const values = observations.map((item) => item.price).sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  const typical = values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+  const current = await get(`SELECT COALESCE(comparison_price, unit_price, price) AS value FROM price_reports WHERE product_id = ? AND ${publicPriceEligibilitySql("price_reports")} ORDER BY COALESCE(comparison_price, unit_price, price), submitted_at DESC LIMIT 1`, [product.id]);
+  const currentValue = current?.value == null ? null : Number(current.value);
+  const differencePercent = currentValue == null || !typical ? null : Number((((currentValue - typical) / typical) * 100).toFixed(1));
+  let label = "Near recent typical price";
+  if (differencePercent != null && differencePercent <= -5) label = currentValue <= values[0] ? "Lowest recently observed" : "Below recent typical price";
+  else if (differencePercent != null && differencePercent >= 5) label = "Above recent typical price";
+  return { sufficient_history: true, observation_count: observations.length, distinct_date_count: distinctDates, window_days: DEAL_HISTORY_WINDOW_DAYS, recent_typical_price: Number(typical.toFixed(2)), current_price: currentValue, difference_percent: differencePercent, recent_low: values[0], recent_high: values.at(-1), label, observations: observations.slice(-24), comparability: { unit: targetUnit || "report unit", size_text: targetSize || "compatible report size" } };
+}
+
 app.get("/api/products/:id", asyncRoute(async (request, response) => {
   await refreshExpiredReports();
 
@@ -9068,6 +9216,7 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     category: product.category
   });
 
+  const resolvedProductId = product.id;
   const reports = await all(
     `
       ${reportSelectWithProduct()}
@@ -9088,7 +9237,7 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
         pr.verification_count DESC,
         pr.submitted_at DESC
     `,
-    [productId]
+    [resolvedProductId]
   );
   const storeGroups = [];
 
@@ -9111,7 +9260,9 @@ app.get("/api/products/:id", asyncRoute(async (request, response) => {
     product: formatPublicProduct(product),
     reports: reports.map(formatPublicReport),
     store_groups: storeGroups,
-    quality: await publicQualitySummary(productId, null, request.session?.userId || null),
+    quality: await publicQualitySummary(resolvedProductId, null, request.session?.userId || null),
+    price_history: await priceHistoryForProduct(product),
+    redirected_from_product_id: resolvedProductId !== productId ? productId : null,
     allergy_warning: "Always check the package label before buying or eating."
   });
 }));
@@ -16539,6 +16690,10 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
     String(report.promotion_conditions || "") !== String(request.body.promotion_conditions ?? report.promotion_conditions ?? ""),
     String(report.display_offer_text || "") !== String(request.body.display_offer_text ?? report.display_offer_text ?? "")
   ].some(Boolean);
+  if (report.status === "approved" && comparableFieldsChanged && !adminEditNote) {
+    response.status(400).json({ error: "An audit reason is required when correcting a published price." });
+    return;
+  }
   let nextStatus = report.status;
   let reviewedAt = report.reviewed_at;
   let reviewedBy = report.reviewed_by;
@@ -16658,6 +16813,13 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
       reportId
     ]
   );
+
+  if (report.status === "approved" && comparableFieldsChanged) {
+    const savedCorrection = await get("SELECT * FROM price_reports WHERE id = ?", [reportId]);
+    const correctionFields = ["product_id", "store_id", "item_name", "brand", "category", "price", "regular_price", "size_text", "quantity", "unit", "unit_price", "comparison_price", "comparison_unit", "storage_condition", "price_type", "valid_from_date", "valid_through_date", "promotion_conditions", "display_offer_text", "status"];
+    const snapshot = (row) => Object.fromEntries(correctionFields.map((field) => [field, row?.[field] ?? null]));
+    await run("INSERT INTO price_corrections (price_report_id, action, before_json, after_json, reason, corrected_by, created_at) VALUES (?, 'corrected', ?, ?, ?, ?, ?)", [reportId, JSON.stringify(snapshot(report)), JSON.stringify(snapshot(savedCorrection)), adminEditNote, adminId, now]);
+  }
 
   await updateUserAccuracy(report.user_id);
 
@@ -17106,6 +17268,7 @@ app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (reques
 app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const product = validateProduct(request.body, { defaultActive: true });
   const now = new Date().toISOString();
+  const requestedBarcode = await assertBarcodeAvailable(null, request.body.upc);
   const result = await run(
     `
       INSERT INTO products (
@@ -17158,6 +17321,8 @@ app.post("/api/admin/products", requireAdminAccess, requireLoggedInAdminAction, 
     ]
   );
 
+  if (requestedBarcode) await assignBarcodeToProduct(result.lastID, requestedBarcode.value, request.adminUser?.id, "staff");
+
   response.status(201).json({
     message: "Product created.",
     product_id: result.lastID
@@ -17190,6 +17355,7 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
     admin_note: request.body.admin_note ?? existing.admin_note
   });
   const now = new Date().toISOString();
+  const requestedBarcode = await assertBarcodeAvailable(productId, request.body.upc ?? existing.upc);
 
   await run(
     `
@@ -17239,6 +17405,8 @@ app.post("/api/admin/products/:id", requireAdminAccess, requireLoggedInAdminActi
     ]
   );
 
+  if (requestedBarcode) await assignBarcodeToProduct(productId, requestedBarcode.value, request.adminUser?.id, "staff");
+
   response.json({ message: "Product updated." });
 }));
 
@@ -17260,23 +17428,44 @@ app.post("/api/admin/products/:id/merge", requireAdminAccess, requireLoggedInAdm
     return;
   }
 
-  const now = new Date().toISOString();
-  await run("UPDATE price_reports SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
-  await run("UPDATE cart_items SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
-  await run(
-    `
-      UPDATE products
-      SET status = 'merged',
-          merged_into_product_id = ?,
-          admin_note = ?,
-          updated_by = ?,
-          updated_at = ?
-      WHERE id = ?
-    `,
-    [targetId, adminNote, request.adminUser ? request.adminUser.id : null, now, sourceId]
-  );
+  const [sourceBarcodes, targetBarcodes] = await Promise.all([
+    all("SELECT normalized_value FROM product_barcodes WHERE product_id = ? AND status = 'verified'", [sourceId]),
+    all("SELECT normalized_value FROM product_barcodes WHERE product_id = ? AND status = 'verified'", [targetId])
+  ]);
+  const sourceValues = new Set(sourceBarcodes.map((row) => row.normalized_value));
+  const targetValues = new Set(targetBarcodes.map((row) => row.normalized_value));
+  if (sourceValues.size && targetValues.size && [...sourceValues].some((value) => !targetValues.has(value))) {
+    response.status(409).json({ error: "Merge blocked: these products have conflicting verified barcodes. Resolve the UPC conflict first." });
+    return;
+  }
 
-  response.json({ message: "Product merged. Linked reports were moved to the surviving product." });
+  const now = new Date().toISOString();
+  const aliases = [...new Set([target.display_name, source.display_name, ...String(target.common_aliases || "").split(","), ...String(source.common_aliases || "").split(",")].map((value) => cleanText(value, 160)).filter(Boolean))].join(", ");
+  await run("BEGIN IMMEDIATE");
+  try {
+    await run("UPDATE price_reports SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
+    await run("UPDATE price_import_rows SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
+    await run("UPDATE cart_items SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
+    await run("UPDATE quality_reviews SET product_id = ? WHERE product_id = ?", [targetId, sourceId]);
+    await run("UPDATE product_normalization_rules SET product_id = ?, updated_at = ? WHERE product_id = ?", [targetId, now, sourceId]);
+    await run("UPDATE search_aliases SET product_id = ?, updated_at = ? WHERE product_id = ?", [targetId, now, sourceId]);
+    await run("UPDATE product_barcodes SET product_id = ?, updated_at = ? WHERE product_id = ?", [targetId, now, sourceId]);
+    const targetPrimary = await get("SELECT id FROM product_images WHERE product_id = ? AND status = 'approved' AND is_primary = 1 LIMIT 1", [targetId]);
+    if (targetPrimary) await run("UPDATE product_images SET is_primary = 0 WHERE product_id = ?", [sourceId]);
+    await run("UPDATE product_images SET product_id = ?, updated_at = ? WHERE product_id = ?", [targetId, now, sourceId]);
+    await run("UPDATE product_image_upload_items SET suggested_product_id = ? WHERE suggested_product_id = ?", [targetId, sourceId]);
+    await run("UPDATE catalog_import_rows SET suggested_product_id = ? WHERE suggested_product_id = ?", [targetId, sourceId]);
+    await run("UPDATE catalog_import_rows SET duplicate_product_id = ? WHERE duplicate_product_id = ?", [targetId, sourceId]);
+    await run("UPDATE products SET common_aliases = ?, updated_by = ?, updated_at = ? WHERE id = ?", [aliases, request.adminUser.id, now, targetId]);
+    await run("UPDATE products SET status = 'merged', merged_into_product_id = ?, admin_note = ?, updated_by = ?, updated_at = ? WHERE id = ?", [targetId, adminNote, request.adminUser.id, now, sourceId]);
+    await run("INSERT INTO product_merge_events (source_product_id, target_product_id, merged_by, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", [sourceId, targetId, request.adminUser.id, adminNote || "Confirmed duplicate product", JSON.stringify({ preserved: ["prices", "historical prices", "proof links", "aliases", "barcodes", "images", "quality reviews", "lists", "provenance"] }), now]);
+    await run("COMMIT");
+  } catch (error) {
+    await run("ROLLBACK").catch(() => {});
+    throw error;
+  }
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRODUCT_MERGED", affectedType: "product", affectedId: sourceId, metadata: { canonical_product_id: targetId, reason: adminNote } });
+  response.json({ message: "Product merged safely. History and linked data now resolve to the canonical product.", source_product_id: sourceId, canonical_product_id: targetId });
 }));
 
 app.post("/api/admin/reports/:id/link-product", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
@@ -17851,6 +18040,373 @@ app.get("/api/admin/users/:id/username-history", requireAdminAccess, asyncRoute(
   response.json({ history });
 }));
 
+function diskHealth() {
+  try {
+    const stats = fs.statfsSync(DATA_DIR);
+    const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+    const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+    const usedPercent = totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10 : null;
+    return { status: usedPercent == null ? "unknown" : usedPercent >= 90 ? "critical" : usedPercent >= 80 ? "warning" : "normal", used_percent: usedPercent, free_bytes: freeBytes, total_bytes: totalBytes };
+  } catch (error) {
+    return { status: "unknown", used_percent: null, free_bytes: null, total_bytes: null, message: "Disk usage is unavailable on this runtime." };
+  }
+}
+
+function attentionEntry(key, label, count, level, tab, filter, description = "") {
+  return { key, label, count: Number(count || 0), level, description, target: { tab, filter }, href: `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}` };
+}
+
+async function attentionCenterSummary() {
+  const agingCase = `CASE proof_type WHEN 'receipt_photo' THEN ${PRICE_FRESHNESS_DAYS.receipt_photo.aging} WHEN 'shelf_tag_photo' THEN ${PRICE_FRESHNESS_DAYS.shelf_tag_photo.aging} WHEN 'weekly_ad' THEN ${PRICE_FRESHNESS_DAYS.weekly_ad.aging} ELSE ${PRICE_FRESHNESS_DAYS.no_photo.aging} END`;
+  const [proofs, prices, products, imports, system, activeReviewRows, lastBackup] = await Promise.all([
+    get(`SELECT
+      SUM(CASE WHEN COALESCE(review_status,'') NOT IN ('completed','rejected') AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') THEN 1 ELSE 0 END) AS active,
+      SUM(CASE WHEN review_status = 'needs_help' THEN 1 ELSE 0 END) AS manager_help,
+      SUM(CASE WHEN duplicate_of_batch_id IS NOT NULL AND status NOT IN ('duplicate','proof_rejected','rejected') THEN 1 ELSE 0 END) AS possible_duplicate,
+      SUM(CASE WHEN status = 'duplicate' THEN 1 ELSE 0 END) AS duplicate_history,
+      SUM(CASE WHEN status = 'reviewed_no_prices' THEN 1 ELSE 0 END) AS no_usable
+      FROM price_import_batches WHERE notes LIKE ?`, [`${PROOF_SUBMISSION_NOTE_PREFIX}%`]),
+    get(`SELECT
+      SUM(CASE WHEN status = 'approved' AND COALESCE(price_type,'regular') = 'regular' AND datetime(COALESCE(NULLIF(source_date,''),NULLIF(source_checked_at,''),NULLIF(reviewed_at,''),submitted_at)) < datetime('now', '-' || (${agingCase}) || ' days') THEN 1 ELSE 0 END) AS stale,
+      SUM(CASE WHEN status = 'approved' AND valid_through_date = ? THEN 1 ELSE 0 END) AS ending_today,
+      (SELECT COUNT(*) FROM price_import_rows WHERE status NOT IN ('approved','rejected','removed') AND COALESCE(price_type,'regular') IN ('one_day_sale','digital_coupon','paper_coupon') AND (NULLIF(valid_from_date,'') IS NULL OR NULLIF(valid_through_date,'') IS NULL)) AS missing_date,
+      (SELECT COUNT(*) FROM price_import_rows WHERE status NOT IN ('approved','rejected','removed') AND COALESCE(price_type,'regular') != 'regular' AND NULLIF(promotion_conditions,'') IS NULL) AS conditions_unclear,
+      (SELECT COUNT(*) FROM price_import_rows WHERE status NOT IN ('approved','rejected','removed') AND store_id IS NULL) AS store_unresolved,
+      (SELECT COUNT(*) FROM price_issue_reports WHERE status IN ('open','in_review')) AS reported
+      FROM price_reports`, [localDateFor()]),
+    get(`SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) THEN 1 ELSE 0 END) AS missing_price,
+      SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM product_images images WHERE images.product_id = products.id AND images.status = 'approved') THEN 1 ELSE 0 END) AS missing_photo,
+      SUM(CASE WHEN NULLIF(category,'') IS NULL OR category = 'other' THEN 1 ELSE 0 END) AS missing_category,
+      SUM(CASE WHEN NULLIF(default_size_text,'') IS NULL THEN 1 ELSE 0 END) AS missing_size,
+      SUM(CASE WHEN NULLIF(upc,'') IS NULL AND NOT EXISTS (SELECT 1 FROM product_barcodes barcodes WHERE barcodes.product_id = products.id AND barcodes.status = 'verified') THEN 1 ELSE 0 END) AS missing_upc,
+      (SELECT COUNT(*) FROM product_barcode_conflicts WHERE status = 'open') AS upc_conflicts,
+      (SELECT COALESCE(SUM(group_count - 1),0) FROM (SELECT COUNT(*) AS group_count FROM products p WHERE p.status = 'active' GROUP BY lower(p.canonical_name), lower(COALESCE(p.preferred_brand,'')), lower(COALESCE(p.default_size_text,'')) HAVING COUNT(*) > 1)) AS possible_duplicates,
+      (SELECT COUNT(*) FROM catalog_import_rows WHERE status = 'draft' AND suggested_product_id IS NULL AND duplicate_product_id IS NULL AND warnings_json != '[]') AS unmatched_catalog
+      FROM products WHERE status = 'active'`),
+    get(`SELECT
+      (SELECT COUNT(*) FROM ai_proof_jobs WHERE status = 'ai_failed') AS ai_failed,
+      (SELECT COUNT(*) FROM ai_proof_jobs WHERE status IN ('waiting','analyzing')) AS ai_waiting,
+      (SELECT COUNT(*) FROM bulk_intake_batches WHERE paused = 1) AS paused,
+      (SELECT COUNT(*) FROM bulk_intake_items WHERE status = 'duplicate') AS duplicate_screenshots,
+      (SELECT COUNT(*) FROM bulk_intake_items WHERE status = 'failed') AS failed_import_items,
+      (SELECT COUNT(*) FROM product_image_upload_items WHERE status = 'failed') AS failed_images,
+      (SELECT COUNT(*) FROM product_image_upload_items WHERE status = 'needs_review' AND suggested_product_id IS NULL) AS unmatched_images`),
+    get("SELECT COUNT(*) AS open_errors, SUM(CASE WHEN severity IN ('error','critical') THEN 1 ELSE 0 END) AS serious_errors FROM operations_errors WHERE status = 'open'"),
+    activeProofReviewRows(),
+    get("SELECT created_at FROM backup_runs WHERE status = 'success' ORDER BY created_at DESC LIMIT 1")
+  ]);
+  const lifecycleCounts = activeReviewRows.reduce((counts, batch) => { const state = lifecycleFromInboxRow(batch).state; counts[state] = (counts[state] || 0) + 1; return counts; }, {});
+  const disk = diskHealth();
+  const backupWarning = !lastBackup || Date.now() - Date.parse(lastBackup.created_at) > 7 * 86400000;
+  const groups = {
+    proofs: [
+      attentionEntry("proofs_ready", "Ready for review", Number(lifecycleCounts.REVIEWING || 0) + Number(lifecycleCounts.READY_TO_FINISH || 0), "needs_action", "inboxTab", "receipt"),
+      attentionEntry("manager_help", "Manager help", lifecycleCounts.MANAGER_HELP, "needs_action", "inboxTab", "needs_help"),
+      attentionEntry("store_unresolved", "Store unresolved", prices?.store_unresolved, "needs_action", "inboxTab", "store_unresolved"),
+      attentionEntry("possible_duplicate_proof", "Possible duplicate", proofs?.possible_duplicate, "needs_action", "inboxTab", "possible_duplicate"),
+      attentionEntry("ai_failed", "AI failed", imports?.ai_failed, "needs_action", "attentionCenterTab", "ai_failed"),
+      attentionEntry("ai_zero_results", "AI zero results", lifecycleCounts.AI_ZERO_RESULTS, "needs_action", "inboxTab", "needs_help"),
+      attentionEntry("ai_waiting", "AI queued or processing", imports?.ai_waiting, "waiting", "attentionCenterTab", "ai_waiting"),
+      attentionEntry("no_usable_prices", "No usable prices", proofs?.no_usable, "cleanup", "attentionCenterTab", "no_usable_prices")
+    ],
+    prices: [
+      attentionEntry("missing_sale_date", "Missing sale date", prices?.missing_date, "needs_action", "attentionCenterTab", "missing_sale_date"),
+      attentionEntry("promotion_conditions", "Promotion conditions unclear", prices?.conditions_unclear, "needs_action", "attentionCenterTab", "promotion_conditions"),
+      attentionEntry("stale_price", "Stale price", prices?.stale, "cleanup", "attentionCenterTab", "stale_price"),
+      attentionEntry("reported_price", "Reported incorrect price", prices?.reported, "needs_action", "attentionCenterTab", "reported_price")
+    ],
+    products: [
+      attentionEntry("missing_current_price", "Missing current price", products?.missing_price, "cleanup", "productToolsTab", "missing_current_price"),
+      attentionEntry("missing_photo", "Missing photo", products?.missing_photo, "cleanup", "productToolsTab", "missing_photo"),
+      attentionEntry("missing_category", "Missing category", products?.missing_category, "cleanup", "productToolsTab", "missing_category"),
+      attentionEntry("missing_size", "Missing size", products?.missing_size, "cleanup", "productToolsTab", "missing_size"),
+      attentionEntry("missing_upc", "Missing UPC", products?.missing_upc, "cleanup", "productToolsTab", "missing_upc"),
+      attentionEntry("upc_conflict", "UPC assignment conflict", products?.upc_conflicts, "needs_action", "attentionCenterTab", "upc_conflict"),
+      attentionEntry("possible_duplicate_product", "Possible duplicate product", products?.possible_duplicates, "cleanup", "attentionCenterTab", "possible_duplicate_product"),
+      attentionEntry("unmatched_catalog", "Unmatched catalog item", products?.unmatched_catalog, "needs_action", "attentionCenterTab", "unmatched_catalog")
+    ],
+    import_ai: [
+      attentionEntry("failed_import", "Failed bulk import item", imports?.failed_import_items, "needs_action", "attentionCenterTab", "failed_import"),
+      attentionEntry("paused_batch", "Paused batch", imports?.paused, "waiting", "priceImporterTab", "paused"),
+      attentionEntry("duplicate_screenshot", "Duplicate screenshot", imports?.duplicate_screenshots, "cleanup", "priceImporterTab", "duplicate"),
+      attentionEntry("failed_image", "Image processing failure", imports?.failed_images, "needs_action", "attentionCenterTab", "failed_image"),
+      attentionEntry("unmatched_image", "Unmatched image", imports?.unmatched_images, "needs_action", "attentionCenterTab", "unmatched_image")
+    ],
+    system: [
+      attentionEntry("system_error", "Recent server error", system?.serious_errors, "system", "operationsTab", "errors"),
+      attentionEntry("disk_warning", "Disk warning", ["warning","critical"].includes(disk.status) ? 1 : 0, "system", "operationsTab", "disk"),
+      attentionEntry("backup_warning", "Backup warning", backupWarning ? 1 : 0, "system", "operationsTab", "backups")
+    ]
+  };
+  const entries = Object.values(groups).flat();
+  return { groups, totals: { needs_action: entries.filter((item) => item.level === "needs_action").reduce((sum, item) => sum + item.count, 0), waiting: entries.filter((item) => item.level === "waiting").reduce((sum, item) => sum + item.count, 0), cleanup: entries.filter((item) => item.level === "cleanup").reduce((sum, item) => sum + item.count, 0), system: entries.filter((item) => item.level === "system").reduce((sum, item) => sum + item.count, 0) } };
+}
+
+async function attentionItems(key, limit = 100) {
+  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 100));
+  const productBase = "SELECT id, display_name AS title, category, default_size_text AS detail, updated_at FROM products WHERE status = 'active'";
+  const queries = {
+    proofs_ready: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_status,status) AS detail, updated_at FROM price_import_batches WHERE review_status IN ('waiting','in_review','ready_to_finish') AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at LIMIT ?",
+    manager_help: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_escalation_reason,'Manager decision required') AS detail, updated_at FROM price_import_batches WHERE review_status = 'needs_help' AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at LIMIT ?",
+    possible_duplicate_proof: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Possible duplicate of proof #' || duplicate_of_batch_id AS detail, updated_at FROM price_import_batches WHERE duplicate_of_batch_id IS NOT NULL AND status NOT IN ('duplicate','proof_rejected','rejected') ORDER BY updated_at LIMIT ?",
+    no_usable_prices: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Reviewed with no usable prices' AS detail, updated_at FROM price_import_batches WHERE status = 'reviewed_no_prices' ORDER BY updated_at DESC LIMIT ?",
+    ai_zero_results: "SELECT proofs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, 'AI prepared zero candidate prices; human confirmation required' AS detail, analyses.updated_at FROM ai_proof_analyses analyses JOIN price_import_batches proofs ON proofs.id = analyses.proof_id WHERE analyses.item_count = 0 AND proofs.status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY analyses.updated_at DESC LIMIT ?",
+    ai_waiting: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.status AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status IN ('waiting','analyzing') ORDER BY jobs.updated_at LIMIT ?",
+    store_unresolved: "SELECT rows.id, rows.item_name AS title, 'Exact store requires human resolution' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.store_id IS NULL AND rows.status NOT IN ('approved','rejected','removed') ORDER BY rows.updated_at LIMIT ?",
+    missing_current_price: `${productBase} AND NOT EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) ORDER BY display_name LIMIT ?`,
+    missing_photo: `${productBase} AND NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id AND product_images.status = 'approved') ORDER BY display_name LIMIT ?`,
+    missing_upc: `${productBase} AND NULLIF(upc,'') IS NULL AND NOT EXISTS (SELECT 1 FROM product_barcodes WHERE product_barcodes.product_id = products.id AND product_barcodes.status = 'verified') ORDER BY display_name LIMIT ?`,
+    missing_size: `${productBase} AND NULLIF(default_size_text,'') IS NULL ORDER BY display_name LIMIT ?`,
+    missing_category: `${productBase} AND (NULLIF(category,'') IS NULL OR category = 'other') ORDER BY display_name LIMIT ?`,
+    reported_price: "SELECT issues.id, issues.price_report_id, products.display_name AS title, issues.reason AS detail, issues.duplicate_count AS count, issues.updated_at FROM price_issue_reports issues LEFT JOIN products ON products.id = issues.product_id WHERE issues.status IN ('open','in_review') ORDER BY issues.duplicate_count DESC, issues.updated_at DESC LIMIT ?",
+    ai_failed: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.last_error AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status = 'ai_failed' ORDER BY jobs.updated_at DESC LIMIT ?",
+    failed_image: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC LIMIT ?",
+    unmatched_image: "SELECT items.id, items.original_name AS title, items.match_confidence AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'needs_review' AND items.suggested_product_id IS NULL ORDER BY items.updated_at DESC LIMIT ?",
+    upc_conflict: "SELECT conflicts.id, 'Barcode ' || conflicts.normalized_value AS title, existing.display_name || ' ↔ ' || COALESCE(attempted.display_name, 'Unmatched catalog product') AS detail, conflicts.occurrence_count AS count, conflicts.updated_at FROM product_barcode_conflicts conflicts JOIN products existing ON existing.id = conflicts.existing_product_id LEFT JOIN products attempted ON attempted.id = conflicts.attempted_product_id WHERE conflicts.status = 'open' ORDER BY conflicts.updated_at DESC LIMIT ?",
+    failed_import: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC LIMIT ?",
+    paused_batch: "SELECT id, COALESCE(title, 'Bulk batch #' || id) AS title, 'Processing paused' AS detail, updated_at FROM bulk_intake_batches WHERE paused = 1 ORDER BY updated_at DESC LIMIT ?",
+    duplicate_screenshot: "SELECT items.id, items.original_name AS title, 'Exact duplicate screenshot; no automatic AI call' AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'duplicate' ORDER BY items.updated_at DESC LIMIT ?",
+    unmatched_catalog: "SELECT rows.id, rows.product_name AS title, rows.warnings_json AS detail, rows.updated_at FROM catalog_import_rows rows WHERE rows.status = 'draft' AND rows.suggested_product_id IS NULL AND rows.duplicate_product_id IS NULL AND rows.warnings_json != '[]' ORDER BY rows.updated_at DESC LIMIT ?",
+    missing_sale_date: "SELECT rows.id, rows.item_name AS title, 'Promotion date requires review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') IN ('one_day_sale','digital_coupon','paper_coupon') AND (NULLIF(rows.valid_from_date,'') IS NULL OR NULLIF(rows.valid_through_date,'') IS NULL) ORDER BY rows.updated_at DESC LIMIT ?",
+    promotion_conditions: "SELECT rows.id, rows.item_name AS title, 'Promotion conditions require review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') != 'regular' AND NULLIF(rows.promotion_conditions,'') IS NULL ORDER BY rows.updated_at DESC LIMIT ?",
+    system_error: "SELECT id, error_type AS title, message AS detail, created_at AS updated_at FROM operations_errors WHERE status = 'open' AND severity IN ('error','critical') ORDER BY created_at DESC LIMIT ?"
+  };
+  if (key === "possible_duplicate_product") return all("SELECT MIN(id) AS id, GROUP_CONCAT(display_name, ' ↔ ') AS title, COUNT(*) || ' matching catalog records' AS detail, MAX(updated_at) AS updated_at FROM products WHERE status = 'active' GROUP BY lower(canonical_name), lower(COALESCE(preferred_brand,'')), lower(COALESCE(default_size_text,'')) HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC LIMIT ?", [safeLimit]);
+  if (key === "stale_price") {
+    const agingCase = `CASE reports.proof_type WHEN 'receipt_photo' THEN ${PRICE_FRESHNESS_DAYS.receipt_photo.aging} WHEN 'shelf_tag_photo' THEN ${PRICE_FRESHNESS_DAYS.shelf_tag_photo.aging} WHEN 'weekly_ad' THEN ${PRICE_FRESHNESS_DAYS.weekly_ad.aging} ELSE ${PRICE_FRESHNESS_DAYS.no_photo.aging} END`;
+    return all(`SELECT reports.id, products.display_name AS title, stores.name || ' · last verified ' || COALESCE(reports.source_date,reports.reviewed_at,reports.submitted_at) AS detail, reports.submitted_at AS updated_at FROM price_reports reports LEFT JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND COALESCE(reports.price_type,'regular') = 'regular' AND datetime(COALESCE(NULLIF(reports.source_date,''),NULLIF(reports.reviewed_at,''),reports.submitted_at)) < datetime('now', '-' || (${agingCase}) || ' days') ORDER BY reports.submitted_at LIMIT ?`, [safeLimit]);
+  }
+  const sql = queries[key];
+  return sql ? all(sql, [safeLimit]) : [];
+}
+
+async function catalogCoverageSummary() {
+  const [catalog, stores] = await Promise.all([
+    get(`SELECT COUNT(*) AS products,
+      SUM(CASE WHEN EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) THEN 1 ELSE 0 END) AS products_with_current_price,
+      SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) THEN 1 ELSE 0 END) AS products_without_current_price,
+      SUM(CASE WHEN EXISTS (SELECT 1 FROM product_images images WHERE images.product_id = products.id AND images.status = 'approved') THEN 1 ELSE 0 END) AS products_with_images,
+      SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM product_images images WHERE images.product_id = products.id AND images.status = 'approved') THEN 1 ELSE 0 END) AS products_missing_images,
+      SUM(CASE WHEN NULLIF(upc,'') IS NOT NULL OR EXISTS (SELECT 1 FROM product_barcodes barcodes WHERE barcodes.product_id = products.id AND barcodes.status = 'verified') THEN 1 ELSE 0 END) AS products_with_upc
+      FROM products WHERE status = 'active'`),
+    all(`SELECT stores.id, stores.name,
+      COUNT(DISTINCT CASE WHEN ${publicPriceEligibilitySql("pr")} THEN pr.id END) AS current_prices,
+      COUNT(DISTINCT CASE WHEN ${publicPriceEligibilitySql("pr")} THEN pr.product_id END) AS products,
+      COUNT(DISTINCT CASE WHEN pr.status = 'approved' AND NOT (${publicPriceEligibilitySql("pr")}) THEN pr.id END) AS stale_or_expired,
+      (SELECT COUNT(*) FROM price_import_batches batches WHERE batches.default_store_id = stores.id AND COALESCE(batches.review_status,'') NOT IN ('completed','rejected') AND batches.status NOT IN ('duplicate','proof_rejected','reviewed_no_prices')) AS unresolved_proofs
+      FROM stores LEFT JOIN price_reports pr ON pr.store_id = stores.id WHERE stores.active = 1 GROUP BY stores.id ORDER BY current_prices ASC, stale_or_expired DESC, stores.name`)
+  ]);
+  const currentPrices = await get(`SELECT COUNT(*) AS count FROM price_reports pr WHERE ${publicPriceEligibilitySql("pr")}`);
+  const stale = await attentionCenterSummary();
+  return { catalog: { products: Number(catalog?.products || 0), current_prices: Number(currentPrices?.count || 0), products_with_current_price: Number(catalog?.products_with_current_price || 0), products_without_current_price: Number(catalog?.products_without_current_price || 0), products_with_images: Number(catalog?.products_with_images || 0), products_missing_images: Number(catalog?.products_missing_images || 0), products_with_upc: Number(catalog?.products_with_upc || 0), products_missing_upc: Number(catalog?.products || 0) - Number(catalog?.products_with_upc || 0), stale_prices: stale.groups.prices.find((item) => item.key === "stale_price")?.count || 0, promotions_ending_today: Number((await get("SELECT COUNT(*) AS count FROM price_reports WHERE status = 'approved' AND valid_through_date = ?", [localDateFor()]))?.count || 0) }, stores: stores.map((store) => ({ ...store, current_prices: Number(store.current_prices || 0), products: Number(store.products || 0), stale_or_expired: Number(store.stale_or_expired || 0), unresolved_proofs: Number(store.unresolved_proofs || 0), priority_label: Number(store.current_prices || 0) < 10 || Number(store.stale_or_expired || 0) > Number(store.current_prices || 0) ? "Needs more coverage" : "Coverage active" })) };
+}
+
+async function sinceLastDashboardVisit(userId) {
+  const visit = await get("SELECT last_seen_at FROM admin_dashboard_visits WHERE admin_user_id = ?", [userId]);
+  const since = visit?.last_seen_at || new Date(Date.now() - 86400000).toISOString();
+  const now = new Date().toISOString();
+  const counts = await get(`SELECT
+    (SELECT COUNT(*) FROM price_import_batches WHERE notes LIKE ? AND created_at > ?) AS new_proofs,
+    (SELECT COUNT(*) FROM price_import_rows WHERE created_at > ?) AS candidate_prices,
+    (SELECT COUNT(*) FROM price_reports WHERE status = 'approved' AND reviewed_at > ?) AS prices_approved,
+    (SELECT COUNT(*) FROM price_import_batches WHERE review_status = 'needs_help') AS manager_decisions,
+    (SELECT COUNT(*) FROM products p WHERE p.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_images i WHERE i.product_id = p.id AND i.status = 'approved')) AS products_missing_photos,
+    (SELECT COUNT(*) FROM price_reports WHERE valid_through_date IS NOT NULL AND valid_through_date < ? AND valid_through_date >= substr(?,1,10)) AS prices_expired,
+    (SELECT COUNT(*) FROM ai_proof_jobs WHERE status = 'ai_failed' AND updated_at > ?) AS ai_failed`, [`${PROOF_SUBMISSION_NOTE_PREFIX}%`, since, since, since, localDateFor(), since, since]);
+  await run("INSERT INTO admin_dashboard_visits (admin_user_id, last_seen_at, previous_seen_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(admin_user_id) DO UPDATE SET previous_seen_at = admin_dashboard_visits.last_seen_at, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at", [userId, now, since, now]);
+  return { since, ...Object.fromEntries(Object.entries(counts || {}).map(([key, value]) => [key, Number(value || 0)])) };
+}
+
+app.get("/api/admin/operations/command-center", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const [attention, coverage, since, searchDemand] = await Promise.all([attentionCenterSummary(), catalogCoverageSummary(), sinceLastDashboardVisit(request.adminUser.id), all("SELECT normalized_query, display_query, total_searches, zero_result_searches, weak_result_searches, last_result_count, last_searched_at FROM search_demand ORDER BY zero_result_searches DESC, total_searches DESC, last_searched_at DESC LIMIT 50")]);
+  response.json({ generated_at: new Date().toISOString(), attention, coverage, since_last_visit: since, search_demand: { could_not_find: searchDemand.filter((row) => Number(row.zero_result_searches) > 0), most_searched: [...searchDemand].sort((a, b) => Number(b.total_searches) - Number(a.total_searches)).slice(0, 20) } });
+}));
+
+app.get("/api/admin/operations/attention", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const category = cleanText(request.query.category, 80);
+  response.json({ summary: await attentionCenterSummary(), category, items: category ? await attentionItems(category, request.query.limit) : [] });
+}));
+
+app.get("/api/admin/operations/health", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  let database = { status: "healthy" };
+  try { const check = await get("PRAGMA quick_check"); database = { status: Object.values(check || {})[0] === "ok" ? "healthy" : "warning", result: Object.values(check || {})[0] || "unknown" }; } catch { database = { status: "critical", result: "Database check failed" }; }
+  const [queue, failed, errors, backup] = await Promise.all([get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE status IN ('waiting','analyzing')"), get("SELECT COUNT(*) AS count FROM ai_proof_jobs WHERE status = 'ai_failed'"), all("SELECT error_type, severity, source, COUNT(*) AS count, MAX(created_at) AS last_seen_at FROM operations_errors WHERE status = 'open' GROUP BY error_type, severity, source ORDER BY last_seen_at DESC LIMIT 30"), get("SELECT * FROM backup_runs WHERE status = 'success' ORDER BY created_at DESC LIMIT 1")]);
+  let backupSummary = safeBackupSummary(backup);
+  if (backupSummary && backup.storage_path && fs.existsSync(backup.storage_path)) backupSummary = { ...backupSummary, size_bytes: fs.statSync(backup.storage_path).size };
+  response.json({ application: { status: hasTailwindBuild() ? "healthy" : "warning", uptime_seconds: Math.round(process.uptime()), version: currentVersion() }, database, uploads: { status: fs.existsSync(UPLOAD_DIR) ? "healthy" : "critical" }, disk: diskHealth(), ai_queue: { status: Number(failed?.count || 0) ? "warning" : "healthy", waiting: Number(queue?.count || 0), failed: Number(failed?.count || 0) }, email: { status: emailStatus().configured ? "configured" : "not_configured" }, recent_errors: errors, backup: backupSummary || { status: "warning", message: "No successful backup recorded" } });
+}));
+
+app.get("/api/admin/products/barcode/:barcode", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const barcode = normalizeBarcode(request.params.barcode);
+  if (!barcode.valid) { response.status(400).json({ error: barcode.error }); return; }
+  const match = await get("SELECT products.id, products.display_name, products.preferred_brand, products.default_size_text, products.status FROM product_barcodes JOIN products ON products.id = product_barcodes.product_id WHERE product_barcodes.normalized_value = ? AND product_barcodes.status = 'verified'", [barcode.value]);
+  response.json({ barcode, match: match || null, requires_human_confirmation: !match });
+}));
+
+app.post("/api/admin/barcode-conflicts/:id/resolve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const conflictId = Number.parseInt(request.params.id, 10);
+  const conflict = await get("SELECT * FROM product_barcode_conflicts WHERE id = ? AND status = 'open'", [conflictId]);
+  if (!conflict) { response.status(404).json({ error: "The open barcode conflict was not found." }); return; }
+  const note = cleanText(request.body.resolution_note || "Existing verified assignment retained after human review.", 500);
+  const now = new Date().toISOString();
+  await run("UPDATE product_barcode_conflicts SET status = 'resolved', resolved_by = ?, resolution_note = ?, resolved_at = ?, updated_at = ? WHERE id = ?", [request.adminUser.id, note, now, now, conflictId]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "BARCODE_CONFLICT_RESOLVED", affectedType: "product_barcode_conflict", affectedId: conflictId, metadata: { normalized_value: conflict.normalized_value, existing_product_id: conflict.existing_product_id, attempted_product_id: conflict.attempted_product_id } });
+  response.json({ message: "Barcode conflict reviewed. The existing verified assignment was retained." });
+}));
+
+app.post("/api/price-reports/:id/issues", asyncRoute(async (request, response) => {
+  const reportId = Number.parseInt(request.params.id, 10);
+  const reason = cleanText(request.body.reason, 80).toLowerCase();
+  if (!PRICE_REPORT_REASONS.has(reason)) { response.status(400).json({ error: "Choose a valid price report reason." }); return; }
+  const report = await get("SELECT id, product_id, status FROM price_reports WHERE id = ?", [reportId]);
+  if (!report || report.status !== "approved") { response.status(404).json({ error: "The approved price was not found." }); return; }
+  const note = cleanText(request.body.note, 300);
+  const day = localDateFor();
+  const rateHash = crypto.createHmac("sha256", SESSION_SECRET).update(`${day}:${request.ip || "unknown"}`).digest("hex");
+  const recent = await get("SELECT COUNT(*) AS count FROM price_issue_reports WHERE rate_limit_bucket_hash = ? AND created_at >= ?", [rateHash, `${day}T00:00:00.000Z`]);
+  if (Number(recent?.count || 0) >= 10) { response.status(429).json({ error: "Too many reports were submitted from this connection today. Try again later." }); return; }
+  const fingerprint = crypto.createHash("sha256").update(`${reportId}:${reason}:${normalizeProductName(note)}`).digest("hex");
+  const existing = await get("SELECT id FROM price_issue_reports WHERE fingerprint = ? AND status IN ('open','in_review')", [fingerprint]);
+  const now = new Date().toISOString();
+  if (existing) await run("UPDATE price_issue_reports SET duplicate_count = duplicate_count + 1, updated_at = ? WHERE id = ?", [now, existing.id]);
+  else await run("INSERT INTO price_issue_reports (price_report_id, product_id, reason, public_note, status, rate_limit_bucket_hash, fingerprint, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)", [reportId, report.product_id || null, reason, note, rateHash, fingerprint, now, now]);
+  response.status(201).json({ message: "Thanks. Grocery Radar staff will review this price report. The public price was not changed automatically." });
+}));
+
+app.post("/api/admin/price-issues/:id/resolve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const issueId = Number.parseInt(request.params.id, 10);
+  const issue = await get("SELECT * FROM price_issue_reports WHERE id = ?", [issueId]);
+  if (!issue) { response.status(404).json({ error: "Price report task was not found." }); return; }
+  const now = new Date().toISOString();
+  await run("UPDATE price_issue_reports SET status = 'resolved', resolved_by = ?, resolution_note = ?, resolved_at = ?, updated_at = ? WHERE id = ?", [request.adminUser.id, cleanText(request.body.resolution_note || "Reviewed", 500), now, now, issueId]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRICE_ISSUE_RESOLVED", affectedType: "price_issue_report", affectedId: issueId, metadata: { price_report_id: issue.price_report_id } });
+  response.json({ message: "Price report task resolved. Audit history was preserved." });
+}));
+
+app.post("/api/admin/prices/:id/correct", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const reportId = Number.parseInt(request.params.id, 10);
+  const report = await get("SELECT * FROM price_reports WHERE id = ?", [reportId]);
+  if (!report) { response.status(404).json({ error: "Published price was not found." }); return; }
+  const reason = cleanText(request.body.reason, 500);
+  if (!reason) { response.status(400).json({ error: "An audit reason is required." }); return; }
+  const action = cleanText(request.body.action || "correct", 40).toLowerCase();
+  const nextProductId = Number.parseInt(request.body.product_id ?? report.product_id, 10);
+  const nextStoreId = Number.parseInt(request.body.store_id ?? report.store_id, 10);
+  const nextProduct = Number.isInteger(nextProductId) ? await get("SELECT id FROM products WHERE id = ? AND status = 'active'", [nextProductId]) : null;
+  const nextStore = Number.isInteger(nextStoreId) ? await get("SELECT id FROM stores WHERE id = ? AND active = 1", [nextStoreId]) : null;
+  if (!nextProduct || !nextStore) { response.status(400).json({ error: "Choose an active product and store." }); return; }
+  const nextPrice = action === "correct" ? Number(request.body.price ?? report.price) : Number(report.price);
+  if (!Number.isFinite(nextPrice) || nextPrice <= 0) { response.status(400).json({ error: "Enter a valid corrected price." }); return; }
+  const nextStatus = action === "expire" ? "expired" : action === "invalidate" ? "removed" : "approved";
+  const before = { price: report.price, product_id: report.product_id, store_id: report.store_id, status: report.status, valid_from_date: report.valid_from_date, valid_through_date: report.valid_through_date, promotion_conditions: report.promotion_conditions };
+  const after = { price: nextPrice, product_id: nextProduct.id, store_id: nextStore.id, status: nextStatus, valid_from_date: dateInputValue(request.body.valid_from_date ?? report.valid_from_date), valid_through_date: dateInputValue(request.body.valid_through_date ?? report.valid_through_date), promotion_conditions: cleanText(request.body.promotion_conditions ?? report.promotion_conditions, 500) };
+  const now = new Date().toISOString();
+  await run("BEGIN IMMEDIATE");
+  try {
+    await run("INSERT INTO price_corrections (price_report_id, action, before_json, after_json, reason, corrected_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [reportId, action, JSON.stringify(before), JSON.stringify(after), reason, request.adminUser.id, now]);
+    await run("UPDATE price_reports SET price = ?, product_id = ?, store_id = ?, status = ?, valid_from_date = ?, valid_through_date = ?, promotion_conditions = ?, last_edited_by = ?, last_edited_at = ?, edit_note = ? WHERE id = ?", [after.price, after.product_id, after.store_id, after.status, after.valid_from_date, after.valid_through_date, after.promotion_conditions, request.adminUser.id, now, reason, reportId]);
+    await recordPriceEvent({ reportId, eventType: action === "expire" ? "EXPIRED_BY_OWNER" : action === "invalidate" ? "INVALIDATED_BY_OWNER" : "PRICE_CORRECTED", actorUserId: request.adminUser.id, submitterUserId: report.submitted_by_user_id || report.user_id, reason, metadata: { before, after } });
+    await run("COMMIT");
+  } catch (error) { await run("ROLLBACK").catch(() => {}); throw error; }
+  response.json({ success: true, report_id: reportId, publication_state: after.status, approved_price: after.status === "approved" ? after.price : null, product_id: after.product_id, store_id: after.store_id, validity: { valid_from_date: after.valid_from_date, valid_through_date: after.valid_through_date }, message: action === "correct" ? "Published price corrected. Public queries now use the corrected value." : action === "expire" ? "Price expired and removed from current results." : "Price marked invalid and removed from public results." });
+}));
+
+app.get("/api/admin/operations/freshness", requireSuperAdminAccess, asyncRoute(async (request, response) => response.json({ settings: await all("SELECT proof_type, current_days, aging_days, updated_at FROM source_freshness_settings ORDER BY proof_type") })));
+app.post("/api/admin/operations/freshness", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const proofType = cleanText(request.body.proof_type, 50);
+  if (!PRICE_FRESHNESS_DAYS[proofType]) { response.status(400).json({ error: "Choose a supported proof type." }); return; }
+  const currentDays = Math.min(365, Math.max(1, Number.parseInt(request.body.current_days, 10)));
+  const agingDays = Math.min(730, Math.max(currentDays, Number.parseInt(request.body.aging_days, 10)));
+  const now = new Date().toISOString();
+  await run("UPDATE source_freshness_settings SET current_days = ?, aging_days = ?, updated_by = ?, updated_at = ? WHERE proof_type = ?", [currentDays, agingDays, request.adminUser.id, now, proofType]);
+  PRICE_FRESHNESS_DAYS[proofType].current = currentDays; PRICE_FRESHNESS_DAYS[proofType].aging = agingDays;
+  response.json({ message: "Freshness policy updated.", proof_type: proofType, current_days: currentDays, aging_days: agingDays });
+}));
+
+function csvCell(value) { const text = value == null ? "" : String(value); return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
+function csvResponse(response, filename, rows, columns) { response.setHeader("Content-Type", "text/csv; charset=utf-8"); response.setHeader("Content-Disposition", `attachment; filename="${filename}"`); response.send([columns.join(","), ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(","))].join("\n")); }
+
+app.get("/api/admin/exports/:kind", requireSuperAdminAccess, asyncRoute(async (request, response) => {
+  const kind = cleanText(request.params.kind, 40).toLowerCase();
+  if (kind === "products") { const rows = await all("SELECT id, display_name, preferred_brand, variant, category, subcategory, default_size_text, default_quantity, default_unit, default_storage_condition, upc, common_aliases, status, merged_into_product_id, created_at, updated_at FROM products ORDER BY id"); csvResponse(response, "products.csv", rows, Object.keys(rows[0] || { id: "", display_name: "", category: "", status: "" })); return; }
+  if (kind === "current-prices") { const rows = await all(`SELECT pr.id, pr.product_id, products.display_name AS product_name, pr.store_id, stores.name AS store_name, pr.price, pr.size_text, pr.unit, pr.price_type, pr.valid_from_date, pr.valid_through_date, pr.promotion_conditions, pr.source_date, pr.reviewed_at FROM price_reports pr LEFT JOIN products ON products.id = pr.product_id JOIN stores ON stores.id = pr.store_id WHERE ${publicPriceEligibilitySql("pr")} ORDER BY products.display_name, stores.name`); csvResponse(response, "current-prices.csv", rows, Object.keys(rows[0] || { id: "", product_id: "", product_name: "", price: "" })); return; }
+  if (kind === "historical-prices") { const rows = await all("SELECT id, product_id, store_id, price, size_text, unit, price_type, valid_from_date, valid_through_date, promotion_conditions, status, source_date, submitted_at, reviewed_at FROM price_reports ORDER BY submitted_at"); csvResponse(response, "historical-prices.csv", rows, Object.keys(rows[0] || { id: "", product_id: "", price: "", status: "" })); return; }
+  if (kind === "stores") { const rows = await all("SELECT id, name, address, city, state, store_type, active, created_at FROM stores ORDER BY name"); csvResponse(response, "stores.csv", rows, Object.keys(rows[0] || { id: "", name: "", city: "", active: "" })); return; }
+  if (kind === "catalog-json") { const products = await all("SELECT id, display_name, preferred_brand, variant, category, subcategory, default_size_text, default_unit, default_storage_condition, upc, common_aliases, status, merged_into_product_id FROM products ORDER BY id"); response.setHeader("Content-Disposition", 'attachment; filename="catalog.json"'); response.json({ exported_at: new Date().toISOString(), products }); return; }
+  response.status(404).json({ error: "Export type was not found." });
+}));
+
+app.get("/api/categories", asyncRoute(async (request, response) => {
+  const rows = await all("SELECT id, slug, display_name, parent_id, sort_order FROM category_nodes WHERE status = 'active' ORDER BY sort_order, display_name");
+  const byId = new Map(rows.map((row) => [row.id, { ...row, children: [] }]));
+  const roots = [];
+  for (const row of byId.values()) { if (row.parent_id && byId.has(row.parent_id)) byId.get(row.parent_id).children.push(row); else roots.push(row); }
+  response.json({ categories: roots, publication_requires_category: false });
+}));
+
+app.get("/api/admin/products/duplicates", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const candidates = await all(`SELECT lower(a.canonical_name) AS match_key, a.id AS product_a_id, a.display_name AS product_a_name, a.preferred_brand AS product_a_brand, a.default_size_text AS product_a_size, a.upc AS product_a_upc, b.id AS product_b_id, b.display_name AS product_b_name, b.preferred_brand AS product_b_brand, b.default_size_text AS product_b_size, b.upc AS product_b_upc
+    FROM products a JOIN products b ON b.id > a.id AND b.status = 'active' AND a.status = 'active' AND lower(b.canonical_name) = lower(a.canonical_name) AND lower(COALESCE(b.preferred_brand,'')) = lower(COALESCE(a.preferred_brand,'')) AND lower(COALESCE(b.default_size_text,'')) = lower(COALESCE(a.default_size_text,''))
+    WHERE NOT EXISTS (SELECT 1 FROM product_duplicate_decisions decisions WHERE decisions.product_a_id = a.id AND decisions.product_b_id = b.id AND decisions.decision = 'not_duplicate') ORDER BY a.display_name LIMIT 200`);
+  response.json({ candidates: candidates.map((row) => ({ ...row, confidence: "high", reason: "Matching normalized name, brand, and size" })) });
+}));
+
+app.get("/api/admin/products/:id/merge-preview", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const sourceId = Number.parseInt(request.params.id, 10); const targetId = Number.parseInt(request.query.target_product_id, 10);
+  const productSummary = async (id) => {
+    const product = await get("SELECT * FROM products WHERE id = ?", [id]); if (!product) return null;
+    const [barcodes, images, prices, aliases] = await Promise.all([all("SELECT barcode_type, normalized_value FROM product_barcodes WHERE product_id = ? AND status = 'verified'", [id]), get("SELECT COUNT(*) AS count FROM product_images WHERE product_id = ?", [id]), get("SELECT COUNT(*) AS count FROM price_reports WHERE product_id = ?", [id]), all("SELECT display_alias FROM product_normalization_rules WHERE product_id = ?", [id])]);
+    return { id: product.id, display_name: product.display_name, brand: product.preferred_brand || "", size: product.default_size_text || "", category: product.category, upc: product.upc || "", barcodes, image_count: Number(images?.count || 0), price_count: Number(prices?.count || 0), aliases: [...String(product.common_aliases || "").split(",").filter(Boolean), ...aliases.map((row) => row.display_alias)] };
+  };
+  const [source, target] = await Promise.all([productSummary(sourceId), productSummary(targetId)]);
+  if (!source || !target) { response.status(404).json({ error: "Both products must exist." }); return; }
+  const sourceCodes = new Set(source.barcodes.map((row) => row.normalized_value)); const targetCodes = new Set(target.barcodes.map((row) => row.normalized_value));
+  response.json({ source, target, blocked: sourceCodes.size > 0 && targetCodes.size > 0 && [...sourceCodes].some((value) => !targetCodes.has(value)), block_reason: "Conflicting verified barcodes require manual resolution before merge." });
+}));
+
+app.post("/api/admin/products/duplicates/not-duplicate", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const a = Number.parseInt(request.body.product_a_id, 10); const b = Number.parseInt(request.body.product_b_id, 10);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) { response.status(400).json({ error: "Choose two different products." }); return; }
+  const [first, second] = a < b ? [a, b] : [b, a];
+  await run("INSERT INTO product_duplicate_decisions (product_a_id, product_b_id, decision, decided_by, reason, created_at) VALUES (?, ?, 'not_duplicate', ?, ?, ?) ON CONFLICT(product_a_id, product_b_id) DO UPDATE SET decision = 'not_duplicate', decided_by = excluded.decided_by, reason = excluded.reason, created_at = excluded.created_at", [first, second, request.adminUser.id, cleanText(request.body.reason || "Human confirmed separate products", 300), new Date().toISOString()]);
+  response.json({ message: "Products marked as separate. They will no longer appear as this duplicate candidate." });
+}));
+
+app.post("/api/admin/search-aliases", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const alias = normalizeProductName(request.body.alias); const replacement = cleanText(request.body.replacement_query, 120).toLowerCase(); const productId = Number.parseInt(request.body.product_id, 10);
+  if (!alias || !replacement) { response.status(400).json({ error: "Alias and replacement query are required." }); return; }
+  const now = new Date().toISOString();
+  await run("INSERT INTO search_aliases (normalized_alias, replacement_query, product_id, category, status, confirmed_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?) ON CONFLICT(normalized_alias) DO UPDATE SET replacement_query = excluded.replacement_query, product_id = excluded.product_id, category = excluded.category, status = 'verified', confirmed_by = excluded.confirmed_by, updated_at = excluded.updated_at", [alias, replacement, Number.isInteger(productId) ? productId : null, cleanText(request.body.category, 60), request.adminUser.id, now, now]);
+  response.status(201).json({ message: "Verified search alias saved." });
+}));
+
+app.get("/api/admin/catalog-template.csv", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  response.setHeader("Content-Type", "text/csv; charset=utf-8"); response.setHeader("Content-Disposition", 'attachment; filename="grocery-radar-catalog-template.csv"');
+  response.send("product_name,brand,size,unit,category,subcategory,UPC,aliases,storage_condition\nBananas,,,lb,produce,fruit,,banana,fresh produce\n");
+}));
+
+app.post("/api/admin/operations/failed-jobs/:type/:id/retry", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const type = cleanText(request.params.type, 40); const id = Number.parseInt(request.params.id, 10); const now = new Date().toISOString();
+  if (type === "ai") {
+    const job = await get("SELECT * FROM ai_proof_jobs WHERE id = ?", [id]); if (!job || job.status !== "ai_failed") { response.status(409).json({ error: "Choose a failed AI job." }); return; }
+    const queued = await ensureAiProofJob(job.proof_id, { force: true }); if (!queued) { response.status(429).json({ error: "AI queue or usage limit reached. Retry later." }); return; }
+    response.status(202).json({ message: "AI retry queued within existing cost and retry controls.", job_id: job.id }); return;
+  }
+  if (type === "image") {
+    const item = await get("SELECT * FROM product_image_upload_items WHERE id = ?", [id]); if (!item || item.status !== "failed") { response.status(409).json({ error: "Choose a failed image item." }); return; }
+    const match = await matchProductImageFilename(item.original_name); await run("UPDATE product_image_upload_items SET status = 'needs_review', suggested_product_id = ?, match_confidence = ?, error_message = '', updated_at = ? WHERE id = ?", [match.product?.id || null, match.confidence || "unknown", now, id]);
+    response.json({ message: "Image returned to matching review. No duplicate public image was created." }); return;
+  }
+  if (type === "bulk") {
+    const item = await get("SELECT * FROM bulk_intake_items WHERE id = ?", [id]); if (!item || item.status !== "failed" || !item.proof_id) { response.status(409).json({ error: "Choose a failed bulk item with retained proof." }); return; }
+    const queued = await ensureAiProofJob(item.proof_id, { force: true }); if (!queued) { response.status(429).json({ error: "AI queue or usage limit reached. Retry later." }); return; }
+    await run("UPDATE bulk_intake_items SET status = 'queued', error_message = '', updated_at = ? WHERE id = ?", [now, id]); response.status(202).json({ message: "Failed batch item requeued without restarting successful items." }); return;
+  }
+  response.status(400).json({ error: "Retry type is not supported." });
+}));
+
 app.use(express.static(CLIENT_DIST_DIR, { index: false }));
 app.use(express.static(PUBLIC_DIR));
 
@@ -17916,6 +18472,7 @@ async function resumeAiProofJobs() {
 Promise.resolve()
   .then(runOwnerRepairOnStartIfEnabled)
   .then(initDb)
+  .then(loadSourceFreshnessSettings)
   .then(ensureBootstrapSuperAdmin)
   .then(auditExistingUsernames)
   .then(resumeAiProofJobs)

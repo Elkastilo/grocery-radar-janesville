@@ -332,6 +332,7 @@ async function initDb() {
       FOREIGN KEY (suggested_product_id) REFERENCES products(id) ON DELETE SET NULL
     )
   `);
+  await migrateCatalogImportRowsTable();
 
   await run(`
     CREATE TABLE IF NOT EXISTS catalog_import_images (
@@ -1278,6 +1279,175 @@ async function initDb() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS admin_dashboard_visits (
+      admin_user_id INTEGER PRIMARY KEY,
+      last_seen_at TEXT NOT NULL,
+      previous_seen_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS search_demand (
+      normalized_query TEXT PRIMARY KEY,
+      display_query TEXT NOT NULL,
+      total_searches INTEGER NOT NULL DEFAULT 0,
+      zero_result_searches INTEGER NOT NULL DEFAULT 0,
+      weak_result_searches INTEGER NOT NULL DEFAULT 0,
+      last_result_count INTEGER NOT NULL DEFAULT 0,
+      first_searched_at TEXT NOT NULL,
+      last_searched_at TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS search_aliases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      normalized_alias TEXT NOT NULL UNIQUE,
+      replacement_query TEXT NOT NULL,
+      product_id INTEGER,
+      category TEXT,
+      status TEXT NOT NULL DEFAULT 'verified',
+      confirmed_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (confirmed_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS category_nodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      parent_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (parent_id) REFERENCES category_nodes(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_barcodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      barcode_type TEXT NOT NULL,
+      normalized_value TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'verified',
+      source TEXT NOT NULL DEFAULT 'staff',
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_barcode_conflicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      normalized_value TEXT NOT NULL,
+      existing_product_id INTEGER NOT NULL,
+      attempted_product_id INTEGER,
+      source TEXT NOT NULL DEFAULT 'staff',
+      status TEXT NOT NULL DEFAULT 'open',
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      resolved_by INTEGER,
+      resolution_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT,
+      UNIQUE(normalized_value, attempted_product_id, status),
+      FOREIGN KEY (existing_product_id) REFERENCES products(id) ON DELETE RESTRICT,
+      FOREIGN KEY (attempted_product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_merge_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_product_id INTEGER NOT NULL,
+      target_product_id INTEGER NOT NULL,
+      merged_by INTEGER,
+      reason TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (source_product_id) REFERENCES products(id) ON DELETE RESTRICT,
+      FOREIGN KEY (target_product_id) REFERENCES products(id) ON DELETE RESTRICT,
+      FOREIGN KEY (merged_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_duplicate_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_a_id INTEGER NOT NULL,
+      product_b_id INTEGER NOT NULL,
+      decision TEXT NOT NULL,
+      decided_by INTEGER,
+      reason TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(product_a_id, product_b_id),
+      FOREIGN KEY (product_a_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_b_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (decided_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS price_corrections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      price_report_id INTEGER NOT NULL,
+      action TEXT NOT NULL DEFAULT 'corrected',
+      before_json TEXT NOT NULL,
+      after_json TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      corrected_by INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (price_report_id) REFERENCES price_reports(id) ON DELETE RESTRICT,
+      FOREIGN KEY (corrected_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS price_issue_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      price_report_id INTEGER NOT NULL,
+      product_id INTEGER,
+      reason TEXT NOT NULL,
+      public_note TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      duplicate_count INTEGER NOT NULL DEFAULT 1,
+      rate_limit_bucket_hash TEXT,
+      fingerprint TEXT NOT NULL,
+      resolved_by INTEGER,
+      resolution_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT,
+      FOREIGN KEY (price_report_id) REFERENCES price_reports(id) ON DELETE RESTRICT,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS source_freshness_settings (
+      proof_type TEXT PRIMARY KEY,
+      current_days INTEGER NOT NULL,
+      aging_days INTEGER NOT NULL,
+      updated_by INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS user_login_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -1528,6 +1698,64 @@ async function initDb() {
   );
 
   await run(
+    `INSERT INTO homepage_patch_notes (
+      version_label, title, summary, added_json, changed_json, fixed_json,
+      known_issues_json, next_focus_json, release_date, internal_commit_hash,
+      status, published_at, created_at, updated_at
+    )
+    SELECT 'v0.9.6', 'Operations + Catalog Scale',
+      'Operational command center, catalog scale tools, privacy-first demand insights, safe corrections, and price-history foundations.',
+      ?, ?, '[]', ?, '[]', NULL, '', 'draft', NULL, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = 'v0.9.6')`,
+    [
+      JSON.stringify([
+        "Attention Center with direct work queues.",
+        "Catalog and store coverage dashboards.",
+        "Search-demand insights for products shoppers cannot find.",
+        "UPC/barcode product matching and conflict handling.",
+        "Safe product merge and bulk catalog workflows.",
+        "Live-price correction, anonymous price reporting, health, recovery, and price-history foundations."
+      ]),
+      JSON.stringify([
+        "Stale prices, missing photos, catalog gaps, exports, and failed jobs are easier to find and resolve.",
+        "Admin Home focuses on work that needs a human decision.",
+        "Search-demand analytics are aggregated without shopper accounts or personal profiles."
+      ]),
+      JSON.stringify([
+        "Barcode camera support varies by browser and device.",
+        "Price-history insights require enough comparable observations.",
+        "Formal legal review is recommended before broader commercial launch."
+      ]),
+      now,
+      now
+    ]
+  );
+
+  for (const [proofType, currentDays, agingDays] of [
+    ["receipt_photo", 14, 30],
+    ["shelf_tag_photo", 10, 21],
+    ["weekly_ad", 7, 14],
+    ["no_photo", 7, 14]
+  ]) {
+    await run("INSERT OR IGNORE INTO source_freshness_settings (proof_type, current_days, aging_days, updated_at) VALUES (?, ?, ?, ?)", [proofType, currentDays, agingDays, now]);
+  }
+
+  const categorySeeds = [
+    ["produce", "Produce", null, 10], ["fruit", "Fruit", "produce", 11], ["bananas", "Bananas", "fruit", 12], ["apples", "Apples", "fruit", 13],
+    ["meat", "Meat", null, 20], ["beef", "Beef", "meat", 21], ["ground-beef", "Ground Beef", "beef", 22],
+    ["dairy", "Dairy", null, 30], ["milk", "Milk", "dairy", 31], ["pantry", "Pantry", null, 40], ["cereal", "Cereal", "pantry", 41],
+    ["drinks", "Drinks", null, 50], ["soda", "Soda", "drinks", 51], ["water", "Water", "drinks", 52],
+    ["household", "Household", null, 60], ["paper-products", "Paper Products", "household", 61], ["other", "Other / Uncategorized", null, 999]
+  ];
+  for (const [slug, displayName, parentSlug, sortOrder] of categorySeeds) {
+    await run("INSERT OR IGNORE INTO category_nodes (slug, display_name, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, (SELECT id FROM category_nodes WHERE slug = ?), ?, ?, ?)", [slug, displayName, parentSlug, sortOrder, now, now]);
+  }
+
+  for (const [alias, replacement, category] of [["coka cola", "coca cola", "drinks"], ["pop", "soda", "drinks"], ["2 percent milk", "2% milk", "dairy"]]) {
+    await run("INSERT OR IGNORE INTO search_aliases (normalized_alias, replacement_query, category, status, created_at, updated_at) VALUES (?, ?, ?, 'verified', ?, ?)", [alias, replacement, category, now, now]);
+  }
+
+  await run(
     `
       INSERT INTO homepage_patch_notes (
         version_label,
@@ -1656,6 +1884,18 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin_time ON admin_audit_log(admin_user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action_time ON admin_audit_log(action, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_operations_errors_status_time ON operations_errors(status, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_search_demand_zero ON search_demand(zero_result_searches DESC, last_searched_at DESC)");
+  await run("CREATE INDEX IF NOT EXISTS idx_search_aliases_product ON search_aliases(product_id, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_category_nodes_parent ON category_nodes(parent_id, sort_order)");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_barcodes_value ON product_barcodes(normalized_value) WHERE status = 'verified'");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_barcodes_product ON product_barcodes(product_id, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_barcode_conflicts_status ON product_barcode_conflicts(status, updated_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_merge_events_products ON product_merge_events(source_product_id, target_product_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_duplicate_decisions ON product_duplicate_decisions(decision, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_corrections_report ON price_corrections(price_report_id, created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_status ON price_issue_reports(status, updated_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_price ON price_issue_reports(price_report_id, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_price_issue_reports_rate ON price_issue_reports(rate_limit_bucket_hash, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_user_time ON user_login_events(user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_user_login_events_time ON user_login_events(created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_email_verification_events_user_time ON email_verification_events(user_id, created_at)");
@@ -1670,6 +1910,17 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_products_canonical_name ON products(canonical_name)");
   await run("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)");
+
+  const barcodeBackfillAt = new Date().toISOString();
+  await run(`INSERT OR IGNORE INTO product_barcodes
+    (product_id, barcode_type, normalized_value, status, source, created_at, updated_at)
+    SELECT id,
+      CASE length(replace(replace(upc, ' ', ''), '-', '')) WHEN 8 THEN 'ean_8' WHEN 12 THEN 'upc_a' WHEN 13 THEN 'ean_13' WHEN 14 THEN 'gtin_14' ELSE 'unknown' END,
+      replace(replace(upc, ' ', ''), '-', ''), 'verified', 'legacy_product', COALESCE(created_at, ?), COALESCE(updated_at, created_at, ?)
+    FROM products
+    WHERE NULLIF(trim(upc), '') IS NOT NULL
+      AND length(replace(replace(upc, ' ', ''), '-', '')) IN (8, 12, 13, 14)
+    ORDER BY id`, [barcodeBackfillAt, barcodeBackfillAt]);
 
   for (const store of STORE_SEED) {
     await run(
@@ -1845,10 +2096,20 @@ async function migrateProductsTable() {
   await addColumnIfMissing("products", "updated_by", "INTEGER");
   await addColumnIfMissing("products", "created_at", "TEXT");
   await addColumnIfMissing("products", "updated_at", "TEXT");
+  await addColumnIfMissing("products", "category_node_id", "INTEGER");
+  await addColumnIfMissing("products", "subcategory", "TEXT");
   await run(
     "UPDATE products SET created_at = COALESCE(NULLIF(created_at, ''), ?), updated_at = COALESCE(NULLIF(updated_at, ''), ?) WHERE created_at IS NULL OR created_at = '' OR updated_at IS NULL OR updated_at = ''",
     [new Date().toISOString(), new Date().toISOString()]
   );
+}
+
+async function migrateCatalogImportRowsTable() {
+  await addColumnIfMissing("catalog_import_rows", "unit", "TEXT");
+  await addColumnIfMissing("catalog_import_rows", "subcategory", "TEXT");
+  await addColumnIfMissing("catalog_import_rows", "aliases", "TEXT");
+  await addColumnIfMissing("catalog_import_rows", "storage_condition", "TEXT");
+  await addColumnIfMissing("catalog_import_rows", "upc_type", "TEXT");
 }
 
 async function migrateCartItemsTable() {
