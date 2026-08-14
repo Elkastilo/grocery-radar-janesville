@@ -18302,7 +18302,19 @@ function diskHealth() {
 }
 
 function attentionEntry(key, label, count, level, tab, filter, description = "") {
-  return { key, label, count: Number(count || 0), level, description, target: { tab, filter }, href: `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}` };
+  const hasRecordQueue = !["disk_warning", "backup_warning"].includes(key);
+  return {
+    key,
+    label,
+    count: Number(count || 0),
+    level,
+    description,
+    target: { tab, filter },
+    href: hasRecordQueue
+      ? `/admin.html?tab=attentionCenterTab&filter=${encodeURIComponent(key)}`
+      : `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}`,
+    workspace_href: `/admin.html?tab=${encodeURIComponent(tab)}&filter=${encodeURIComponent(filter || key)}`
+  };
 }
 
 async function attentionCenterSummary() {
@@ -18399,39 +18411,42 @@ async function attentionCenterSummary() {
     ]
   };
   const entries = Object.values(groups).flat();
+  const queueCounts = await attentionQueueCounts(entries.map((item) => item.key));
+  for (const item of entries) {
+    if (Object.prototype.hasOwnProperty.call(queueCounts, item.key)) item.count = queueCounts[item.key];
+  }
   return { groups, totals: { needs_action: entries.filter((item) => item.level === "needs_action").reduce((sum, item) => sum + item.count, 0), waiting: entries.filter((item) => item.level === "waiting").reduce((sum, item) => sum + item.count, 0), cleanup: entries.filter((item) => item.level === "cleanup").reduce((sum, item) => sum + item.count, 0), system: entries.filter((item) => item.level === "system").reduce((sum, item) => sum + item.count, 0) } };
 }
 
-async function attentionItems(key, limit = 100) {
-  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 100));
+function attentionQueueSql(key) {
   const productBase = "SELECT id, display_name AS title, category, default_size_text AS detail, updated_at FROM products WHERE status = 'active'";
   const queries = {
-    proofs_ready: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_status,status) AS detail, updated_at FROM price_import_batches WHERE review_status IN ('waiting','in_review','ready_to_finish') AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at LIMIT ?",
-    manager_help: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_escalation_reason,'Manager decision required') AS detail, updated_at FROM price_import_batches WHERE review_status = 'needs_help' AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at LIMIT ?",
-    possible_duplicate_proof: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Possible duplicate of proof #' || duplicate_of_batch_id AS detail, updated_at FROM price_import_batches WHERE duplicate_of_batch_id IS NOT NULL AND status NOT IN ('duplicate','proof_rejected','rejected') ORDER BY updated_at LIMIT ?",
-    no_usable_prices: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Reviewed with no usable prices' AS detail, updated_at FROM price_import_batches WHERE status = 'reviewed_no_prices' ORDER BY updated_at DESC LIMIT ?",
-    ai_zero_results: "SELECT proofs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, 'AI prepared zero candidate prices; human confirmation required' AS detail, analyses.updated_at FROM ai_proof_analyses analyses JOIN price_import_batches proofs ON proofs.id = analyses.proof_id WHERE analyses.item_count = 0 AND proofs.status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY analyses.updated_at DESC LIMIT ?",
-    ai_waiting: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.status AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status IN ('waiting','analyzing') ORDER BY jobs.updated_at LIMIT ?",
-    store_unresolved: "SELECT rows.id, rows.item_name AS title, 'Exact store requires human resolution' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.store_id IS NULL AND rows.status NOT IN ('approved','rejected','removed') ORDER BY rows.updated_at LIMIT ?",
-    missing_current_price: `${productBase} AND NOT EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) ORDER BY display_name LIMIT ?`,
-    missing_photo: `${productBase} AND NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id AND product_images.status = 'approved') ORDER BY display_name LIMIT ?`,
-    missing_upc: `${productBase} AND NULLIF(upc,'') IS NULL AND NOT EXISTS (SELECT 1 FROM product_barcodes WHERE product_barcodes.product_id = products.id AND product_barcodes.status = 'verified') ORDER BY display_name LIMIT ?`,
-    missing_size: `${productBase} AND NULLIF(default_size_text,'') IS NULL ORDER BY display_name LIMIT ?`,
-    missing_category: `${productBase} AND (NULLIF(category,'') IS NULL OR category = 'other') ORDER BY display_name LIMIT ?`,
-    reported_price: "SELECT issues.id, issues.price_report_id, products.display_name AS title, issues.reason AS detail, issues.duplicate_count AS count, issues.updated_at FROM price_issue_reports issues LEFT JOIN products ON products.id = issues.product_id WHERE issues.status IN ('open','in_review') ORDER BY issues.duplicate_count DESC, issues.updated_at DESC LIMIT ?",
-    ai_failed: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.last_error AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status = 'ai_failed' ORDER BY jobs.updated_at DESC LIMIT ?",
-    failed_image: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC LIMIT ?",
-    unmatched_image: "SELECT items.id, items.original_name AS title, items.match_confidence AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'needs_review' AND items.suggested_product_id IS NULL ORDER BY items.updated_at DESC LIMIT ?",
-    upc_conflict: "SELECT conflicts.id, 'Barcode ' || conflicts.normalized_value AS title, existing.display_name || ' ↔ ' || COALESCE(attempted.display_name, 'Unmatched catalog product') AS detail, conflicts.occurrence_count AS count, conflicts.updated_at FROM product_barcode_conflicts conflicts JOIN products existing ON existing.id = conflicts.existing_product_id LEFT JOIN products attempted ON attempted.id = conflicts.attempted_product_id WHERE conflicts.status = 'open' ORDER BY conflicts.updated_at DESC LIMIT ?",
-    failed_import: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC LIMIT ?",
-    paused_batch: "SELECT id, COALESCE(title, 'Bulk batch #' || id) AS title, 'Processing paused' AS detail, updated_at FROM bulk_intake_batches WHERE paused = 1 ORDER BY updated_at DESC LIMIT ?",
-    duplicate_screenshot: "SELECT items.id, items.original_name AS title, 'Exact duplicate screenshot; no automatic AI call' AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'duplicate' ORDER BY items.updated_at DESC LIMIT ?",
-    unmatched_catalog: "SELECT rows.id, rows.product_name AS title, rows.warnings_json AS detail, rows.updated_at FROM catalog_import_rows rows WHERE rows.status = 'draft' AND rows.suggested_product_id IS NULL AND rows.duplicate_product_id IS NULL AND rows.warnings_json != '[]' ORDER BY rows.updated_at DESC LIMIT ?",
-    missing_sale_date: "SELECT rows.id, rows.item_name AS title, 'Promotion date requires review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') IN ('one_day_sale','digital_coupon','paper_coupon') AND (NULLIF(rows.valid_from_date,'') IS NULL OR NULLIF(rows.valid_through_date,'') IS NULL) ORDER BY rows.updated_at DESC LIMIT ?",
-    promotion_conditions: "SELECT rows.id, rows.item_name AS title, 'Promotion conditions require review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') != 'regular' AND NULLIF(rows.promotion_conditions,'') IS NULL ORDER BY rows.updated_at DESC LIMIT ?",
-    location_unresolved: "SELECT reports.id, products.display_name AS title, stores.name || ' · online location applicability not verified' AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND (COALESCE(reports.proof_type,'') = 'store_page' OR NULLIF(reports.source_url,'') IS NOT NULL) AND reports.location_verification_status NOT IN ('verified_exact_store','verified_market') ORDER BY reports.submitted_at DESC LIMIT ?",
-    package_mismatch: "SELECT reports.id, products.display_name AS title, COALESCE(reports.size_text,'No report size') || ' ↔ ' || COALESCE(products.default_size_text,'No catalog size') AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id WHERE reports.status = 'approved' AND NULLIF(products.default_unit,'') IS NOT NULL AND NULLIF(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit),'') IS NOT NULL AND lower(products.default_unit) != lower(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit)) ORDER BY reports.submitted_at DESC LIMIT ?",
-    family_missing: "SELECT products.id, products.display_name AS title, 'Human-confirmed product family is missing' AS detail, products.updated_at FROM products WHERE products.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_family_members members WHERE members.product_id = products.id AND members.human_confirmed = 1) ORDER BY products.updated_at DESC LIMIT ?",
+    proofs_ready: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_status,status) AS detail, updated_at FROM price_import_batches WHERE review_status IN ('waiting','in_review','ready_to_finish') AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at",
+    manager_help: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, COALESCE(review_escalation_reason,'Manager decision required') AS detail, updated_at FROM price_import_batches WHERE review_status = 'needs_help' AND status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at",
+    possible_duplicate_proof: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Possible duplicate of proof #' || duplicate_of_batch_id AS detail, updated_at FROM price_import_batches WHERE duplicate_of_batch_id IS NOT NULL AND status NOT IN ('duplicate','proof_rejected','rejected','reviewed_no_prices','proof_reviewed','completed') ORDER BY updated_at",
+    no_usable_prices: "SELECT id, COALESCE(batch_title, photo_original_name, 'Proof #' || id) AS title, 'Reviewed with no usable prices' AS detail, updated_at FROM price_import_batches WHERE status = 'reviewed_no_prices' ORDER BY updated_at DESC",
+    ai_zero_results: "SELECT proofs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, 'AI prepared zero candidate prices; human confirmation required' AS detail, analyses.updated_at FROM ai_proof_analyses analyses JOIN price_import_batches proofs ON proofs.id = analyses.proof_id WHERE analyses.item_count = 0 AND proofs.status NOT IN ('proof_rejected','rejected','duplicate','reviewed_no_prices','proof_reviewed','completed') ORDER BY analyses.updated_at DESC",
+    ai_waiting: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.status AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status IN ('waiting','analyzing') ORDER BY jobs.updated_at",
+    store_unresolved: "SELECT rows.id, rows.item_name AS title, 'Exact store requires human resolution' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.store_id IS NULL AND rows.status NOT IN ('approved','rejected','removed') ORDER BY rows.updated_at",
+    missing_current_price: `${productBase} AND NOT EXISTS (SELECT 1 FROM price_reports pr WHERE pr.product_id = products.id AND ${publicPriceEligibilitySql("pr")}) ORDER BY display_name`,
+    missing_photo: `${productBase} AND NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id AND product_images.status = 'approved') ORDER BY display_name`,
+    missing_upc: `${productBase} AND NULLIF(upc,'') IS NULL AND NOT EXISTS (SELECT 1 FROM product_barcodes WHERE product_barcodes.product_id = products.id AND product_barcodes.status = 'verified') ORDER BY display_name`,
+    missing_size: `${productBase} AND NULLIF(default_size_text,'') IS NULL ORDER BY display_name`,
+    missing_category: `${productBase} AND (NULLIF(category,'') IS NULL OR category = 'other') ORDER BY display_name`,
+    reported_price: "SELECT issues.id, issues.price_report_id, products.display_name AS title, issues.reason AS detail, issues.duplicate_count AS count, issues.updated_at FROM price_issue_reports issues LEFT JOIN products ON products.id = issues.product_id WHERE issues.status IN ('open','in_review') ORDER BY issues.duplicate_count DESC, issues.updated_at DESC",
+    ai_failed: "SELECT jobs.id, COALESCE(proofs.batch_title, proofs.photo_original_name, 'Proof #' || proofs.id) AS title, jobs.last_error AS detail, jobs.updated_at FROM ai_proof_jobs jobs JOIN price_import_batches proofs ON proofs.id = jobs.proof_id WHERE jobs.status = 'ai_failed' ORDER BY jobs.updated_at DESC",
+    failed_image: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC",
+    unmatched_image: "SELECT items.id, items.original_name AS title, items.match_confidence AS detail, items.updated_at FROM product_image_upload_items items WHERE items.status = 'needs_review' AND items.suggested_product_id IS NULL ORDER BY items.updated_at DESC",
+    upc_conflict: "SELECT conflicts.id, 'Barcode ' || conflicts.normalized_value AS title, existing.display_name || ' ↔ ' || COALESCE(attempted.display_name, 'Unmatched catalog product') AS detail, conflicts.occurrence_count AS count, conflicts.updated_at FROM product_barcode_conflicts conflicts JOIN products existing ON existing.id = conflicts.existing_product_id LEFT JOIN products attempted ON attempted.id = conflicts.attempted_product_id WHERE conflicts.status = 'open' ORDER BY conflicts.updated_at DESC",
+    failed_import: "SELECT items.id, items.original_name AS title, items.error_message AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'failed' ORDER BY items.updated_at DESC",
+    paused_batch: "SELECT id, COALESCE(title, 'Bulk batch #' || id) AS title, 'Processing paused' AS detail, updated_at FROM bulk_intake_batches WHERE paused = 1 ORDER BY updated_at DESC",
+    duplicate_screenshot: "SELECT items.id, items.original_name AS title, 'Exact duplicate screenshot; no automatic AI call' AS detail, items.updated_at FROM bulk_intake_items items WHERE items.status = 'duplicate' ORDER BY items.updated_at DESC",
+    unmatched_catalog: "SELECT rows.id, rows.product_name AS title, rows.warnings_json AS detail, rows.updated_at FROM catalog_import_rows rows WHERE rows.status = 'draft' AND rows.suggested_product_id IS NULL AND rows.duplicate_product_id IS NULL AND rows.warnings_json != '[]' ORDER BY rows.updated_at DESC",
+    missing_sale_date: "SELECT rows.id, rows.item_name AS title, 'Promotion date requires review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') IN ('one_day_sale','digital_coupon','paper_coupon') AND (NULLIF(rows.valid_from_date,'') IS NULL OR NULLIF(rows.valid_through_date,'') IS NULL) ORDER BY rows.updated_at DESC",
+    promotion_conditions: "SELECT rows.id, rows.item_name AS title, 'Promotion conditions require review' AS detail, rows.updated_at FROM price_import_rows rows WHERE rows.status NOT IN ('approved','rejected','removed') AND COALESCE(rows.price_type,'regular') != 'regular' AND NULLIF(rows.promotion_conditions,'') IS NULL ORDER BY rows.updated_at DESC",
+    location_unresolved: "SELECT reports.id, products.display_name AS title, stores.name || ' · online location applicability not verified' AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND (COALESCE(reports.proof_type,'') = 'store_page' OR NULLIF(reports.source_url,'') IS NOT NULL) AND reports.location_verification_status NOT IN ('verified_exact_store','verified_market') ORDER BY reports.submitted_at DESC",
+    package_mismatch: "SELECT reports.id, products.display_name AS title, COALESCE(reports.size_text,'No report size') || ' ↔ ' || COALESCE(products.default_size_text,'No catalog size') AS detail, reports.submitted_at AS updated_at FROM price_reports reports JOIN products ON products.id = reports.product_id WHERE reports.status = 'approved' AND NULLIF(products.default_unit,'') IS NOT NULL AND NULLIF(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit),'') IS NOT NULL AND lower(products.default_unit) != lower(COALESCE(NULLIF(reports.comparison_unit,''),reports.unit)) ORDER BY reports.submitted_at DESC",
+    family_missing: "SELECT products.id, products.display_name AS title, 'Human-confirmed product family is missing' AS detail, products.updated_at FROM products WHERE products.status = 'active' AND NOT EXISTS (SELECT 1 FROM product_family_members members WHERE members.product_id = products.id AND members.human_confirmed = 1) ORDER BY products.updated_at DESC",
     substitute_uncertain: `SELECT * FROM (
       SELECT substitutions.id, substitutions.source_product_id, substitutions.target_product_id, sources.display_name || ' → ' || targets.display_name AS title, substitutions.confidence || ' · human substitute decision required' AS detail, substitutions.updated_at
       FROM product_substitutions substitutions JOIN products sources ON sources.id = substitutions.source_product_id JOIN products targets ON targets.id = substitutions.target_product_id WHERE substitutions.status = 'suggested' OR substitutions.confidence = 'low'
@@ -18439,16 +18454,29 @@ async function attentionItems(key, limit = 100) {
       SELECT -(first.product_id * 1000000 + second.product_id) AS id, first.product_id, second.product_id, sources.display_name || ' → ' || targets.display_name AS title, 'Same confirmed product family · human substitute decision required' AS detail, families.updated_at
       FROM product_family_members first JOIN product_family_members second ON second.family_id = first.family_id AND second.product_id != first.product_id JOIN product_families families ON families.id = first.family_id JOIN products sources ON sources.id = first.product_id JOIN products targets ON targets.id = second.product_id
       WHERE first.human_confirmed = 1 AND second.human_confirmed = 1 AND NOT EXISTS (SELECT 1 FROM product_substitutions existing WHERE existing.source_product_id = first.product_id AND existing.target_product_id = second.product_id)
-    ) ORDER BY updated_at DESC LIMIT ?`,
-    system_error: "SELECT id, error_type AS title, message AS detail, created_at AS updated_at FROM operations_errors WHERE status = 'open' AND severity IN ('error','critical') ORDER BY created_at DESC LIMIT ?"
+    ) ORDER BY updated_at DESC`,
+    system_error: "SELECT id, error_type AS title, message AS detail, created_at AS updated_at FROM operations_errors WHERE status = 'open' AND severity IN ('error','critical') ORDER BY created_at DESC"
   };
-  if (key === "possible_duplicate_product") return all("SELECT MIN(id) AS id, GROUP_CONCAT(display_name, ' ↔ ') AS title, COUNT(*) || ' matching catalog records' AS detail, MAX(updated_at) AS updated_at FROM products WHERE status = 'active' GROUP BY lower(canonical_name), lower(COALESCE(preferred_brand,'')), lower(COALESCE(default_size_text,'')) HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC LIMIT ?", [safeLimit]);
+  if (key === "possible_duplicate_product") return "SELECT MIN(id) AS id, GROUP_CONCAT(display_name, ' ↔ ') AS title, COUNT(*) || ' matching catalog records' AS detail, MAX(updated_at) AS updated_at FROM products WHERE status = 'active' GROUP BY lower(canonical_name), lower(COALESCE(preferred_brand,'')), lower(COALESCE(default_size_text,'')) HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC";
   if (key === "stale_price") {
     const agingCase = `CASE reports.proof_type WHEN 'receipt_photo' THEN ${PRICE_FRESHNESS_DAYS.receipt_photo.aging} WHEN 'shelf_tag_photo' THEN ${PRICE_FRESHNESS_DAYS.shelf_tag_photo.aging} WHEN 'weekly_ad' THEN ${PRICE_FRESHNESS_DAYS.weekly_ad.aging} ELSE ${PRICE_FRESHNESS_DAYS.no_photo.aging} END`;
-    return all(`SELECT reports.id, products.display_name AS title, stores.name || ' · last verified ' || COALESCE(reports.source_date,reports.reviewed_at,reports.submitted_at) AS detail, reports.submitted_at AS updated_at FROM price_reports reports LEFT JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND COALESCE(reports.price_type,'regular') = 'regular' AND datetime(COALESCE(NULLIF(reports.source_date,''),NULLIF(reports.reviewed_at,''),reports.submitted_at)) < datetime('now', '-' || (${agingCase}) || ' days') ORDER BY reports.submitted_at LIMIT ?`, [safeLimit]);
+    return `SELECT reports.id, products.display_name AS title, stores.name || ' · last verified ' || COALESCE(reports.source_date,reports.reviewed_at,reports.submitted_at) AS detail, reports.submitted_at AS updated_at FROM price_reports reports LEFT JOIN products ON products.id = reports.product_id JOIN stores ON stores.id = reports.store_id WHERE reports.status = 'approved' AND COALESCE(reports.price_type,'regular') = 'regular' AND datetime(COALESCE(NULLIF(reports.source_date,''),NULLIF(reports.reviewed_at,''),reports.submitted_at)) < datetime('now', '-' || (${agingCase}) || ' days') ORDER BY reports.submitted_at`;
   }
-  const sql = queries[key];
-  return sql ? all(sql, [safeLimit]) : [];
+  return queries[key] || "";
+}
+
+async function attentionItems(key, limit = 100, offset = 0) {
+  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 100));
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const sql = attentionQueueSql(key);
+  return sql ? all(`${sql} LIMIT ? OFFSET ?`, [safeLimit, safeOffset]) : [];
+}
+
+async function attentionQueueCounts(keys) {
+  const queueKeys = keys.filter((key) => attentionQueueSql(key));
+  if (!queueKeys.length) return {};
+  const rows = await all(queueKeys.map((key) => `SELECT '${key}' AS key, COUNT(*) AS count FROM (${attentionQueueSql(key)})`).join(" UNION ALL "));
+  return Object.fromEntries(rows.map((row) => [row.key, Number(row.count || 0)]));
 }
 
 async function catalogCoverageSummary() {
@@ -18495,7 +18523,13 @@ app.get("/api/admin/operations/command-center", requireAdminAccess, requireLogge
 
 app.get("/api/admin/operations/attention", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
   const category = cleanText(request.query.category, 80);
-  response.json({ summary: await attentionCenterSummary(), category, items: category ? await attentionItems(category, request.query.limit) : [] });
+  const summary = await attentionCenterSummary();
+  const queue = Object.values(summary.groups).flat().find((item) => item.key === category) || null;
+  const limit = Math.min(200, Math.max(1, Number(request.query.limit) || 100));
+  const offset = Math.max(0, Number(request.query.offset) || 0);
+  const items = category ? await attentionItems(category, limit, offset) : [];
+  const total = Number(queue?.count || 0);
+  response.json({ summary, category, queue, total, limit, offset, has_more: offset + items.length < total, items });
 }));
 
 app.get("/api/admin/operations/health", requireSuperAdminAccess, asyncRoute(async (request, response) => {

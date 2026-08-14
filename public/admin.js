@@ -28,6 +28,9 @@ const attentionCenterSummary = document.querySelector("#attentionCenterSummary")
 const attentionCenterDetails = document.querySelector("#attentionCenterDetails");
 const attentionCenterMessage = document.querySelector("#attentionCenterMessage");
 const attentionDetailTitle = document.querySelector("#attentionDetailTitle");
+const attentionQueueWorkspace = document.querySelector("#attentionQueueWorkspace");
+const attentionQueueStatus = document.querySelector("#attentionQueueStatus");
+const attentionQueueBack = document.querySelector("#attentionQueueBack");
 const attentionRefreshButton = document.querySelector("#attentionRefreshButton");
 const searchDemandList = document.querySelector("#searchDemandList");
 const duplicateProductList = document.querySelector("#duplicateProductList");
@@ -422,6 +425,7 @@ function highlightAdminTarget(options = {}) {
 }
 
 function openAdminTab(tabId, options = {}) {
+  if (options.updateHistory) updateAdminRoute(tabId, options, options.replaceHistory ? "replace" : "push");
   pendingAdminRoute = options;
   adminHistoryFilter = options.filter || "";
   switchAdminTab(tabId);
@@ -447,6 +451,42 @@ function openAdminTab(tabId, options = {}) {
   }
 
   window.setTimeout(() => highlightAdminTarget(options), 80);
+}
+
+function adminRouteUrl(tabId, options = {}) {
+  const params = new URLSearchParams();
+  params.set("tab", tabId);
+  const routeFields = [["filter", options.filter], ["report", options.reportId], ["product", options.productId], ["batch", options.priceImportBatchId]];
+  for (const [name, value] of routeFields) if (value !== undefined && value !== null && String(value)) params.set(name, String(value));
+  return `/admin.html?${params.toString()}`;
+}
+
+function updateAdminRoute(tabId, options = {}, mode = "push") {
+  const url = adminRouteUrl(tabId, options);
+  if (`${window.location.pathname}${window.location.search}` === url) return;
+  window.history[mode === "replace" ? "replaceState" : "pushState"]({ tabId }, "", url);
+}
+
+function openAttentionQueue(key, label = "Attention queue", options = {}) {
+  if (["disk_warning", "backup_warning"].includes(key)) {
+    openAdminTab("operationsTab", { filter: key, updateHistory: options.updateHistory !== false });
+    return;
+  }
+  openAdminTab("attentionCenterTab", {
+    filter: key,
+    attentionLabel: label,
+    focusQueue: options.focusQueue !== false,
+    updateHistory: options.updateHistory !== false,
+    replaceHistory: options.replaceHistory === true
+  });
+}
+
+function showAttentionOverview(options = {}) {
+  openAdminTab("attentionCenterTab", { updateHistory: options.updateHistory !== false, focusQueue: false });
+  attentionDetailTitle.textContent = "Select an issue";
+  attentionQueueStatus.textContent = "Every counter opens the matching work queue.";
+  attentionQueueBack.hidden = true;
+  attentionCenterDetails.innerHTML = '<div class="empty-state">Choose a category above to see its exact records.</div>';
 }
 
 function goToAdminTab(tabId, options = {}) {
@@ -684,7 +724,7 @@ function renderDashboard(notifications = {}, home = null) {
     `;
     for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
     for (const button of adminNotifications.querySelectorAll("[data-start-review]")) button.addEventListener("click", startReviewNext);
-    for (const button of adminNotifications.querySelectorAll("[data-attention-key]")) button.addEventListener("click", () => openAdminTab("attentionCenterTab", { filter: button.dataset.attentionKey }));
+    for (const button of adminNotifications.querySelectorAll("[data-attention-key]")) button.addEventListener("click", () => openAttentionQueue(button.dataset.attentionKey, button.querySelector("span")?.textContent || titleCase(button.dataset.attentionKey)));
     for (const button of adminNotifications.querySelectorAll("[data-shift-home]")) button.addEventListener("click", () => updateShift(button.dataset.shiftHome));
     adminNotifications.querySelector("[data-open-home-notifications]")?.addEventListener("click", () => adminNotificationBell?.click());
     const unread = Number(notifications.unread_admin_notifications || notifications.recent_admin_notifications?.filter((item) => !item.is_read).length || 0);
@@ -794,31 +834,67 @@ function renderAttentionCenter() {
   if (!attentionCenterSummary) return;
   const groups = operationsCommandData?.attention?.groups || {};
   const groupLabels = { proofs: "Proofs", prices: "Prices", products: "Products", import_ai: "Import / AI", system: "System" };
-  attentionCenterSummary.innerHTML = Object.entries(groups).map(([group, entries]) => `<section class="admin-card compact-card"><h3>${escapeHtml(groupLabels[group] || titleCase(group))}</h3><div class="attention-command-grid">${entries.map((item) => `<button class="attention-card attention-level-${escapeHtml(item.level)}" type="button" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${item.count}</strong><span>${escapeHtml(item.label)}</span><span class="notification-open-affordance">Open queue →</span></button>`).join("")}</div></section>`).join("") || '<div class="empty-state">Attention data is unavailable.</div>';
-  for (const button of attentionCenterSummary.querySelectorAll("[data-load-attention]")) button.addEventListener("click", () => loadAttentionDetails(button.dataset.loadAttention, button.dataset.attentionLabel));
+  attentionCenterSummary.innerHTML = Object.entries(groups).map(([group, entries]) => `<section class="admin-card compact-card"><h3>${escapeHtml(groupLabels[group] || titleCase(group))}</h3><div class="attention-command-grid">${entries.map((item) => `<a class="attention-card attention-level-${escapeHtml(item.level)}" href="${escapeHtml(item.href)}" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}" aria-label="Open ${escapeHtml(item.label)} queue, ${Number(item.count)} item${Number(item.count) === 1 ? "" : "s"}"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${Number(item.count)}</strong><span>${escapeHtml(item.label)}</span><span class="notification-open-affordance" aria-hidden="true">${Number(item.count) ? "Open queue →" : "View empty queue →"}</span></a>`).join("")}</div></section>`).join("") || '<div class="empty-state">Attention data is unavailable.</div>';
+  for (const link of attentionCenterSummary.querySelectorAll("[data-load-attention]")) link.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    openAttentionQueue(link.dataset.loadAttention, link.dataset.attentionLabel);
+  });
   const demand = operationsCommandData?.search_demand?.could_not_find || [];
   searchDemandList.innerHTML = demand.length ? demand.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.display_query)}</strong><span>${Number(item.total_searches)} searches · ${Number(item.zero_result_searches)} with no results</span><span>Last searched ${escapeHtml(formatDate(item.last_searched_at))}</span></div><div class="card-actions"><button class="secondary-button" type="button" data-demand-add="${escapeHtml(item.display_query)}">Add Product</button><a class="quiet-button" href="/?q=${encodeURIComponent(item.display_query)}" target="_blank" rel="noopener">Search Existing Catalog</a></div></article>`).join("") : '<div class="empty-state">No zero-result search demand recorded yet.</div>';
   for (const button of searchDemandList.querySelectorAll("[data-demand-add]")) button.addEventListener("click", () => { openAdminTab("productToolsTab"); window.setTimeout(() => { const input = productToolsContent.querySelector('[data-product-create] [data-product-field="display_name"]'); if (input) { input.value = button.dataset.demandAdd; input.focus(); input.scrollIntoView({ behavior: "smooth", block: "center" }); } }, 100); });
   loadDuplicateProductCandidates();
   const initialFilter = pendingAdminRoute.filter;
-  if (initialFilter) { const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter); loadAttentionDetails(initialFilter, item?.label || titleCase(initialFilter)); }
+  if (initialFilter) {
+    const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter);
+    loadAttentionDetails(initialFilter, pendingAdminRoute.attentionLabel || item?.label || titleCase(initialFilter), { focus: pendingAdminRoute.focusQueue !== false });
+  } else {
+    attentionDetailTitle.textContent = "Select an issue";
+    attentionQueueStatus.textContent = "Every counter opens the matching work queue.";
+    attentionQueueBack.hidden = true;
+    attentionCenterDetails.innerHTML = '<div class="empty-state">Choose a category above to see its exact records.</div>';
+  }
 }
 
-async function loadAttentionDetails(key, label = "Attention queue") {
+async function loadAttentionDetails(key, label = "Attention queue", options = {}) {
   if (!attentionCenterDetails) return;
   if (["disk_warning", "backup_warning"].includes(key)) { openAdminTab("operationsTab", { filter: key }); return; }
+  const offset = Math.max(0, Number(options.offset || 0));
+  const append = Boolean(options.append && offset);
   attentionDetailTitle.textContent = label;
-  attentionCenterDetails.innerHTML = '<div class="empty-state">Loading matching records…</div>';
+  attentionQueueStatus.textContent = append ? `Loading more ${label.toLowerCase()}…` : `Loading ${label.toLowerCase()}…`;
+  attentionQueueBack.hidden = false;
+  attentionCenterDetails.setAttribute("aria-busy", "true");
+  if (!append) attentionCenterDetails.innerHTML = '<div class="empty-state">Loading matching records…</div>';
+  else attentionCenterDetails.querySelector("[data-attention-load-more]")?.remove();
+  if (!append && options.focus !== false) {
+    attentionDetailTitle.focus({ preventScroll: true });
+    attentionQueueWorkspace?.scrollIntoView({ block: "start" });
+  }
   try {
-    const data = await fetchJson(`/api/admin/operations/attention?category=${encodeURIComponent(key)}${adminQuery("&")}`);
+    const data = await fetchJson(`/api/admin/operations/attention?category=${encodeURIComponent(key)}&limit=100&offset=${offset}${adminQuery("&")}`);
     const items = data.items || [];
-    attentionCenterDetails.innerHTML = items.length ? items.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions"><button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${item.price_report_id || item.id}">Open</button>${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`).join("") : '<div class="empty-state">No matching records remain in this queue.</div>';
-    for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]")) button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId));
-    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-price-issue]")) button.addEventListener("click", () => resolvePriceIssue(button.dataset.resolvePriceIssue, key, label));
-    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]")) button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label));
-    for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]")) button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label));
-    for (const button of attentionCenterDetails.querySelectorAll("[data-substitute-decision]")) button.addEventListener("click", () => resolveSubstitute(button.dataset.sourceProduct, button.dataset.targetProduct, button.dataset.substituteDecision, key, label));
-  } catch (error) { attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`; }
+    const total = Number(data.total || 0);
+    const shown = offset + items.length;
+    attentionQueueStatus.textContent = total ? `Showing ${Math.min(shown, total)} of ${total} item${total === 1 ? "" : "s"} in this queue.` : "No items currently need this review.";
+    const itemMarkup = items.map((item) => {
+      const openId = key === "substitute_uncertain" ? item.source_product_id : item.price_report_id || item.id;
+      const showOpen = key !== "upc_conflict";
+      return `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.title || `Record #${item.id}`)}</strong><span>${escapeHtml(item.detail || "Review required")}</span>${item.count ? `<span>${Number(item.count)} related records</span>` : ""}${item.updated_at ? `<span>Updated ${escapeHtml(formatDate(item.updated_at))}</span>` : ""}</div><div class="card-actions">${showOpen ? `<button class="secondary-button" type="button" data-attention-open="${escapeHtml(key)}" data-attention-id="${openId}">Open record</button>` : ""}${key === "reported_price" ? `<button class="quiet-button" type="button" data-resolve-price-issue="${item.id}">Resolve Report</button>` : ""}${key === "upc_conflict" ? `<button class="quiet-button" type="button" data-resolve-upc-conflict="${item.id}">Keep Existing Assignment</button>` : ""}${key === "substitute_uncertain" ? `<button class="quiet-button" type="button" data-substitute-decision="confirm" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Confirm Substitute</button><button class="quiet-button" type="button" data-substitute-decision="alternative_only" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Alternative Only</button><button class="quiet-button" type="button" data-substitute-decision="not_related" data-source-product="${item.source_product_id}" data-target-product="${item.target_product_id}">Not Related</button>` : ""}${["ai_failed", "failed_image", "failed_import"].includes(key) ? `<button class="quiet-button" type="button" data-retry-job="${key === "ai_failed" ? "ai" : key === "failed_image" ? "image" : "bulk"}" data-retry-job-id="${item.id}">Retry</button>` : ""}</div></article>`;
+    }).join("");
+    if (append) attentionCenterDetails.insertAdjacentHTML("beforeend", itemMarkup);
+    else attentionCenterDetails.innerHTML = itemMarkup || '<div class="empty-state">No items currently need this review.</div>';
+    if (data.has_more) attentionCenterDetails.insertAdjacentHTML("beforeend", `<div class="card-actions"><button class="secondary-button" type="button" data-attention-load-more="${shown}">Load more</button></div>`);
+    for (const button of attentionCenterDetails.querySelectorAll("[data-attention-open]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => openAttentionRecord(button.dataset.attentionOpen, button.dataset.attentionId)); }
+    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-price-issue]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolvePriceIssue(button.dataset.resolvePriceIssue, key, label)); }
+    for (const button of attentionCenterDetails.querySelectorAll("[data-resolve-upc-conflict]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveUpcConflict(button.dataset.resolveUpcConflict, key, label)); }
+    for (const button of attentionCenterDetails.querySelectorAll("[data-retry-job]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => retryFailedJob(button.dataset.retryJob, button.dataset.retryJobId, key, label)); }
+    for (const button of attentionCenterDetails.querySelectorAll("[data-substitute-decision]:not([data-bound])")) { button.dataset.bound = "true"; button.addEventListener("click", () => resolveSubstitute(button.dataset.sourceProduct, button.dataset.targetProduct, button.dataset.substituteDecision, key, label)); }
+    attentionCenterDetails.querySelector("[data-attention-load-more]")?.addEventListener("click", (event) => loadAttentionDetails(key, label, { append: true, offset: event.currentTarget.dataset.attentionLoadMore, focus: false }));
+  } catch (error) {
+    attentionQueueStatus.textContent = "This queue could not be loaded.";
+    attentionCenterDetails.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+  } finally { attentionCenterDetails.setAttribute("aria-busy", "false"); }
 }
 
 async function resolveSubstitute(sourceId, targetId, decision, key, label) {
@@ -845,10 +921,13 @@ async function resolvePriceIssue(issueId, key, label) {
 
 function openAttentionRecord(key, id) {
   if (key === "location_unresolved") { resolveArenaLocation(id); return; }
-  if (["missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product"].includes(key)) openAdminTab("productToolsTab", { productId: id, filter: key });
-  else if (key === "reported_price") openAdminTab("pricesTab", { filter: "reported", reportId: id });
-  else if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) openAdminTab("operationsTab", { filter: key });
-  else openAdminTab("priceImporterTab", { priceImportRowId: id, filter: key });
+  if (["proofs_ready", "manager_help", "possible_duplicate_proof", "ai_zero_results"].includes(key)) {
+    openAdminTab("inboxTab", { filter: key, priceImportBatchId: id, updateHistory: true });
+    window.setTimeout(() => openReceiptReview(id), 0);
+  } else if (["missing_current_price", "missing_photo", "missing_upc", "missing_size", "missing_category", "possible_duplicate_product", "family_missing", "substitute_uncertain"].includes(key)) openAdminTab("productToolsTab", { productId: id, filter: key, updateHistory: true });
+  else if (["reported_price", "package_mismatch"].includes(key)) openAdminTab("pricesTab", { filter: key === "reported_price" ? "reported" : key, reportId: id, updateHistory: true });
+  else if (["ai_failed", "failed_image", "failed_import", "system_error"].includes(key)) openAdminTab("operationsTab", { filter: key, updateHistory: true });
+  else openAdminTab("priceImporterTab", { priceImportRowId: id, filter: key, updateHistory: true });
 }
 
 async function resolveArenaLocation(reportId) {
@@ -6308,13 +6387,21 @@ function applyAdminInitialRoute() {
     userId: params.get("user") || "",
     storeRequestId: params.get("storeRequest") || "",
     suggestionId: params.get("suggestion") || "",
+    productId: params.get("product") || "",
     filter: params.get("filter") || "",
-    priceImportBatchId: params.get("batch") || ""
+    priceImportBatchId: params.get("batch") || "",
+    focusQueue: false
   });
   if (tab === "inboxTab" && params.get("batch")) {
     openReceiptReview(params.get("batch"));
   }
 }
+
+window.addEventListener("popstate", () => {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.get("tab")) { openAdminTab("dashboardTab"); return; }
+  applyAdminInitialRoute();
+});
 
 pinForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -6348,6 +6435,11 @@ bulkPriceIntakeForm?.addEventListener("submit", submitBulkPriceIntake);
 bulkProductImagesForm?.addEventListener("submit", submitBulkProductImages);
 operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
 attentionRefreshButton?.addEventListener("click", () => loadAdminData().catch((error) => setMessage(attentionCenterMessage, error.message, "error")));
+attentionQueueBack?.addEventListener("click", (event) => {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  showAttentionOverview();
+});
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 reviewNextButton?.addEventListener("click", startReviewNext);
 for (const button of inboxFilters?.querySelectorAll("[data-inbox-filter]") || []) {

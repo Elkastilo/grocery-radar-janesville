@@ -108,11 +108,58 @@ async function main() {
     const published = await owner.post(`/api/admin/catalog-imports/${catalog.body.batch.id}/publish`, {});
     assert.equal(published.response.status, 200); assert.equal(published.body.batch.summary.published, 1);
 
+    const queueDb = openDb(app.dataDir);
+    const duplicateC = await run(queueDb, "INSERT INTO products (canonical_name,display_name,preferred_brand,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('attention duplicate','Attention Duplicate A','Test','12 oz','oz','pantry','active',?,?)", [now, now]);
+    const duplicateD = await run(queueDb, "INSERT INTO products (canonical_name,display_name,preferred_brand,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('attention duplicate','Attention Duplicate B','Test','12 oz','oz','pantry','active',?,?)", [now, now]);
+    const locationReport = await run(queueDb, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,size_text,proof_type,source_url,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,'Coca-Cola 12 Pack','drinks',3.49,1,'pack',3.49,'12 pack','store_page','https://example.test/store','high','approved','regular',?,?,?,?, 'location_needs_review')", [ownerRow.id, store.id, productA.lastID, now.slice(0, 10), now, now, new Date(Date.now() + 7 * 86400000).toISOString()]);
+    const family = await run(queueDb, "INSERT INTO product_families (slug,display_name,category,generic_product_type,created_by,created_at,updated_at) VALUES ('attention-cola','Attention Cola','drinks','cola',?,?,?)", [ownerRow.id, now, now]);
+    await run(queueDb, "INSERT INTO product_family_members (family_id,product_id,confidence,source,human_confirmed,confirmed_by,confirmed_at,created_at,updated_at) VALUES (?,?, 'high','staff',1,?,?,?,?)", [family.lastID, productA.lastID, ownerRow.id, now, now, now]);
+    await run(queueDb, "INSERT INTO product_substitutions (source_product_id,target_product_id,substitution_type,confidence,reasons_json,source,status,created_at,updated_at) VALUES (?,?,'very_similar','low','[\"same family\"]','rule_suggestion','suggested',?,?)", [productA.lastID, duplicateC.lastID, now, now]);
+    const proof = await run(queueDb, "INSERT INTO price_import_batches (source_type,proof_type,photo_path,photo_original_name,status,batch_title,created_by,created_at,updated_at) VALUES ('receipt','receipt_photo','attention-proof.jpg','attention-proof.jpg','import_draft','Attention AI failure',?,?,?)", [ownerRow.id, now, now]);
+    await run(queueDb, "INSERT INTO ai_proof_jobs (proof_id,status,last_error,queued_at,updated_at) VALUES (?,'ai_failed','Fixture AI failure',?,?)", [proof.lastID, now, now]);
+    const terminalProof = await run(queueDb, "INSERT INTO price_import_batches (source_type,proof_type,photo_path,photo_original_name,status,review_status,duplicate_of_batch_id,created_by,created_at,updated_at) VALUES ('receipt','receipt_photo','terminal-proof.jpg','terminal-proof.jpg','completed','completed',?,?,?,?)", [proof.lastID, ownerRow.id, now, now]);
+    const bulk = await run(queueDb, "INSERT INTO bulk_intake_batches (title,proof_type,status,created_by,created_at,updated_at) VALUES ('Attention bulk','receipt_photo','processing',?,?,?)", [ownerRow.id, now, now]);
+    await run(queueDb, "INSERT INTO bulk_intake_items (bulk_batch_id,original_name,status,error_message,created_at,updated_at) VALUES (?,'failed-proof.jpg','failed','Fixture import failure',?,?)", [bulk.lastID, now, now]);
+    const imageBatch = await run(queueDb, "INSERT INTO product_image_upload_batches (title,status,created_by,created_at,updated_at) VALUES ('Attention images','needs_review',?,?,?)", [ownerRow.id, now, now]);
+    await run(queueDb, "INSERT INTO product_image_upload_items (batch_id,original_path,original_name,mime_type,size_bytes,file_hash,status,error_message,created_at,updated_at) VALUES (?,'/private/failed.jpg','failed.jpg','image/jpeg',10,'attention-failed','failed','Fixture image failure',?,?)", [imageBatch.lastID, now, now]);
+    await run(queueDb, "INSERT INTO product_image_upload_items (batch_id,original_path,original_name,mime_type,size_bytes,file_hash,status,created_at,updated_at) VALUES (?,'/private/unmatched.jpg','unmatched.jpg','image/jpeg',10,'attention-unmatched','needs_review',?,?)", [imageBatch.lastID, now, now]);
+    await close(queueDb);
+
     const command = await owner.get("/api/admin/operations/command-center");
     assert.equal(command.response.status, 200, JSON.stringify(command.body));
     assert.ok(command.body.search_demand.could_not_find.some((item) => item.normalized_query === "dragon fruit" && Number(item.zero_result_searches) === 2));
     assert.ok(Number(command.body.coverage.catalog.products) >= 2);
     assert.equal(command.body.attention.groups.products.find((item) => item.key === "upc_conflict").count, 1);
+    const attentionCards = Object.values(command.body.attention.groups).flat();
+    for (const card of attentionCards) {
+      assert.ok(card.href.startsWith("/admin.html?tab="), `${card.key} must have a bookmarkable destination.`);
+      assert.doesNotMatch(card.href, /pin|token|secret/i, `${card.key} URL must not contain a secret.`);
+      if (["disk_warning", "backup_warning"].includes(card.key)) continue;
+      const queue = await owner.get(`/api/admin/operations/attention?category=${encodeURIComponent(card.key)}`);
+      assert.equal(queue.response.status, 200, card.key);
+      assert.equal(Number(queue.body.total), Number(card.count), `${card.key} counter must equal its destination total.`);
+      assert.equal(queue.body.items.length, Math.min(Number(card.count), 100), `${card.key} destination must return the counted records subject only to pagination.`);
+      assert.equal(queue.body.queue.href, card.href, `${card.key} API queue metadata must identify the same destination.`);
+    }
+    for (const key of ["missing_photo", "missing_current_price", "missing_category", "missing_size", "missing_upc"]) {
+      const card = attentionCards.find((item) => item.key === key);
+      const queue = await owner.get(`/api/admin/operations/attention?category=${key}`);
+      assert.equal(queue.body.total, card.count, `${key} product count must use its destination eligibility definition.`);
+    }
+    const pagedPhotos = await owner.get("/api/admin/operations/attention?category=missing_photo&limit=1&offset=0");
+    assert.equal(pagedPhotos.body.items.length, Math.min(1, pagedPhotos.body.total));
+    assert.equal(pagedPhotos.body.has_more, pagedPhotos.body.total > 1, "Attention queue pagination must be explicit.");
+    const queueByKey = async (key) => (await owner.get(`/api/admin/operations/attention?category=${key}`)).body;
+    assert.ok((await queueByKey("possible_duplicate_product")).items.some((item) => Number(item.id) === duplicateC.lastID), "Duplicate-product queue must open the exact duplicate group.");
+    assert.ok((await queueByKey("reported_price")).items.some((item) => Number(item.price_report_id) === report.lastID), "Reported-price queue must contain the unresolved report.");
+    assert.ok((await queueByKey("location_unresolved")).items.some((item) => Number(item.id) === locationReport.lastID), "Location queue must contain the unresolved online observation.");
+    assert.ok((await queueByKey("family_missing")).items.some((item) => Number(item.id) === duplicateD.lastID), "Missing-family queue must contain the exact product.");
+    assert.ok((await queueByKey("substitute_uncertain")).items.some((item) => Number(item.source_product_id) === productA.lastID && Number(item.target_product_id) === duplicateC.lastID), "Substitute queue must contain the unresolved candidate.");
+    assert.ok((await queueByKey("ai_failed")).items.some((item) => Number(item.id) > 0));
+    assert.ok((await queueByKey("failed_import")).items.some((item) => item.title === "failed-proof.jpg"));
+    assert.ok((await queueByKey("failed_image")).items.some((item) => item.title === "failed.jpg"));
+    assert.ok((await queueByKey("unmatched_image")).items.some((item) => item.title === "unmatched.jpg"));
+    assert.equal((await queueByKey("possible_duplicate_proof")).items.some((item) => Number(item.id) === terminalProof.lastID), false, "Terminal proofs must stay out of active duplicate queues.");
     const upcAttention = await owner.get("/api/admin/operations/attention?category=upc_conflict");
     assert.equal(upcAttention.body.items.length, 1);
     assert.equal((await owner.post(`/api/admin/barcode-conflicts/${upcAttention.body.items[0].id}/resolve`, { resolution_note: "Existing verified product retained" })).response.status, 200);
@@ -142,6 +189,10 @@ async function main() {
     assert.match(source, /href="\/privacy\.html"/); assert.match(source, /href="\/terms\.html"/);
     const adminSource = fs.readFileSync(path.join(ROOT, "public/admin.js"), "utf8");
     assert.doesNotMatch(adminSource, /params\.set\(["']pin["']/i, "Admin secrets must not enter URL query strings.");
+    assert.match(adminSource, /openAttentionQueue\(link\.dataset\.loadAttention/);
+    assert.match(adminSource, /window\.history\[mode === "replace" \? "replaceState" : "pushState"\]/);
+    assert.match(adminSource, /No items currently need this review\./, "Zero-count queues need an intentional empty state.");
+    assert.match(adminSource, /attentionDetailTitle\.focus\(\{ preventScroll: true \}\)/, "Queue navigation must move keyboard focus to its heading.");
   } finally { await stopServer(app); }
   console.log("Operations command center, UPC, merge, import, correction, privacy, reporting, health, export, and history tests passed.");
 }
