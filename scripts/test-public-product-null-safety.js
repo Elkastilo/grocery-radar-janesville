@@ -38,6 +38,12 @@ async function main() {
   const appSource = fs.readFileSync(path.join(__dirname, "..", "client", "src", "App.jsx"), "utf8");
   assert.match(appSource, /productCardViewModel\(product, bestReport\)/);
   assert.doesNotMatch(appSource, /const reportSize\s*=\s*\(report\)\s*=>\s*report\.size_text/);
+  assert.match(appSource, /Submit proof to help fill this gap\./, "A no-price product must invite anonymous proof submission.");
+  assert.doesNotMatch(appSource, /Submit proof after signing in|submit proof once you are signed in|sign up to submit|account required to submit/i, "Anonymous proof entry must not retain stale account-required copy.");
+  assert.match(appSource, /openScreen\('submissions'\)[^>]+aria-label="Open My Submissions"/, "The old public Account icon must lead to privacy-first submission tracking.");
+  assert.doesNotMatch(appSource, /aria-label="Open account"/, "The account-free public header must not advertise an Account control.");
+  assert.match(appSource, /ActionButton label="Submit Proof"[^\n]+openScreen\('submit'\)/, "A no-price product must open anonymous Submit Proof directly.");
+  assert.match(appSource, /function SubmitScreen\(\{ stores, selectedProduct, openScreen, setSelectedProofId \}\)/, "Submit Proof must not depend on shopper authentication state.");
   console.log("Public product null-safety tests passed.");
 }
 

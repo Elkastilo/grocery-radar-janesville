@@ -86,4 +86,17 @@ assert.doesNotMatch(storeResolutionBody, /openReceiptReview\s*\(/, "Store resolu
 assert.match(storeResolutionBody, /Resolved store: \$\{savedStore\.name\} ✓/);
 assert.match(storeResolutionBody, /Could not save store\. Please try again\./);
 
+const approveBody = functionBody("approveReviewRow", "rejectReviewRow");
+assert.match(approveBody, /reviewRowSaveQueues\.get/, "Approval must wait for the row's pending autosave.");
+assert.match(approveBody, /await pendingSave/, "Approval must not race a human edit.");
+assert.match(approveBody, /expected_draft_updated_at/, "Approval must identify the authoritative saved revision.");
+assert.doesNotMatch(approveBody, /price\s*:/, "Approval must not send a browser price object back as publication authority.");
+
+const saveBody = functionBody("persistReviewRow", "saveReviewRow");
+assert.match(saveBody, /applyAuthoritativeReviewRow\(rowElement, result\.row\)/, "Save must replace local display state with the server response.");
+assert.match(source, /saveState\.textContent = "Saved ✓"/, "The authoritative save must be visible on the edited card.");
+assert.match(source, /data-draft-updated-at=/, "Rendered drafts must carry their persisted revision.");
+assert.match(source, /data-row-save-state/, "Each editable row must show its own save state.");
+assert.match(source, /name="product_id"/, "Review Edit must allow a human product rematch.");
+
 console.log("Review workspace UX regression tests passed.");

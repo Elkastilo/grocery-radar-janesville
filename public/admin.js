@@ -145,6 +145,7 @@ let adminV2FeedbackData = { feedback: [] };
 let adminV2AnnouncementsData = { announcements: [] };
 let activeInboxFilter = "all";
 let activeReviewState = null;
+const reviewRowSaveQueues = new Map();
 let activePriceImportMode = "weekly_ad";
 let selectedPriceImportBatchId = "";
 let selectedPriceImportRows = new Set();
@@ -853,11 +854,15 @@ function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false
   const decided = ["approved", "rejected", "removed"].includes(row.status);
   const price = Number(row.price);
   const statusCopy = row.status === "approved" ? "Approved" : row.status === "rejected" ? `Rejected${row.rejection_reason ? ` · ${titleCase(row.rejection_reason)}` : ""}` : confidenceCopy;
-  return `<article class="receipt-item-row ${confidence === "high" && row.status === "ready_for_review" ? "is-ai-ready" : "is-ai-flagged"}" data-review-row="${row.id}" data-row-status="${escapeHtml(row.status)}">
+  const productMatches = [{ id: row.product_id, display_name: row.product_display_name || row.item_name }, ...(row.product_matches || [])]
+    .filter((product, index, products) => product.id && products.findIndex((candidate) => Number(candidate.id) === Number(product.id)) === index);
+  return `<article class="receipt-item-row ${confidence === "high" && row.status === "ready_for_review" ? "is-ai-ready" : "is-ai-flagged"}" data-review-row="${row.id}" data-row-status="${escapeHtml(row.status)}" data-draft-updated-at="${escapeHtml(row.updated_at || "")}">
     <div class="receipt-item-heading"><div class="receipt-product-summary">${row.product_image_url ? `<img class="receipt-product-thumbnail" src="${escapeHtml(row.product_image_url)}" alt="${escapeHtml(row.product_image_alt_text || row.product_display_name || row.item_name)}" loading="lazy">` : ""}<div><strong>${escapeHtml(row.item_name || "Unknown item")}</strong><div class="receipt-item-summary"><span>${Number.isFinite(price) ? `$${price.toFixed(2)}` : "Price needed"}</span><span>${escapeHtml(row.size_text || "Size unknown")}</span><span>${escapeHtml(titleCase(row.category || "other"))} · ${escapeHtml(titleCase(row.storage_condition || "unknown"))}</span></div></div></div><span class="ai-confidence ai-confidence-${escapeHtml(confidence)}">${escapeHtml(statusCopy)}</span></div>
     ${row.product_id && !row.product_image_url ? `<div class="missing-product-photo"><strong>No product photo</strong>${canManageImages ? `<div class="card-actions"><button class="quiet-button" type="button" data-add-review-photo="${row.product_id}" data-product-name="${escapeHtml(row.product_display_name || row.item_name)}">Add photo</button><button class="quiet-button" type="button" data-proof-crop-deferred>Use from proof</button><button class="quiet-button" type="button" data-skip-photo>Skip</button></div>` : '<span class="field-help">A category placeholder will be shown publicly.</span>'}</div>` : ""}
     ${!decided ? `<div class="receipt-item-actions"><button class="primary-button" type="button" data-approve-row="${row.id}" ${canApprove ? "" : "disabled"}>Approve</button>${canReview ? `<button class="danger-button" type="button" data-open-reject="${row.id}">Reject</button>` : ""}<button class="quiet-button" type="button" data-edit-row="${row.id}" aria-expanded="false">Edit</button></div>` : ""}
     <div class="receipt-item-edit" data-edit-fields hidden>
+      <span class="field-help" data-row-save-state></span>
+      <label><span>Matched product</span><select name="product_id"><option value="">Match during approval</option>${productMatches.map((product) => `<option value="${product.id}" ${Number(row.product_id) === Number(product.id) ? "selected" : ""}>${escapeHtml(product.display_name || `Product #${product.id}`)}</option>`).join("")}</select></label>
       <label><span>Item</span><input name="item_name" value="${escapeHtml(row.item_name || "")}" aria-label="Item name"></label>
       <label><span>Price</span><input name="price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.price || "")}" aria-label="Price"></label>
       <label><span>Size / amount</span><input name="size_text" value="${escapeHtml(row.size_text || "")}" aria-label="Package size or amount"></label>
@@ -867,10 +872,17 @@ function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false
       <label><span>Brand</span><input name="brand" value="${escapeHtml(row.brand || "")}"></label>
       <label><span>Variant</span><input name="variant" value="${escapeHtml(row.variant || "")}"></label>
       <label><span>Quantity</span><input name="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(row.quantity || 1)}"></label>
+      <label><span>Unit</span><input name="unit" value="${escapeHtml(row.unit || "each")}" placeholder="each, lb, oz"></label>
+      <label><span>Comparison / unit price</span><input name="comparison_price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.comparison_price || "")}"></label>
+      <label><span>Comparison unit</span><input name="comparison_unit" value="${escapeHtml(row.comparison_unit || row.unit || "each")}" placeholder="each, lb, oz"></label>
+      <label><span>Estimated item price</span><input name="estimated_item_price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.estimated_item_price || "")}"></label>
+      <label><span>Package price</span><input name="package_price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.package_price || "")}"></label>
       <label><span>Price type</span><select name="price_type">${priceTypes.map((value) => `<option value="${value}" ${row.price_type === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
       <label><span>Source date</span><input name="source_date" type="date" value="${escapeHtml(row.source_date || "")}"></label>
       <label><span>Valid from</span><input name="valid_from_date" type="date" value="${escapeHtml(row.valid_from_date || "")}"></label>
       <label><span>Valid through</span><input name="valid_through_date" type="date" value="${escapeHtml(row.valid_through_date || "")}"></label>
+      <label><span>Valid from time</span><input name="valid_from_time" type="time" value="${escapeHtml(row.valid_from_time || "")}"></label>
+      <label><span>Valid through time</span><input name="valid_through_time" type="time" value="${escapeHtml(row.valid_through_time || "")}"></label>
       <label><span>Original offer text</span><input name="display_offer_text" value="${escapeHtml(row.display_offer_text || "")}" placeholder="2 for $5 with Rewards"></label>
       <label><span>Promotion conditions</span><input name="promotion_conditions" value="${escapeHtml(row.promotion_conditions || "")}" placeholder="Rewards Card required. Limit 2."></label>
       <label><span>Schedule text</span><input name="promotion_schedule_text" value="${escapeHtml(row.promotion_schedule_text || "")}" placeholder="Tuesday only"></label>
@@ -943,7 +955,7 @@ function renderReceiptReview(data, options = {}) {
     </div>`;
   if (options.scrollToWorkspace) receiptReviewWorkspace.scrollIntoView({ block: "start" });
   for (const rowElement of receiptReviewWorkspace.querySelectorAll("[data-review-row]")) {
-    for (const input of rowElement.querySelectorAll("[data-edit-fields] input, [data-edit-fields] select")) input.addEventListener("change", () => saveReviewRow(rowElement));
+    for (const input of rowElement.querySelectorAll("[data-edit-fields] input, [data-edit-fields] select")) input.addEventListener("change", () => saveReviewRow(rowElement, input.name));
   }
   for (const button of receiptReviewWorkspace.querySelectorAll("[data-edit-row]")) button.addEventListener("click", () => {
     const edit = button.closest("[data-review-row]").querySelector("[data-edit-fields]");
@@ -1148,6 +1160,10 @@ function openReviewPhotoDialog(batchId, productId, productName) {
 async function approveReviewRow(batchId, rowId) {
   const payload = { pin: getPin() };
   try {
+    const pendingSave = reviewRowSaveQueues.get(String(rowId));
+    if (pendingSave) await pendingSave;
+    const rowElement = receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`);
+    if (rowElement?.dataset.draftUpdatedAt) payload.expected_draft_updated_at = rowElement.dataset.draftUpdatedAt;
     let result;
     try {
       result = await fetchJson(`/api/admin/price-import-rows/${rowId}/approve${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
@@ -1207,13 +1223,56 @@ async function releaseAndExitReview(batchId) {
   openAdminTab("inboxTab");
 }
 
-async function saveReviewRow(rowElement) {
+function applyAuthoritativeReviewRow(rowElement, row) {
+  if (!rowElement || !row) return;
+  rowElement.dataset.draftUpdatedAt = row.updated_at || "";
+  rowElement.dataset.rowStatus = row.status || rowElement.dataset.rowStatus;
+  const inputs = rowElement.querySelectorAll("[data-edit-fields] input, [data-edit-fields] select");
+  for (const input of inputs) {
+    if (!input.name || !Object.prototype.hasOwnProperty.call(row, input.name)) continue;
+    const nextValue = row[input.name];
+    input.value = nextValue === null || nextValue === undefined ? "" : String(nextValue);
+  }
+  const summary = rowElement.querySelector(".receipt-item-summary");
+  if (summary) {
+    const parts = summary.querySelectorAll("span");
+    if (parts[0]) parts[0].textContent = row.price == null ? "Price needed" : `$${Number(row.price).toFixed(2)}`;
+    if (parts[1]) parts[1].textContent = row.size_text || "Size unknown";
+    if (parts[2]) parts[2].textContent = `${titleCase(row.category || "other")} · ${titleCase(row.storage_condition || "unknown")}`;
+  }
+  const title = rowElement.querySelector(".receipt-product-summary strong");
+  if (title) title.textContent = row.item_name || "Unknown item";
+  const saveState = rowElement.querySelector("[data-row-save-state]");
+  if (saveState) saveState.textContent = "Saved ✓";
+}
+
+async function persistReviewRow(rowElement, payload) {
   const rowId = rowElement.dataset.reviewRow;
+  const saveState = rowElement.querySelector("[data-row-save-state]");
+  if (saveState) saveState.textContent = "Saving…";
+  const result = await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, pin: getPin(), status: "ready_for_review" }) });
+  applyAuthoritativeReviewRow(rowElement, result.row);
+  setMessage(inboxMessage, "Draft saved ✓", "success");
+  return result;
+}
+
+function saveReviewRow(rowElement, changedField = "") {
+  const rowId = String(rowElement.dataset.reviewRow);
   const payload = Object.fromEntries([...rowElement.querySelectorAll("[data-edit-fields] input, [data-edit-fields] select")].map((input) => [input.name, input.value]));
-  try {
-    await fetchJson(`/api/admin/price-import-rows/${rowId}${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, pin: getPin(), status: "ready_for_review" }) });
-    setMessage(inboxMessage, "Draft saved.", "success");
-  } catch (error) { setMessage(inboxMessage, error.message, "error"); }
+  payload.edited_fields = changedField ? [changedField] : [];
+  const previous = reviewRowSaveQueues.get(rowId) || Promise.resolve();
+  const queued = previous.catch(() => {}).then(() => persistReviewRow(rowElement, payload));
+  reviewRowSaveQueues.set(rowId, queued);
+  queued.then(
+    () => { if (reviewRowSaveQueues.get(rowId) === queued) reviewRowSaveQueues.delete(rowId); },
+    (error) => {
+      if (reviewRowSaveQueues.get(rowId) === queued) reviewRowSaveQueues.delete(rowId);
+      const saveState = rowElement.querySelector("[data-row-save-state]");
+      if (saveState) saveState.textContent = "Save failed — retry";
+      setMessage(inboxMessage, error.message, "error");
+    }
+  );
+  return queued;
 }
 
 async function removeReviewRow(rowId) {
@@ -5667,10 +5726,11 @@ async function approvePriceImportRowAction(rowId) {
 
   try {
     setPriceImporterMessage("Approving import row...");
+    const displayedRow = findImportRow(rowId);
     const data = await fetchJson(`/api/admin/price-import-rows/${rowId}/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin: getPin() })
+      body: JSON.stringify({ pin: getPin(), expected_draft_updated_at: displayedRow?.updated_at || "" })
     });
     selectedPriceImportRows.delete(String(rowId));
     setPriceImporterMessage(data.message, "success");

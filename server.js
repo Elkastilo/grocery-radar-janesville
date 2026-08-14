@@ -1223,6 +1223,37 @@ async function recordPriceEvent(input = {}) {
   await run(`INSERT INTO price_provenance_events (price_report_id, import_batch_id, import_row_id, event_type, actor_user_id, submitter_user_id, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [input.reportId || null, input.batchId || null, input.rowId || null, cleanText(input.eventType, 40).toUpperCase(), input.actorUserId || null, input.submitterUserId || null, cleanText(input.reason || "", 300), metadataJson(input.metadata || {}), input.createdAt || new Date().toISOString()]);
 }
 
+// Draft autosaves and approval can arrive as separate HTTP requests. Serialize
+// mutations for a row so approval cannot observe a half-finished autosave and a
+// late autosave cannot reopen an already-approved row.
+const priceImportRowMutationTails = new Map();
+
+async function acquirePriceImportRowMutation(rowId) {
+  const key = Number(rowId);
+  const previous = priceImportRowMutationTails.get(key) || Promise.resolve();
+  let releaseCurrent;
+  const current = new Promise((resolve) => { releaseCurrent = resolve; });
+  priceImportRowMutationTails.set(key, current);
+  await previous.catch(() => {});
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseCurrent();
+    if (priceImportRowMutationTails.get(key) === current) priceImportRowMutationTails.delete(key);
+  };
+}
+
+function serializePriceImportRowMutation(request, response, next) {
+  acquirePriceImportRowMutation(Number.parseInt(request.params.id, 10))
+    .then((release) => {
+      response.once("finish", release);
+      response.once("close", release);
+      next();
+    })
+    .catch(next);
+}
+
 function formatPriceImportRow(row) {
   return {
     id: row.id,
@@ -11846,11 +11877,25 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   }
 
   if (row.status === "approved" && row.price_report_id) {
+    const approvedReport = await get(`${reportSelectWithProduct()} WHERE pr.id = ?`, [row.price_report_id]);
     return {
       row,
       report_id: row.price_report_id,
+      product_id: approvedReport?.product_id || row.product_id || null,
+      approved_price: approvedReport?.price == null ? null : Number(approvedReport.price),
+      approved_size: approvedReport?.size_text || "",
+      store_id: approvedReport?.store_id || row.store_id || null,
+      validity: approvedReport ? { valid_from_date: approvedReport.valid_from_date || null, valid_through_date: approvedReport.valid_through_date || null } : null,
+      publication_state: approvedReport?.status || "approved",
       message: "Import row was already approved."
     };
+  }
+
+  if (options.expectedDraftUpdatedAt && String(row.updated_at || "") !== String(options.expectedDraftUpdatedAt)) {
+    const error = new Error("This draft changed after the version shown in your browser. Review the latest saved values before approving.");
+    error.statusCode = 409;
+    error.code = "STALE_DRAFT_REVISION";
+    throw error;
   }
 
   if (row.status === "rejected") {
@@ -11975,6 +12020,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       row: await priceImportRowById(rowId),
       report_id: equivalentReport.id,
       product_id: productId,
+      approved_price: Number(equivalentReport.price),
+      approved_size: equivalentReport.size_text || "",
+      store_id: equivalentReport.store_id,
+      validity: { valid_from_date: equivalentReport.valid_from_date || null, valid_through_date: equivalentReport.valid_through_date || null },
+      publication_state: equivalentReport.status,
       unit_price_label: formatUnitPrice(equivalentReport.unit_price, equivalentReport.unit),
       duplicate: true,
       message: `Import row linked to existing approved report #${equivalentReport.id}. No duplicate public price was created.`
@@ -12115,7 +12165,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   await learnApprovedProductNormalization(row, result.lastID, productId, adminUser.id);
   await notifyCartUsersForApprovedReport(updatedReport);
   if (submitterUserId) await updateUserAccuracy(submitterUserId);
-  await recordPriceEvent({ reportId: result.lastID, batchId: row.batch_id, rowId: row.id, eventType: "APPROVED", actorUserId: adminUser.id, submitterUserId, reason: "Human reviewer approved draft price.", metadata: { product_id: productId, store_id: cleanReport.store_id, price: cleanReport.price, unit: cleanReport.unit, ai_analysis_id: row.ai_analysis_id || null, original_ai: row.ai_analysis_id ? { item_name: row.extracted_item_name || row.raw_receipt_line || "", price: row.extracted_price, quantity: row.extracted_quantity, unit: row.extracted_unit, field_confidences: parseMetadataJson(row.ai_field_confidences_json) } : null, human_approved: { item_name: row.item_name, category: row.category, storage_condition: row.storage_condition, size_text: row.size_text } } });
+  await recordPriceEvent({ reportId: result.lastID, batchId: row.batch_id, rowId: row.id, eventType: "APPROVED", actorUserId: adminUser.id, submitterUserId, reason: "Human reviewer approved draft price.", metadata: { product_id: productId, store_id: cleanReport.store_id, price: cleanReport.price, unit: cleanReport.unit, ai_analysis_id: row.ai_analysis_id || null, original_ai: row.ai_analysis_id ? { item_name: row.extracted_item_name || row.raw_receipt_line || "", price: row.extracted_price, quantity: row.extracted_quantity, unit: row.extracted_unit, field_confidences: parseMetadataJson(row.ai_field_confidences_json) } : null, human_approved: { product_id: productId, store_id: cleanReport.store_id, item_name: row.item_name, brand: row.brand, category: row.category, storage_condition: row.storage_condition, size_text: row.size_text, quantity: row.quantity, unit: row.unit, price: cleanReport.price, comparison_price: row.comparison_price, comparison_unit: row.comparison_unit, estimated_item_price: row.estimated_item_price, price_type: row.price_type, valid_from_date: row.valid_from_date, valid_through_date: row.valid_through_date, promotion_conditions: row.promotion_conditions, display_offer_text: row.display_offer_text } } });
 
   await run(
     `
@@ -12210,6 +12260,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
     row: await priceImportRowById(rowId),
     report_id: result.lastID,
     product_id: productId,
+    approved_price: Number(updatedReport.price),
+    approved_size: updatedReport.size_text || "",
+    store_id: updatedReport.store_id,
+    validity: { valid_from_date: updatedReport.valid_from_date || null, valid_through_date: updatedReport.valid_through_date || null },
+    publication_state: updatedReport.status,
     unit_price_label: unitPrice.formatted,
     message: "Import row approved into public price reports."
   };
@@ -13528,7 +13583,7 @@ app.post("/api/admin/price-imports/:batchId/undo-approval", requireAdminAccess, 
   });
 }));
 
-app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
+app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedInAdminAction, serializePriceImportRowMutation, asyncRoute(async (request, response) => {
   const rowId = Number.parseInt(request.params.id, 10);
   const existing = await priceImportRowById(rowId);
 
@@ -13554,13 +13609,23 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
     }
   }
 
+  const editedFields = Array.isArray(request.body.edited_fields) ? request.body.edited_fields.map((field) => cleanText(field, 40)) : [];
+  const primaryPriceCorrection = editedFields.includes("price") && !editedFields.includes("comparison_price") && Number(existing.comparison_price ?? existing.price) === Number(existing.price);
+  const primaryUnitCorrection = editedFields.includes("unit") && !editedFields.includes("comparison_unit") && String(existing.comparison_unit || existing.unit || "") === String(existing.unit || "");
   const draft = cleanImportRowDraft({
     ...existing,
     ...request.body,
-    comparison_price: request.body.comparison_price ?? request.body.price ?? existing.comparison_price,
-    comparison_unit: request.body.comparison_unit ?? request.body.unit ?? existing.comparison_unit,
+    comparison_price: primaryPriceCorrection ? request.body.price : (request.body.comparison_price ?? request.body.price ?? existing.comparison_price),
+    comparison_unit: primaryUnitCorrection ? request.body.unit : (request.body.comparison_unit ?? request.body.unit ?? existing.comparison_unit),
     status: request.body.status || existing.status
   });
+  if (draft.product_id) {
+    const selectedProduct = await getProductById(draft.product_id, true);
+    if (!selectedProduct || ["hidden", "merged"].includes(selectedProduct.status)) {
+      response.status(400).json({ error: "Selected product is not available." });
+      return;
+    }
+  }
   const now = new Date().toISOString();
   draft.duplicate_warning = await duplicateWarningForDraft(draft);
 
@@ -13687,13 +13752,33 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
     );
   }
 
+  const savedRow = await priceImportRowById(rowId);
+  const auditedFields = ["product_id", "store_id", "item_name", "brand", "variant", "category", "price", "comparison_price", "comparison_unit", "estimated_item_price", "package_price", "size_text", "quantity", "unit", "storage_condition", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "multibuy_quantity", "multibuy_total_price"];
+  const correctedFields = auditedFields.filter((field) => String(existing[field] ?? "") !== String(savedRow[field] ?? ""));
+  if (correctedFields.length) {
+    await recordPriceEvent({
+      batchId: existing.batch_id,
+      rowId,
+      eventType: "DRAFT_EDITED",
+      actorUserId: request.adminUser?.id,
+      submitterUserId: proofBatch?.created_by || existing.created_by || null,
+      reason: "Human reviewer corrected draft fields before approval.",
+      metadata: {
+        corrected_fields: correctedFields,
+        before: Object.fromEntries(correctedFields.map((field) => [field, existing[field] ?? null])),
+        after: Object.fromEntries(correctedFields.map((field) => [field, savedRow[field] ?? null])),
+        ai_analysis_id: existing.ai_analysis_id || null
+      }
+    });
+  }
+
   const review = isProofSubmissionBatch(proofBatch)
     ? await reviewSnapshotForBatchId(existing.batch_id, request.adminUser)
     : null;
 
   response.json({
     message: "Import row saved.",
-    row: formatPriceImportRow(await priceImportRowById(rowId)),
+    row: formatPriceImportRow(savedRow),
     proof_id: existing.batch_id,
     review_state: review?.review_state || null,
     approval_summary: review?.approval_summary || null,
@@ -13701,11 +13786,12 @@ app.post("/api/admin/price-import-rows/:id", requireAdminAccess, requireLoggedIn
   });
 }));
 
-app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), asyncRoute(async (request, response) => {
+app.post("/api/admin/price-import-rows/:id/approve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), serializePriceImportRowMutation, asyncRoute(async (request, response) => {
   const rowId = Number.parseInt(request.params.id, 10);
   const result = await approvePriceImportRow(rowId, request.adminUser, {
     ownerSelfApprovalOverride: request.body.owner_self_approval_override === true,
-    overrideReason: request.body.override_reason
+    overrideReason: request.body.override_reason,
+    expectedDraftUpdatedAt: request.body.expected_draft_updated_at
   });
 
   const review = await reviewSnapshotForBatchId(result.row.batch_id, request.adminUser);
@@ -16325,6 +16411,7 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
     size_text: request.body.size_text ?? report.size_text,
     quantity: request.body.quantity ?? report.quantity,
     unit: request.body.unit ?? report.unit,
+    storage_condition: request.body.storage_condition ?? report.storage_condition,
     proof_type: request.body.proof_type ?? report.proof_type,
     notes: request.body.notes ?? report.notes,
     expires_at: request.body.expires_at || (report.expires_at ? String(report.expires_at).slice(0, 10) : "")
@@ -16338,6 +16425,16 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
   }
 
   const unitPrice = calculateUnitPrice(cleanReport.price, cleanReport.quantity, cleanReport.unit);
+  const comparisonPrice = Object.prototype.hasOwnProperty.call(request.body, "comparison_price")
+    ? parseImportNumber(request.body.comparison_price)
+    : (["price", "quantity", "unit"].some((field) => Object.prototype.hasOwnProperty.call(request.body, field))
+        ? unitPrice.unitPrice
+        : (report.comparison_price ?? unitPrice.unitPrice));
+  const comparisonUnit = Object.prototype.hasOwnProperty.call(request.body, "comparison_unit")
+    ? normalizePriceUnit(request.body.comparison_unit)
+    : (["price", "quantity", "unit"].some((field) => Object.prototype.hasOwnProperty.call(request.body, field))
+        ? unitPrice.unit
+        : normalizePriceUnit(report.comparison_unit || unitPrice.unit));
   const now = new Date().toISOString();
   const adminId = request.adminUser ? request.adminUser.id : null;
   const adminEditNote = cleanText(request.body.admin_edit_note || request.body.edit_note, 500);
@@ -16355,7 +16452,14 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
     Number(report.price) !== Number(cleanReport.price),
     String(report.size_text || "") !== String(cleanReport.size_text || ""),
     Number(report.quantity) !== Number(cleanReport.quantity),
-    String(report.unit || "") !== String(cleanReport.unit || "")
+    String(report.unit || "") !== String(cleanReport.unit || ""),
+    Number(report.product_id || 0) !== Number(cleanReport.product_id || 0),
+    Number(report.store_id || 0) !== Number(cleanReport.store_id || 0),
+    String(report.price_type || "") !== String(request.body.price_type ?? report.price_type ?? ""),
+    String(report.valid_from_date || "") !== String(request.body.valid_from_date ?? report.valid_from_date ?? ""),
+    String(report.valid_through_date || "") !== String(request.body.valid_through_date ?? report.valid_through_date ?? ""),
+    String(report.promotion_conditions || "") !== String(request.body.promotion_conditions ?? report.promotion_conditions ?? ""),
+    String(report.display_offer_text || "") !== String(request.body.display_offer_text ?? report.display_offer_text ?? "")
   ].some(Boolean);
   let nextStatus = report.status;
   let reviewedAt = report.reviewed_at;
@@ -16394,6 +16498,21 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
           quantity = ?,
           unit = ?,
           unit_price = ?,
+          comparison_price = ?,
+          comparison_unit = ?,
+          estimated_item_price = ?,
+          package_price = ?,
+          storage_condition = ?,
+          price_type = ?,
+          valid_from_date = ?,
+          valid_through_date = ?,
+          valid_from_time = ?,
+          valid_through_time = ?,
+          promotion_conditions = ?,
+          promotion_schedule_text = ?,
+          display_offer_text = ?,
+          multibuy_quantity = ?,
+          multibuy_total_price = ?,
           proof_type = ?,
           notes = ?,
           status = ?,
@@ -16426,6 +16545,21 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
       cleanReport.quantity,
       unitPrice.unit,
       unitPrice.unitPrice,
+      comparisonPrice,
+      comparisonUnit,
+      Object.prototype.hasOwnProperty.call(request.body, "estimated_item_price") ? parseImportNumber(request.body.estimated_item_price) : report.estimated_item_price,
+      Object.prototype.hasOwnProperty.call(request.body, "package_price") ? parseImportNumber(request.body.package_price) : report.package_price,
+      cleanText(request.body.storage_condition ?? report.storage_condition ?? "unknown", 40).toLowerCase(),
+      normalizePriceType(request.body.price_type ?? report.price_type ?? (cleanReport.sale_price ? "sale" : "regular")),
+      cleanText(request.body.valid_from_date ?? report.valid_from_date, 10),
+      cleanText(request.body.valid_through_date ?? report.valid_through_date, 10),
+      cleanText(request.body.valid_from_time ?? report.valid_from_time, 20),
+      cleanText(request.body.valid_through_time ?? report.valid_through_time, 20),
+      cleanText(request.body.promotion_conditions ?? report.promotion_conditions, 500),
+      cleanText(request.body.promotion_schedule_text ?? report.promotion_schedule_text, 160),
+      cleanText(request.body.display_offer_text ?? report.display_offer_text, 200),
+      Object.prototype.hasOwnProperty.call(request.body, "multibuy_quantity") ? parseImportNumber(request.body.multibuy_quantity) : report.multibuy_quantity,
+      Object.prototype.hasOwnProperty.call(request.body, "multibuy_total_price") ? parseImportNumber(request.body.multibuy_total_price) : report.multibuy_total_price,
       cleanReport.proof_type,
       cleanReport.notes,
       nextStatus,
@@ -16459,8 +16593,8 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
       submitterUserId: report.submitted_by_user_id || report.user_id,
       reason: adminEditNote || "Approved price corrected by admin.",
       metadata: {
-        original: { item_name: report.item_name, brand: report.brand, category: report.category, price: report.price, size_text: report.size_text, quantity: report.quantity, unit: report.unit },
-        corrected: { item_name: cleanReport.item_name, brand: cleanReport.brand, category: cleanReport.category, price: cleanReport.price, size_text: cleanReport.size_text, quantity: cleanReport.quantity, unit: unitPrice.unit }
+        original: { product_id: report.product_id, store_id: report.store_id, item_name: report.item_name, brand: report.brand, category: report.category, price: report.price, comparison_price: report.comparison_price, comparison_unit: report.comparison_unit, size_text: report.size_text, quantity: report.quantity, unit: report.unit, price_type: report.price_type, valid_from_date: report.valid_from_date, valid_through_date: report.valid_through_date, promotion_conditions: report.promotion_conditions, display_offer_text: report.display_offer_text },
+        corrected: { product_id: cleanReport.product_id, store_id: cleanReport.store_id, item_name: cleanReport.item_name, brand: cleanReport.brand, category: cleanReport.category, price: cleanReport.price, comparison_price: comparisonPrice, comparison_unit: comparisonUnit, size_text: cleanReport.size_text, quantity: cleanReport.quantity, unit: unitPrice.unit, price_type: normalizePriceType(request.body.price_type ?? report.price_type), valid_from_date: cleanText(request.body.valid_from_date ?? report.valid_from_date, 10), valid_through_date: cleanText(request.body.valid_through_date ?? report.valid_through_date, 10), promotion_conditions: cleanText(request.body.promotion_conditions ?? report.promotion_conditions, 500), display_offer_text: cleanText(request.body.display_offer_text ?? report.display_offer_text, 200) }
       }
     });
     const importLink = await get(
@@ -16540,9 +16674,11 @@ app.post("/api/admin/reports/:id/edit", requireAdminAccess, requireLoggedInAdmin
     await notifyCartUsersForApprovedReport(updatedReport);
   }
 
+  const authoritativeReport = await get(`${reportSelectWithProduct()} WHERE pr.id = ?`, [reportId]);
   response.json({
     message: approveAfterEdit ? "Report edited and approved." : "Report edits saved.",
-    unit_price_label: unitPrice.formatted
+    unit_price_label: formatUnitPrice(authoritativeReport?.comparison_price ?? authoritativeReport?.unit_price, authoritativeReport?.comparison_unit || authoritativeReport?.unit),
+    report: authoritativeReport ? formatPublicReport(authoritativeReport) : null
   });
 }));
 

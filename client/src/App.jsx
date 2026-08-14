@@ -24,7 +24,6 @@ import {
   Tag,
   Trash2,
   Upload,
-  UserRound,
   UsersRound,
 } from 'lucide-react'
 import { apiFetch, getJson, postJson, putJson } from './api'
@@ -1094,7 +1093,7 @@ function SearchScreen({
 
       {!loading && !error && !reports.length && !products.length ? (
         <div className="mt-5">
-          <EmptyState title="No approved matches yet" body="Try another search, or submit proof once you are signed in." icon={Search} />
+          <EmptyState title="No approved matches yet" body="Try another search, or submit proof to help fill the gap." icon={Search} />
         </div>
       ) : null}
 
@@ -1204,7 +1203,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
             ) : (
               <div className="mt-5 rounded-2xl bg-amber-50 p-5 text-amber-900">
                 <p className="font-black">No approved price yet</p>
-                <p className="mt-1 font-semibold">Submit proof after signing in to help fill this gap.</p>
+                <p className="mt-1 font-semibold">Submit proof to help fill this gap.</p>
               </div>
             )}
 
@@ -2714,7 +2713,7 @@ function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnrea
             <BellRing className="h-6 w-6" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
           </button>
-          <button type="button" onClick={() => openScreen('profile')} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open account"><UserRound className="h-6 w-6" /></button>
+          <button type="button" onClick={() => openScreen('submissions')} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open My Submissions"><ReceiptText className="h-6 w-6" /></button>
         </div>
       </div>
     </div>
