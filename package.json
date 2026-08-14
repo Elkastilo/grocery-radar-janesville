@@ -16,9 +16,10 @@
     "test:auth": "node scripts/test-super-admin-auth.js",
     "test:operations": "node scripts/test-operations-center.js",
     "test:review-ux": "node scripts/test-review-ux.js",
+    "test:major-intake": "node scripts/test-major-intake-pass.js",
     "test:owner-repair": "node scripts/test-owner-repair.js",
     "test:owner-startup-repair": "node scripts/test-owner-startup-repair.js",
-    "test": "npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:operations && npm run test:owner-repair && npm run test:owner-startup-repair",
+    "test": "npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:operations && npm run test:major-intake && npm run test:owner-repair && npm run test:owner-startup-repair",
     "setup:email": "node scripts/setup-email.js",
     "debug:email": "node scripts/debug-email.js"
   },

@@ -115,6 +115,12 @@ const catalogImportResults = document.querySelector("#catalogImportResults");
 const aiSettingsForm = document.querySelector("#aiSettingsForm");
 const aiSettingsMessage = document.querySelector("#aiSettingsMessage");
 const aiUsageSummary = document.querySelector("#aiUsageSummary");
+const bulkPriceIntakeForm = document.querySelector("#bulkPriceIntakeForm");
+const bulkPriceIntakeMessage = document.querySelector("#bulkPriceIntakeMessage");
+const bulkPriceIntakeResults = document.querySelector("#bulkPriceIntakeResults");
+const bulkProductImagesForm = document.querySelector("#bulkProductImagesForm");
+const bulkProductImagesMessage = document.querySelector("#bulkProductImagesMessage");
+const bulkProductImagesResults = document.querySelector("#bulkProductImagesResults");
 
 let allReports = [];
 let allUsers = [];
@@ -299,8 +305,7 @@ function getPin() {
 }
 
 function adminQuery() {
-  const pin = getPin();
-  return pin ? `?pin=${encodeURIComponent(pin)}` : "";
+  return "";
 }
 
 function adminUploadUrl(photoPath) {
@@ -841,8 +846,8 @@ async function openReceiptReview(batchId) {
 function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false, canManageImages = false) {
   const categories = ["produce","meat","dairy","frozen","bakery","pantry","snacks","drinks","prepared food","household","health / personal care","baby","pet","other"];
   const storage = ["shelf stable","refrigerated","frozen","fresh produce","hot prepared food","cold prepared food","not applicable","unknown"];
-  const priceTypes = ["regular","sale","clearance","member / loyalty","coupon-dependent","multi-buy","unknown"];
-  const rejectionReasons = ["wrong item","wrong price","wrong size / quantity","duplicate","unreadable proof","wrong store","promotional terms incomplete","not enough evidence","other"];
+  const priceTypes = ["regular","sale","one_day_sale","clearance","loyalty_price","digital_coupon","paper_coupon","multi_buy","bogo","bundle","manager_special","other_promotion"];
+  const rejectionReasons = ["price unreadable","item unreadable","item could not be identified","price does not match item","wrong product","duplicate submission","duplicate price evidence","wrong store","store could not be verified","date could not be verified","promotion dates unclear","promotion conditions unclear","loyalty/card requirement unclear","coupon requirement unclear","multi-buy conditions unclear","price not actually shown","screenshot incomplete","proof too blurry","proof appears altered","unsupported estimate","outdated evidence","not grocery/household related","other"];
   const confidence = row.ai_confidence || "check";
   const confidenceCopy = confidence === "high" ? "✓ Looks good" : confidence === "unknown" ? "? Could not determine" : "⚠ Please verify";
   const decided = ["approved", "rejected", "removed"].includes(row.status);
@@ -864,12 +869,17 @@ function reviewRowMarkup(row, stores = [], canReview = false, canApprove = false
       <label><span>Quantity</span><input name="quantity" type="number" min="0.01" step="0.01" value="${escapeHtml(row.quantity || 1)}"></label>
       <label><span>Price type</span><select name="price_type">${priceTypes.map((value) => `<option value="${value}" ${row.price_type === value ? "selected" : ""}>${titleCase(value)}</option>`).join("")}</select></label>
       <label><span>Source date</span><input name="source_date" type="date" value="${escapeHtml(row.source_date || "")}"></label>
+      <label><span>Valid from</span><input name="valid_from_date" type="date" value="${escapeHtml(row.valid_from_date || "")}"></label>
+      <label><span>Valid through</span><input name="valid_through_date" type="date" value="${escapeHtml(row.valid_through_date || "")}"></label>
+      <label><span>Original offer text</span><input name="display_offer_text" value="${escapeHtml(row.display_offer_text || "")}" placeholder="2 for $5 with Rewards"></label>
+      <label><span>Promotion conditions</span><input name="promotion_conditions" value="${escapeHtml(row.promotion_conditions || "")}" placeholder="Rewards Card required. Limit 2."></label>
+      <label><span>Schedule text</span><input name="promotion_schedule_text" value="${escapeHtml(row.promotion_schedule_text || "")}" placeholder="Tuesday only"></label>
       <label><span>Multi-buy quantity</span><input name="multibuy_quantity" type="number" min="1" step="1" value="${escapeHtml(row.multibuy_quantity || "")}"></label>
       <label><span>Multi-buy total</span><input name="multibuy_total_price" type="number" min="0.01" step="0.01" value="${escapeHtml(row.multibuy_total_price || "")}"></label>
       <label><span>Row store override</span><select name="store_id"><option value="">Use proof store</option>${stores.map((store) => `<option value="${store.id}" ${Number(row.store_id) === Number(store.id) ? "selected" : ""}>${escapeHtml(store.name)}</option>`).join("")}</select></label>
       </div></details>
     </div>
-    <div class="receipt-reject-form" data-reject-form hidden><label><span>Why reject this item?</span><select name="rejection_reason">${rejectionReasons.map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional reviewer note</span><input name="rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-confirm-reject="${row.id}">Reject item</button><button class="quiet-button" type="button" data-cancel-reject>Cancel</button></div></div>
+    <div class="receipt-reject-form" data-reject-form hidden><label><span>Public rejection reason</span><select name="rejection_reason">${rejectionReasons.map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional public-safe explanation</span><input name="public_reviewer_explanation" maxlength="300"></label><label><span>Internal review note (never public)</span><input name="rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-confirm-reject="${row.id}">Reject item</button><button class="quiet-button" type="button" data-cancel-reject>Cancel</button></div></div>
     ${(row.ai_warnings || []).length ? `<p class="warning span-full">${escapeHtml(row.ai_warnings.join(" "))}</p>` : ""}
   </article>`;
 }
@@ -915,7 +925,7 @@ function renderReceiptReview(data, options = {}) {
         ${analysis.id ? `<section class="store-comparison ${analysis.store_needs_resolution ? "has-mismatch" : ""}"><h4>${analysis.store_needs_resolution ? "⚠ Resolve price store" : "Store resolved"}</h4><p><strong>Submitted store:</strong> ${escapeHtml(submittedStore)}</p><p><strong>Detected retailer:</strong> ${escapeHtml(detectedStore)} · ${escapeHtml(titleCase(analysis.detected_store_confidence || "unknown"))} confidence</p>${analysis.exact_store_match_found ? "" : `<p class="field-help">${analysis.detected_retailer ? `${escapeHtml(analysis.detected_retailer)} detected. Exact location not confirmed.` : "AI could not determine a retailer. Choose a store or select Not Sure."}</p>`}<label><span>Resolved price store</span><select data-resolved-store><option value="">Select an active store</option>${storeOptions.map((store) => `<option value="${store.id}" ${Number(resolvedStore?.id) === Number(store.id) ? "selected" : ""}>${candidateIds.has(Number(store.id)) ? "Suggested: " : ""}${escapeHtml(store.name)}</option>`).join("")}</select></label><div class="card-actions">${analysis.exact_store_match_found ? `<button class="secondary-button" type="button" data-store-resolution="use_ai">Use AI match</button>` : ""}<button class="quiet-button" type="button" data-store-resolution="keep_submitted">Keep submitted</button><button class="secondary-button" type="button" data-store-resolution="choose_store">Choose store</button><button class="quiet-button" type="button" data-store-resolution="not_sure">Not Sure</button></div>${resolvedStore ? `<p class="success" data-store-resolution-confirmation>Resolved store: ${escapeHtml(resolvedStore.name)} ✓</p>` : ""}</section>` : `<p class="field-help">Submitted store: ${escapeHtml(submittedStore)}</p>`}
         <div class="items-summary" data-items-summary ${reviewing ? "" : "hidden"}><div><h3><span data-review-remaining>${rows.length}</span> remaining</h3><span><span data-review-ready>${readyCount}</span> ready · <span data-review-flagged>${flaggedCount}</span> need review</span></div><div class="card-actions"><button class="secondary-button" type="button" data-toggle-ready ${flaggedCount ? "" : "hidden"}>Review ${flaggedCount} flagged item${flaggedCount === 1 ? "" : "s"}</button>${data.can_approve ? `<button class="primary-button" type="button" data-approve-ready ${approvableReady ? "" : "hidden"}>Approve All <span data-approvable-ready>${approvableReady}</span> Ready</button>` : ""}</div></div>
         <div id="receiptEditableRows">${reviewing ? rows.map((row) => reviewRowMarkup(row, data.stores, data.can_review, data.can_approve, data.can_manage_images)).join("") : ""}</div>
-        <section class="review-completion-state" data-review-completion ${readyToFinish ? "" : "hidden"}><strong>Review complete</strong><p>All items have been resolved.</p><button class="primary-button" type="button" data-finish-review>Finish &amp; Review Next</button></section>
+        <section class="review-completion-state" data-review-completion ${readyToFinish ? "" : "hidden"}><strong>REVIEW COMPLETE</strong><p>All items have been resolved.</p><div class="card-actions"><button class="primary-button" type="button" data-finish-review>Finish Review</button><button class="secondary-button" type="button" data-finish-review-next>Finish &amp; Review Next</button></div></section>
         <section class="review-state-guidance" data-review-guidance ${reviewing || readyToFinish ? "hidden" : ""}><strong>${escapeHtml(lifecycle.label || "Review status")}</strong><p>${escapeHtml(lifecycle.message || "")}</p></section>
         <details class="completed-review-items" data-completed-items ${completedRows.length ? "" : "hidden"}><summary>Show completed (<span data-completed-count>${completedRows.length}</span>)</summary><div data-completed-list>${completedRows.map(completedReviewRowMarkup).join("")}</div></details>
         <details data-manual-fallback ${showManualFallback ? "" : "hidden"}><summary>Manual review</summary><p class="field-help">Paste structured results or enter an item manually. Everything remains a draft.</p><textarea id="receiptAiPaste" rows="7" placeholder="Bananas | 1.23 lb | 0.73&#10;Milk | 1 gal | 3.49"></textarea><div class="card-actions"><button class="secondary-button" type="button" data-parse-ai>Paste from ChatGPT</button><button class="quiet-button" type="button" data-add-manual-row>Enter manually</button></div></details>
@@ -928,7 +938,7 @@ function renderReceiptReview(data, options = {}) {
           ${data.can_approve ? "" : '<span class="warning">Data Entry can save drafts but cannot publish prices.</span>'}
           <button class="quiet-button" type="button" data-review-later ${lifecycle.can_review_later && !readyToFinish ? "" : "hidden"}>${aiWaiting ? "Return to Inbox" : "Review Later"}</button>
         </div>
-        <div class="receipt-reject-form" data-proof-reject-form hidden><label><span>Why reject this proof?</span><select name="proof_rejection_reason">${["proof unreadable","wrong store/source","duplicate proof","not enough price information","invalid proof","out of date","private/sensitive information","other"].map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional reviewer note</span><input name="proof_rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-reject-receipt>Reject proof and close task</button><button class="quiet-button" type="button" data-cancel-proof-reject>Cancel</button></div></div>
+        <div class="receipt-reject-form" data-proof-reject-form hidden><label><span>Public rejection reason</span><select name="proof_rejection_reason">${["price unreadable","item unreadable","item could not be identified","price does not match item","wrong product","duplicate submission","duplicate price evidence","wrong store","store could not be verified","date could not be verified","promotion dates unclear","promotion conditions unclear","loyalty/card requirement unclear","coupon requirement unclear","multi-buy conditions unclear","price not actually shown","screenshot incomplete","proof too blurry","proof appears altered","unsupported estimate","outdated evidence","not grocery/household related","other"].map((reason) => `<option value="${reason}">${titleCase(reason)}</option>`).join("")}</select></label><label><span>Optional public-safe explanation</span><input name="proof_public_explanation" maxlength="300"></label><label><span>Internal review note (never public)</span><input name="proof_rejection_note" maxlength="500"></label><div class="card-actions"><button class="danger-button" type="button" data-reject-receipt>Reject proof and close task</button><button class="quiet-button" type="button" data-cancel-proof-reject>Cancel</button></div></div>
       </section>
     </div>`;
   if (options.scrollToWorkspace) receiptReviewWorkspace.scrollIntoView({ block: "start" });
@@ -961,7 +971,8 @@ function renderReceiptReview(data, options = {}) {
   receiptReviewWorkspace.querySelector("[data-reject-receipt]")?.addEventListener("click", () => rejectReceipt(batch.id));
   receiptReviewWorkspace.querySelector("[data-approve-ready]")?.addEventListener("click", (event) => { event.preventDefault(); approveReadyRows(batch.id, Number(receiptReviewWorkspace.querySelector("[data-approvable-ready]")?.textContent || 0)); });
   receiptReviewWorkspace.querySelector("[data-review-later]")?.addEventListener("click", () => reviewLater(batch.id));
-  receiptReviewWorkspace.querySelector("[data-finish-review]")?.addEventListener("click", () => finishAndReviewNext(batch.id));
+  receiptReviewWorkspace.querySelector("[data-finish-review]")?.addEventListener("click", () => finishReview(batch.id));
+  receiptReviewWorkspace.querySelector("[data-finish-review-next]")?.addEventListener("click", () => finishAndReviewNext(batch.id));
   receiptReviewWorkspace.querySelector("[data-focus-review]")?.addEventListener("click", () => document.body.classList.toggle("focus-review"));
 }
 
@@ -1154,9 +1165,10 @@ async function approveReviewRow(batchId, rowId) {
 async function rejectReviewRow(batchId, rowId) {
   const row = receiptReviewWorkspace.querySelector(`[data-review-row="${rowId}"]`);
   const reason = row?.querySelector('[name="rejection_reason"]')?.value || "";
+  const publicExplanation = row?.querySelector('[name="public_reviewer_explanation"]')?.value || "";
   const note = row?.querySelector('[name="rejection_note"]')?.value || "";
   try {
-    const result = await fetchJson(`/api/admin/price-import-rows/${rowId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), rejection_reason: reason, admin_rejection_note: note }) });
+    const result = await fetchJson(`/api/admin/price-import-rows/${rowId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), rejection_reason: reason, public_reviewer_explanation: publicExplanation, admin_rejection_note: note }) });
     await refreshResolvedReviewRows(batchId, [rowId], `Rejected · ${titleCase(reason)}`, result);
     setMessage(inboxMessage, "Item rejected. Its reason and reviewer were recorded.", "success");
   } catch (error) { setMessage(inboxMessage, error.message, "error"); }
@@ -1237,10 +1249,11 @@ async function escalateReview(batchId, reason) {
 async function rejectReceipt(batchId) {
   const form = receiptReviewWorkspace.querySelector("[data-proof-reject-form]");
   const reason = form?.querySelector('[name="proof_rejection_reason"]')?.value || "";
+  const publicExplanation = form?.querySelector('[name="proof_public_explanation"]')?.value || "";
   const note = form?.querySelector('[name="proof_rejection_note"]')?.value || "";
   if (!window.confirm("Reject this entire proof and close the task? The user will be notified.")) return;
   try {
-    await fetchJson(`/api/admin/v2/reviews/${batchId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason, note }) });
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/reject${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), reason, public_explanation: publicExplanation, note }) });
     activeReviewState = { batchId: Number(batchId), phase: "rejected" };
     receiptReviewWorkspace.hidden = true;
     await startReviewNext({ excludeProofId: batchId });
@@ -1283,6 +1296,21 @@ async function finishAndReviewNext(batchId) {
     activeReviewState = { batchId: Number(batchId), phase: "completed" };
     receiptReviewWorkspace.hidden = true;
     await startReviewNext({ excludeProofId: batchId });
+  } catch (error) {
+    activeReviewState = { ...(activeReviewState || {}), phase: "READY_TO_FINISH" };
+    setMessage(inboxMessage, error.message || "Could not finish this proof. Please try again.", "error");
+  }
+}
+
+async function finishReview(batchId) {
+  try {
+    activeReviewState = { ...(activeReviewState || {}), batchId: Number(batchId), phase: "finishing" };
+    await fetchJson(`/api/admin/v2/reviews/${batchId}/complete${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) });
+    activeReviewState = null;
+    receiptReviewWorkspace.hidden = true;
+    openAdminTab("inboxTab");
+    await loadAdminData();
+    setMessage(inboxMessage, "Review complete. Returned to Inbox.", "success");
   } catch (error) {
     activeReviewState = { ...(activeReviewState || {}), phase: "READY_TO_FINISH" };
     setMessage(inboxMessage, error.message || "Could not finish this proof. Please try again.", "error");
@@ -2303,7 +2331,7 @@ function renderPhoneTesting(phone = {}) {
         <li>Make sure your phone and Mac are on the same Wi-Fi.</li>
         <li>Find your Mac IP in Terminal: <code>${escapeHtml(phone.findIpCommand || "ipconfig getifaddr en0")}</code></li>
         <li>Open on phone: <code>${escapeHtml(phone.phoneUrl || "http://YOUR-MAC-IP:3000")}</code></li>
-        <li>Admin: <code>${escapeHtml(phone.adminPhoneUrl || "http://YOUR-MAC-IP:3000/admin.html?pin=YOUR_ADMIN_PIN")}</code></li>
+        <li>Admin: <code>${escapeHtml(phone.adminPhoneUrl || "http://YOUR-MAC-IP:3000/admin.html")}</code></li>
       </ol>
       <p class="field-help">${escapeHtml(phone.firewallHint || "If phone cannot connect, the server may need HOST=0.0.0.0 or the Mac firewall may be blocking Node.")}</p>
       <dl class="details-list">
@@ -5875,7 +5903,7 @@ async function loadAiSettings() {
   try {
     const data = await fetchJson(`/api/admin/operations/ai-settings${adminQuery()}`);
     const settings = data.settings || {};
-    for (const name of ["max_analyses_per_hour", "max_analyses_per_day", "retry_limit", "primary_model", "fallback_model"]) aiSettingsForm.elements[name].value = settings[name] ?? "";
+    for (const name of ["max_analyses_per_hour", "max_analyses_per_day", "retry_limit", "max_concurrency", "max_queued_jobs", "primary_model", "fallback_model"]) aiSettingsForm.elements[name].value = settings[name] ?? "";
     aiSettingsForm.elements.enabled.checked = Boolean(settings.enabled);
     aiSettingsForm.elements.manual_only.checked = Boolean(settings.manual_only);
     const today = settings.usage?.today || {};
@@ -5890,10 +5918,45 @@ async function saveAiSettings(event) {
   event.preventDefault();
   const form = new FormData(aiSettingsForm);
   try {
-    const data = await fetchJson(`/api/admin/operations/ai-settings${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), enabled: form.get("enabled") === "on", manual_only: form.get("manual_only") === "on", max_analyses_per_hour: form.get("max_analyses_per_hour"), max_analyses_per_day: form.get("max_analyses_per_day"), retry_limit: form.get("retry_limit"), primary_model: form.get("primary_model"), fallback_model: form.get("fallback_model") }) });
+    const data = await fetchJson(`/api/admin/operations/ai-settings${adminQuery()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin(), enabled: form.get("enabled") === "on", manual_only: form.get("manual_only") === "on", max_analyses_per_hour: form.get("max_analyses_per_hour"), max_analyses_per_day: form.get("max_analyses_per_day"), retry_limit: form.get("retry_limit"), max_concurrency: form.get("max_concurrency"), max_queued_jobs: form.get("max_queued_jobs"), primary_model: form.get("primary_model"), fallback_model: form.get("fallback_model") }) });
     setMessage(aiSettingsMessage, data.message, "success");
     await loadAiSettings();
   } catch (error) { setMessage(aiSettingsMessage, error.message, "error"); }
+}
+
+function renderBulkPriceIntake(data) {
+  if (!bulkPriceIntakeResults || !data?.batch) return;
+  const batch = data.batch;
+  const counts = batch.counts || {};
+  bulkPriceIntakeResults.innerHTML = `<article class="admin-card compact-card"><div class="card-topline"><div><h3>Batch #${batch.id} · ${escapeHtml(batch.title)}</h3><p class="field-help">${escapeHtml(batch.submitted_store_name || "Store not supplied")} · ${batch.file_count} images</p></div><span class="badge confidence-medium">${escapeHtml(titleCase(batch.status))}</span></div><div class="simple-status-list"><div class="simple-status-row"><span>Progress</span><span>${Number(counts.ready || 0)} ready · ${Number(counts.processing || 0)} processing · ${Number(counts.needs_attention || 0)} need attention · ${Number(counts.failed || 0)} failed · ${Number(counts.duplicate || 0)} duplicate · ${Number(counts.reviewed || 0)} reviewed</span></div><div class="simple-status-row"><span>AI usage</span><span>${batch.usage.attempts} attempts · ${batch.usage.retries} retries · ${batch.usage.failures} failures${batch.usage.total_tokens == null ? "" : ` · ${batch.usage.total_tokens} tokens`}</span></div></div><div class="card-actions"><button class="secondary-button" type="button" data-open-bulk-review>Review Drafts</button><button class="quiet-button" type="button" data-pause-bulk>${batch.paused ? "Resume Processing" : "Pause Processing"}</button></div>${batch.items.map((item) => `<div class="simple-status-row"><span>${escapeHtml(item.original_name)}</span><span>${escapeHtml(titleCase(item.status))}${item.error ? ` · ${escapeHtml(item.error)}` : ""}${item.duplicate_of_proof_id ? ` · Duplicate of proof #${item.duplicate_of_proof_id}` : ""} ${["failed","needs_attention"].includes(item.status) && item.proof_id ? `<button class="quiet-button" data-retry-bulk-item="${item.id}">Retry</button>` : ""}${item.status === "duplicate" ? `<button class="quiet-button" data-process-bulk-item="${item.id}">Process Anyway</button>` : ""}</span></div>`).join("")}</article>`;
+  bulkPriceIntakeResults.querySelector("[data-open-bulk-review]")?.addEventListener("click", () => { const proof = batch.items.find((item) => item.proof_id && ["ready", "needs_attention"].includes(item.status)); if (proof) openReceiptReview(proof.proof_id); else setMessage(bulkPriceIntakeMessage, "No draft is ready for review yet.", "info"); });
+  bulkPriceIntakeResults.querySelector("[data-pause-bulk]")?.addEventListener("click", async () => { const next = !batch.paused; const result = await fetchJson(`/api/admin/bulk-price-intake/${batch.id}/pause`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: next, pin: getPin() }) }); renderBulkPriceIntake(result); });
+  for (const button of bulkPriceIntakeResults.querySelectorAll("[data-retry-bulk-item]")) button.addEventListener("click", async () => { const result = await fetchJson(`/api/admin/bulk-price-intake/items/${button.dataset.retryBulkItem}/retry`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); setMessage(bulkPriceIntakeMessage, result.message, "success"); });
+  for (const button of bulkPriceIntakeResults.querySelectorAll("[data-process-bulk-item]")) button.addEventListener("click", async () => { if (!window.confirm("Process this exact duplicate and allow another AI call?")) return; const result = await fetchJson(`/api/admin/bulk-price-intake/items/${button.dataset.processBulkItem}/process-anyway`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: getPin() }) }); renderBulkPriceIntake(result); });
+}
+
+async function submitBulkPriceIntake(event) {
+  event.preventDefault();
+  const body = new FormData(bulkPriceIntakeForm);
+  body.append("pin", getPin());
+  try { setMessage(bulkPriceIntakeMessage, "Uploading batch..."); const data = await fetchJson("/api/admin/bulk-price-intake", { method: "POST", body }); setMessage(bulkPriceIntakeMessage, data.message, "success"); renderBulkPriceIntake(data); }
+  catch (error) { setMessage(bulkPriceIntakeMessage, error.message, "error"); }
+}
+
+function renderBulkProductImages(data) {
+  if (!bulkProductImagesResults || !data?.batch) return;
+  const batch = data.batch;
+  const products = productTools?.products || [];
+  bulkProductImagesResults.innerHTML = `<article class="admin-card compact-card"><h3>Image Batch #${batch.id} · ${escapeHtml(batch.title)}</h3>${batch.items.map((item) => `<div class="simple-status-row"><span><strong>${escapeHtml(item.original_name)}</strong><br>${escapeHtml(item.suggested_product_name || "Product match needs review")} · ${escapeHtml(titleCase(item.match_confidence))}${item.duplicate_of_image_id ? ` · Existing image #${item.duplicate_of_image_id}` : ""}</span><span>${!item.duplicate_of_image_id && item.status !== "failed" ? `<select data-image-product="${item.id}"><option value="">Choose product</option>${products.map((product) => `<option value="${product.id}" ${Number(product.id) === Number(item.suggested_product_id) ? "selected" : ""}>${escapeHtml(product.display_name)}</option>`).join("")}</select><button class="secondary-button" data-accept-image="${item.id}">Accept</button>` : escapeHtml(titleCase(item.status))}</span></div>`).join("")}</article>`;
+  for (const button of bulkProductImagesResults.querySelectorAll("[data-accept-image]")) button.addEventListener("click", async () => { const select = bulkProductImagesResults.querySelector(`[data-image-product="${button.dataset.acceptImage}"]`); if (!select?.value) { setMessage(bulkProductImagesMessage, "Choose the correct product first.", "warning"); return; } const approve = window.confirm("Approve this human-confirmed match as the public primary product image? Cancel saves it as a private moderation draft."); const result = await fetchJson(`/api/admin/product-images/bulk/items/${button.dataset.acceptImage}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product_id: select.value, approve_public: approve, pin: getPin() }) }); setMessage(bulkProductImagesMessage, result.message, "success"); renderBulkProductImages(result); });
+}
+
+async function submitBulkProductImages(event) {
+  event.preventDefault();
+  const body = new FormData(bulkProductImagesForm);
+  body.append("pin", getPin());
+  try { setMessage(bulkProductImagesMessage, "Uploading private image drafts..."); const data = await fetchJson("/api/admin/product-images/bulk", { method: "POST", body }); setMessage(bulkProductImagesMessage, data.message, "success"); renderBulkProductImages(data); }
+  catch (error) { setMessage(bulkProductImagesMessage, error.message, "error"); }
 }
 
 function setupAdminTabs() {
@@ -5967,6 +6030,8 @@ priceImportUndoBatch.addEventListener("click", undoSelectedImportBatch);
 catalogImportForm?.addEventListener("submit", submitCatalogImport);
 catalogImagesForm?.addEventListener("submit", submitCatalogImages);
 aiSettingsForm?.addEventListener("submit", saveAiSettings);
+bulkPriceIntakeForm?.addEventListener("submit", submitBulkPriceIntake);
+bulkProductImagesForm?.addEventListener("submit", submitBulkProductImages);
 operationsRefreshButton?.addEventListener("click", () => loadOperationsCenter());
 operationsAutoRefresh?.addEventListener("change", scheduleOperationsRefresh);
 reviewNextButton?.addEventListener("click", startReviewNext);
@@ -6001,7 +6066,6 @@ for (const button of priceImportModeTabs.querySelectorAll("[data-import-mode]"))
   button.addEventListener("click", () => setPriceImportMode(button.dataset.importMode));
 }
 
-const urlPin = new URLSearchParams(window.location.search).get("pin");
-pinInput.value = urlPin || localStorage.getItem("groceryRadarAdminPin") || "";
+pinInput.value = localStorage.getItem("groceryRadarAdminPin") || "";
 
 boot().catch((error) => setAdminMessage(error.message, "error"));

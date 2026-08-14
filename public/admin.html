@@ -117,6 +117,8 @@
               <label><span>Max per hour</span><input name="max_analyses_per_hour" type="number" min="1" max="200" value="20"></label>
               <label><span>Max per day</span><input name="max_analyses_per_day" type="number" min="1" max="2000" value="100"></label>
               <label><span>Retry limit</span><input name="retry_limit" type="number" min="0" max="5" value="2"></label>
+              <label><span>Max concurrency</span><input name="max_concurrency" type="number" min="1" max="10" value="3"></label>
+              <label><span>Max queued jobs</span><input name="max_queued_jobs" type="number" min="10" max="2000" value="200"></label>
               <label><span>Primary extraction model</span><input name="primary_model" maxlength="100"></label>
               <label><span>Fallback model</span><input name="fallback_model" maxlength="100" placeholder="Optional"></label>
               <button class="primary-button" type="submit">Save AI Controls</button>
@@ -278,6 +280,22 @@
             <span id="priceImporterCount" class="admin-count"></span>
           </div>
           <div class="warning">Imported prices are not public until approved.</div>
+          <section class="admin-card compact-card">
+            <div class="card-topline"><div><h3>Bulk Price Intake</h3><p class="field-help">Upload up to 50 screenshots in one batch. The page may be closed after upload; jobs continue in the background.</p></div><span class="badge confidence-medium">Human approval required</span></div>
+            <form id="bulkPriceIntakeForm" class="form-grid" enctype="multipart/form-data">
+              <label><span>Batch title</span><input name="title" maxlength="160" placeholder="ALDI weekly screenshots"></label>
+              <label><span>Submitted store (context only)</span><select name="store_id" data-intake-store-select><option value="">Store not supplied</option></select></label>
+              <label><span>Proof type</span><select name="proof_type"><option value="store_page">Store webpage screenshots</option><option value="weekly_ad">Weekly ad</option><option value="shelf_tag">Shelf tags</option><option value="receipt">Receipts</option></select></label>
+              <label><span>Source URL</span><input name="source_url" type="url" maxlength="500"></label>
+              <label><span>Known promotion start</span><input name="known_valid_from_date" type="date"></label>
+              <label><span>Known promotion end</span><input name="known_valid_through_date" type="date"></label>
+              <label class="span-full"><span>Screenshots</span><input name="screenshots" type="file" accept="image/jpeg,image/png,image/webp" multiple required></label>
+              <label class="span-full"><span>Notes</span><input name="notes" maxlength="500"></label>
+              <button class="primary-button" type="submit">Upload Screenshots</button>
+            </form>
+            <div id="bulkPriceIntakeMessage" class="message" aria-live="polite"></div>
+            <div id="bulkPriceIntakeResults" class="admin-list"></div>
+          </section>
           <div id="priceImportModeTabs" class="segmented-tabs" role="tablist" aria-label="Price importer mode">
             <button class="is-active" type="button" data-import-mode="weekly_ad">Weekly Ads</button>
             <button type="button" data-import-mode="receipt">Receipts</button>
@@ -783,6 +801,18 @@
           <div class="admin-panel-heading">
             <h2>Cart / Product Tools</h2>
           </div>
+          <section class="admin-card compact-card">
+            <div class="card-topline"><div><h3>Bulk Product Images</h3><p class="field-help">Upload owned or authorized product photos separately from private price evidence.</p></div><span class="badge confidence-medium">Private drafts</span></div>
+            <form id="bulkProductImagesForm" class="form-grid" enctype="multipart/form-data">
+              <label><span>Batch title</span><input name="title" maxlength="160"></label>
+              <label><span>Image source</span><select name="source_type"><option value="owner_photo">Owner photo</option><option value="staff_photo">Staff photo</option><option value="community_photo">Community-submitted product photo</option><option value="authorized_manufacturer_asset">Authorized manufacturer asset</option><option value="approved_grocery_radar_image">Approved Grocery Radar image</option><option value="proof_derived_approved">Explicitly approved proof-derived crop</option></select></label>
+              <label class="span-full"><span>Product images</span><input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple required></label>
+              <label class="span-full"><span>Source note</span><input name="source_note" maxlength="300" placeholder="Rights/source note kept internally"></label>
+              <button class="primary-button" type="submit">Upload Image Batch</button>
+            </form>
+            <div id="bulkProductImagesMessage" class="message" aria-live="polite"></div>
+            <div id="bulkProductImagesResults" class="admin-list"></div>
+          </section>
           <div id="productToolsContent" class="admin-list"></div>
         </section>
 

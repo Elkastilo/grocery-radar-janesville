@@ -252,12 +252,14 @@ function createDraftFromLine(line, defaults = {}) {
   } else if (multiBuyMatch) {
     const buyQuantity = Number.parseInt(multiBuyMatch[1], 10);
     const total = moneyValue(multiBuyMatch[2]);
-    price = buyQuantity > 0 && total !== null ? total / buyQuantity : null;
+    // The advertised total is the only price the evidence establishes. Do not
+    // imply that a single item may be bought at an arithmetic per-item price.
+    price = buyQuantity > 0 ? total : null;
     itemText = removeMatchedSegment(working, multiBuyMatch);
     multibuyDetails = `${buyQuantity} for $${priceString(total)}`;
     salePrice = true;
     confidence = price !== null && itemText ? "medium" : "low";
-    notes.push(`Multi-buy offer ${multibuyDetails}; comparable per-item price calculated as $${priceString(price)}.`);
+    notes.push(`Multi-buy offer ${multibuyDetails}; single-item price is not established by this evidence.`);
   } else if (bogoMatch) {
     const priceMatch = firstPriceMatch;
     price = priceMatch ? moneyValue(priceMatch[1] || priceMatch[2]) : null;
@@ -308,6 +310,18 @@ function createDraftFromLine(line, defaults = {}) {
     flags.deal_limit ? `Limit ${flags.deal_limit}.` : "",
     "Parsed from intake source text. Admin review required."
   ].filter(Boolean).join(" ");
+  const priceType = bogoMatch ? "bogo"
+    : multiBuyMatch ? "multi_buy"
+      : flags.coupon_required ? "digital_coupon"
+        : flags.with_card ? "loyalty_price"
+          : salePrice ? "sale" : "regular";
+  const promotionConditions = [
+    flags.with_card ? "Rewards Card required." : "",
+    flags.coupon_required ? "Digital coupon required." : "",
+    flags.deal_limit ? `Limit ${flags.deal_limit}.` : "",
+    multiBuyMatch ? `Must buy ${Number.parseInt(multiBuyMatch[1], 10)}.` : "",
+    bogoMatch ? "Buy 1 Get 1 Free." : ""
+  ].filter(Boolean).join(" ");
 
   return {
     product_id: "",
@@ -327,6 +341,9 @@ function createDraftFromLine(line, defaults = {}) {
     member_card_price: memberCardPrice !== null ? priceString(memberCardPrice) : "",
     multibuy_details: multibuyDetails,
     promotion_text: promotionText,
+    price_type: priceType,
+    display_offer_text: multibuyDetails || promotionText,
+    promotion_conditions: promotionConditions,
     proof_type: defaults.proof_type || "weekly_ad",
     observed_at: defaults.observed_at || "",
     valid_start_at: defaults.valid_start_at || dates.valid_start_at || "",

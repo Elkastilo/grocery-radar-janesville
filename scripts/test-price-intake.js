@@ -27,20 +27,27 @@ function rowFor(text) {
 {
   const row = rowFor("Strawberries 16 oz 2/$5 with card limit 2");
   assert.equal(row.item_name, "Strawberries");
-  assert.equal(row.price, "2.50");
+  assert.equal(row.price, "5.00");
   assert.equal(row.size_text, "16 oz");
   assert.equal(row.multibuy_details, "2 for $5.00");
-  assert.equal(row.member_card_price, "2.50");
+  assert.equal(row.price_type, "multi_buy");
+  assert.equal(row.display_offer_text, "2 for $5.00");
+  assert.match(row.promotion_conditions, /Rewards Card required/);
+  assert.match(row.promotion_conditions, /Must buy 2/);
+  assert.equal(row.member_card_price, "5.00");
+  assert.match(row.notes, /single-item price is not established/);
   assert.equal(row.deal_limit, "2");
 }
 
 {
   const row = rowFor("3 for $10 Cereal 12 oz digital coupon");
   assert.equal(row.item_name, "Cereal");
-  assert.equal(row.price, "3.33");
+  assert.equal(row.price, "10.00");
   assert.equal(row.size_text, "12 oz");
   assert.equal(row.coupon_required, true);
+  assert.equal(row.price_type, "multi_buy");
   assert.equal(row.multibuy_details, "3 for $10.00");
+  assert.match(row.notes, /single-item price is not established/);
 }
 
 {
@@ -48,6 +55,7 @@ function rowFor(text) {
   assert.equal(row.item_name, "Buns");
   assert.equal(row.price, "3.49");
   assert.equal(row.multibuy_details, "Buy 1 Get 1 Free");
+  assert.equal(row.price_type, "bogo");
   assert.match(row.notes, /BOGO offer detected/);
 }
 

@@ -103,6 +103,18 @@ const visitorId = () => {
   return value
 }
 
+const submissionStorageKey = 'groceryRadar.submissions.v1'
+const readTrackedSubmissions = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(submissionStorageKey) || '[]')
+    return Array.isArray(parsed) ? parsed.filter((item) => item?.token) : []
+  } catch { return [] }
+}
+const saveTrackedSubmission = (entry) => {
+  const current = readTrackedSubmissions().filter((item) => item.token !== entry.token)
+  window.localStorage.setItem(submissionStorageKey, JSON.stringify([entry, ...current].slice(0, 100)))
+}
+
 const timeAgo = (value) => {
   if (!value) return 'No update time'
   const date = new Date(value)
@@ -133,7 +145,7 @@ const numericPrice = (value) => {
 }
 const hasNumericApprovedReportPrice = (report) => isApprovedReport(report) && numericPrice(report?.price) !== null
 const hasApprovedProductPrice = (product) => Number(product?.approved_price_count || 0) > 0 && numericPrice(product?.best_price) !== null
-const isDealReport = (report) => Boolean(report?.sale_price || report?.proof_type === 'weekly_ad')
+const isDealReport = (report) => Boolean(report?.sale_price || report?.proof_type === 'weekly_ad' || (report?.price_type && report.price_type !== 'regular'))
 const productPrice = (product) => hasApprovedProductPrice(product)
   ? product?.best_price_label || money(product.best_price)
   : ''
@@ -231,6 +243,20 @@ function SourceTrust({ report, showLink = true }) {
       </div>
     </details>
   )
+}
+
+function PromotionDetails({ report, dark = false }) {
+  if (!report || !isDealReport(report)) return null
+  const typeLabels = { one_day_sale: 'TODAY ONLY', loyalty_price: 'Rewards Card required', digital_coupon: 'Digital coupon required', paper_coupon: 'Paper coupon required', multi_buy: 'Multi-buy offer', bogo: 'Buy one, get one', bundle: 'Bundle offer', manager_special: 'Manager special' }
+  const label = report.promotion_schedule_text || typeLabels[report.price_type] || report.display_offer_text || 'Sale'
+  const validity = report.valid_from_date && report.valid_through_date && report.valid_from_date === report.valid_through_date
+    ? `Valid ${shortDate(report.valid_through_date)}`
+    : report.valid_through_date ? `Valid through ${shortDate(report.valid_through_date)}` : ''
+  return <div className={`mt-3 rounded-2xl p-3 ${dark ? 'bg-white/15 text-white' : 'bg-amber-50 text-amber-950 ring-1 ring-amber-100'}`}>
+    <p className="text-sm font-black uppercase">{label}</p>
+    {report.promotion_conditions ? <p className="mt-1 font-black">{report.promotion_conditions}</p> : null}
+    {validity ? <p className="mt-1 text-sm font-bold">{validity}</p> : null}
+  </div>
 }
 
 function StoreLogo({ store, size = 'md' }) {
@@ -501,6 +527,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
           {canOpen ? <ChevronLeft className="h-5 w-5 shrink-0 rotate-180 text-slate-300" /> : null}
         </div>
         <SourceTrust report={report} showLink={false} />
+        <PromotionDetails report={report} />
       </button>
       {report.source_url ? (
         <a
@@ -1162,6 +1189,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, addToCart, re
                     <p className="mt-1 font-bold text-emerald-100">{cheapest.freshness_label || 'Recently verified'}</p>
                     {cheapest.estimated_item_price_label ? <p className="mt-2 text-sm font-bold text-emerald-100">{cheapest.estimated_item_price_label}</p> : null}
                     {cheapest.approximate_item_weight_label ? <p className="text-sm font-bold text-emerald-100">{cheapest.approximate_item_weight_label}</p> : null}
+                    <PromotionDetails report={cheapest} dark />
                   </div>
                   <StoreLogo store={{ name: cheapest.store_name }} size="lg" />
                 </div>
@@ -1464,13 +1492,14 @@ function DealsScreen({ reports, loading, error, addToCart, openProduct, reload }
                 <p className="text-sm font-bold text-slate-500">Approved price</p>
                 <p className="text-4xl font-black text-emerald-700">{report.price_label || money(report.price)}</p>
                 <p className="mt-1 text-sm font-bold text-slate-400">{report.unit_price_label}</p>
+                <PromotionDetails report={report} />
               </div>
               <StatusPill report={report} />
             </div>
             <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl bg-slate-50 p-3">
               <div className="flex items-center gap-2 text-sm font-black text-slate-700">
                 <Clock3 className="h-4 w-4 text-emerald-700" />
-                {report.expires_at ? `Expires ${new Date(report.expires_at).toLocaleDateString()}` : timeAgo(report.submitted_at)}
+                {report.valid_through_date ? `Valid through ${shortDate(report.valid_through_date)}` : report.expires_at ? `Expires ${new Date(report.expires_at).toLocaleDateString()}` : timeAgo(report.submitted_at)}
               </div>
               <button
                 type="button"
@@ -1498,26 +1527,16 @@ function DealsScreen({ reports, loading, error, addToCart, openProduct, reload }
   )
 }
 
-function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Sign in to save My List, submit proof, and track points.' }) {
-  const [mode, setMode] = useState('login')
-  const [form, setForm] = useState({ username: '', email: '', password: '', confirmPassword: '' })
+function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Legacy accounts can still sign in for saved lists and points. Shopping and proof submission need no account.' }) {
+  const [form, setForm] = useState({ email: '', password: '' })
   const [status, setStatus] = useState({ loading: false, error: '', message: '' })
 
   const submit = async (event) => {
     event.preventDefault()
     setStatus({ loading: true, error: '', message: '' })
     try {
-      if (mode === 'login') {
-        await postJson('/api/auth/login', { email: form.email, password: form.password })
-      } else {
-        await postJson('/api/auth/register', {
-          username: form.username,
-          email: form.email,
-          password: form.password,
-          confirmPassword: form.confirmPassword,
-        })
-      }
-      setStatus({ loading: false, error: '', message: mode === 'login' ? 'Logged in.' : 'Account created.' })
+      await postJson('/api/auth/login', { email: form.email, password: form.password })
+      setStatus({ loading: false, error: '', message: 'Logged in.' })
       await onAuthChanged()
     } catch (error) {
       setStatus({ loading: false, error: error.message, message: '' })
@@ -1538,32 +1557,7 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Si
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 rounded-2xl bg-slate-100 p-1">
-        {['login', 'register'].map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => setMode(item)}
-            className={`rounded-xl px-4 py-3 font-black capitalize ${
-              mode === item ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'
-            }`}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
-
       <form onSubmit={submit} className="mt-5 space-y-4">
-        {mode === 'register' ? (
-          <input
-            value={form.username}
-            onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))}
-            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-lg font-bold outline-none focus:border-emerald-500"
-            placeholder="Username"
-            aria-label="Username"
-            autoComplete="username"
-          />
-        ) : null}
         <input
           value={form.email}
           onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
@@ -1580,19 +1574,8 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Si
           placeholder="Password"
           aria-label="Password"
           type="password"
-          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          autoComplete="current-password"
         />
-        {mode === 'register' ? (
-          <input
-            value={form.confirmPassword}
-            onChange={(event) => setForm((current) => ({ ...current, confirmPassword: event.target.value }))}
-            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-lg font-bold outline-none focus:border-emerald-500"
-            placeholder="Confirm password"
-            aria-label="Confirm password"
-            type="password"
-            autoComplete="new-password"
-          />
-        ) : null}
         {status.error ? <p className="rounded-2xl bg-rose-50 p-3 font-bold text-rose-800">{status.error}</p> : null}
         {status.message ? <p className="rounded-2xl bg-emerald-50 p-3 font-bold text-emerald-800">{status.message}</p> : null}
         <button
@@ -1601,7 +1584,7 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Si
           className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-700 px-5 py-4 text-lg font-black text-white shadow-lift disabled:opacity-60"
         >
           {status.loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <LogIn className="h-6 w-6" />}
-          {mode === 'login' ? 'Log in' : 'Create account'}
+          Log in
         </button>
       </form>
     </section>
@@ -1834,7 +1817,7 @@ function CartScreen({ me, cart, comparison, cartMode, setCartMode, loading, erro
   )
 }
 
-function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, setSelectedProofId }) {
+function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId }) {
   const initialForm = {
     store_id: stores[0]?.id || '',
     proof_type: 'receipt',
@@ -1906,6 +1889,7 @@ function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, 
         payload.append('proof_photo', form.proof_photo)
       }
       const result = await apiFetch('/api/proof-submissions', { method: 'POST', body: payload })
+      if (result.tracking_token) saveTrackedSubmission({ token: result.tracking_token, submitted_at: new Date().toISOString(), store_name: stores.find((store) => String(store.id) === String(form.store_id))?.name || '', proof_type: form.proof_type, last_status: 'waiting_for_review' })
       setStatus({
         loading: false,
         error: '',
@@ -1917,14 +1901,6 @@ function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, 
     }
   }
 
-  if (!me.loggedIn) {
-    return (
-      <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
-        <AuthGate me={me} onAuthChanged={onAuthChanged} title="Log in to submit proof" />
-      </div>
-    )
-  }
-
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
       <ScreenTitle
@@ -1932,6 +1908,7 @@ function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, 
         title="Submit Proof"
         subtitle="Upload a receipt, shelf tag, weekly ad, screenshot, or source link. We will review it and add useful prices."
       />
+      <button type="button" onClick={() => openScreen('submissions')} className="mb-4 min-h-12 rounded-2xl bg-emerald-50 px-4 font-black text-emerald-800 ring-1 ring-emerald-100">My Submissions</button>
 
       <form onSubmit={submit} className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
         <div className="space-y-5">
@@ -2031,13 +2008,13 @@ function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, 
           <div className="mt-5 rounded-2xl bg-emerald-50 p-4 font-bold text-emerald-800">
             {status.message}
             <p className="mt-1 text-sm text-emerald-700">It will not appear publicly until an admin reviews it.</p>
-            <p className="mt-1 text-sm text-emerald-700">You will receive a notification after it is reviewed.</p>
+            <p className="mt-1 text-sm text-emerald-700">Return to My Submissions in this browser to see the result.</p>
             {status.result?.batch_id ? (
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedProofId(String(status.result.batch_id))
-                  openScreen('profile')
+                  if (status.result.tracking_token) openScreen('submissions')
+                  else { setSelectedProofId(String(status.result.batch_id)); openScreen('profile') }
                 }}
                 className="mt-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-sm font-black text-emerald-800 ring-1 ring-emerald-100"
               >
@@ -2072,6 +2049,33 @@ function SubmitScreen({ me, stores, selectedProduct, onAuthChanged, openScreen, 
       </form>
     </div>
   )
+}
+
+function MySubmissionsScreen({ openScreen }) {
+  const [state, setState] = useState({ loading: true, error: '', items: [] })
+  const load = useCallback(async () => {
+    const tracked = readTrackedSubmissions()
+    if (!tracked.length) { setState({ loading: false, error: '', items: [] }); return }
+    setState((current) => ({ ...current, loading: true, error: '' }))
+    const results = await Promise.all(tracked.map(async (entry) => {
+      try { const data = await getJson(`/api/submissions/status/${encodeURIComponent(entry.token)}`); return { ...entry, ...data.submission } }
+      catch { return { ...entry, status: 'unavailable', status_label: 'Status unavailable' } }
+    }))
+    const nextTracked = tracked.map((entry) => { const result = results.find((item) => item.token === entry.token); return { ...entry, last_status: result?.status || entry.last_status } })
+    window.localStorage.setItem(submissionStorageKey, JSON.stringify(nextTracked))
+    setState({ loading: false, error: '', items: results })
+  }, [])
+  useEffect(() => { load() }, [load])
+  return <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
+    <ScreenTitle eyebrow="Privacy-first tracking" title="My Submissions" subtitle="No account required. Results are available only to this browser using private tracking capabilities." />
+    <button type="button" onClick={() => openScreen('submit')} className="mb-4 min-h-12 rounded-2xl bg-slate-100 px-4 font-black text-slate-800">Submit new proof</button>
+    {state.loading ? <LoadingCard label="Checking submission results..." /> : null}
+    <div className="space-y-4">{state.items.map((item) => <article key={item.token} className="rounded-3xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black text-emerald-700">{item.store_name || proofTypeLabel(item.proof_type)}</p><h2 className="mt-1 text-2xl font-black">{item.status_label}</h2><p className="mt-1 font-semibold text-slate-500">Submitted {shortDate(item.submitted_at)}</p></div>{item.status === 'reviewed' ? <BadgeCheck className="h-8 w-8 text-emerald-700" /> : <Clock3 className="h-8 w-8 text-amber-600" />}</div>
+      {item.status === 'reviewed' ? <div className="mt-4"><p className="font-black">{item.approved_count} approved · {item.not_approved_count} not approved</p>{item.outcome?.public_reason ? <p className="mt-2 rounded-2xl bg-rose-50 p-3 font-bold text-rose-800">Reason: {displayText(item.outcome.public_reason)}{item.outcome.public_explanation ? ` — ${item.outcome.public_explanation}` : ''}</p> : null}{item.outcome?.approved?.map((row, index) => <div key={`approved-${index}`} className="mt-3 rounded-2xl bg-emerald-50 p-4"><p className="font-black text-emerald-900">APPROVED · {row.product}</p><p className="text-xl font-black">{row.price}</p><p className="font-semibold">{row.store}{row.promotion_conditions ? ` · ${row.promotion_conditions}` : ''}{row.valid_through_date ? ` · Valid through ${shortDate(row.valid_through_date)}` : ''}</p></div>)}{item.outcome?.not_approved?.map((row, index) => <div key={`rejected-${index}`} className="mt-3 rounded-2xl bg-rose-50 p-4"><p className="font-black text-rose-900">NOT APPROVED · {row.product}</p><p className="font-semibold">Reason: {displayText(row.reason)}</p>{row.explanation ? <p>{row.explanation}</p> : null}</div>)}</div> : null}
+    </article>)}</div>
+    {!state.loading && !state.items.length ? <EmptyState title="No tracked submissions" body="Submit proof anonymously from this browser. Clearing browser storage or changing devices removes local tracking." icon={ReceiptText} /> : null}
+  </div>
 }
 
 function FormStep({ number, label, children }) {
@@ -3128,6 +3132,7 @@ function App() {
 
   const activeNav = useMemo(() => {
     if (['home', 'search', 'deals', 'stores', 'cart', 'submit', 'profile'].includes(screen)) return screen
+    if (screen === 'submissions') return 'submit'
     if (screen === 'store') return 'stores'
     if (screen === 'leaderboard') return 'profile'
     if (screen === 'product') return 'search'
@@ -3232,6 +3237,7 @@ function App() {
             setSelectedProofId={setSelectedProofId}
           />
         ) : null}
+        {screen === 'submissions' ? <MySubmissionsScreen openScreen={openScreen} /> : null}
         {screen === 'profile' ? (
           <ProfileScreen
             me={me}

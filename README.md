@@ -163,7 +163,7 @@ If email sending fails, registration still succeeds and the server logs the emai
 
 Admins can also check email setup from the app:
 
-- `GET /api/admin/email/status?pin=ADMIN_PIN` returns safe configuration status without the SMTP password/key.
+- `GET /api/admin/email/status` returns safe configuration status to an authenticated staff session without exposing the SMTP password/key.
 - `POST /api/admin/email/test` sends a test email when SMTP is configured.
 - Logged-in users can request another verification email from the Account section.
 
@@ -253,7 +253,7 @@ After a report is approved, proof images are served publicly from URLs like:
 Pending, rejected, disputed, deleted, and expired report images are not available through the public upload route. Admins review pending images through:
 
 ```text
-/api/admin/uploads/generated-file-name.jpg?pin=ADMIN_PIN
+/api/admin/uploads/generated-file-name.jpg
 ```
 
 The app generates unique filenames and stores the original filename, MIME type, and file size in SQLite. It does not trust the user-provided filename, and it rejects non-image uploads such as PDF, EXE, ZIP, HTML, or JavaScript files.
@@ -394,7 +394,7 @@ Expiration defaults:
 
 ## Admin Review
 
-Open `/admin.html`, enter `ADMIN_PIN`, and load review data.
+Open `/admin.html` and sign in with a staff account. The temporary development PIN fallback is accepted only in request bodies on limited read-only APIs; it is never placed in a URL.
 
 Admins can:
 
@@ -425,7 +425,7 @@ The Beta Readiness tab shows safe checklist status only. It does not display `EM
 ```text
 ipconfig getifaddr en0
 http://YOUR-MAC-IP:3000
-http://YOUR-MAC-IP:3000/admin.html?pin=YOUR_ADMIN_PIN
+http://YOUR-MAC-IP:3000/admin.html
 ```
 
 When a new report is submitted, the app tries to email `ADMIN_NOTIFY_EMAIL` with the report details and admin review link. If admin review email is not configured, submission still succeeds and the server logs:

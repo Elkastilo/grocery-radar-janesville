@@ -43,7 +43,7 @@ assert.match(source, /event\.preventDefault\(\)/);
 assert.match(source, /type="button" data-approve-row=/);
 assert.match(source, /type="button" data-open-reject=/);
 assert.match(source, /type="button" data-approve-ready/);
-for (const attribute of ["data-approve-row", "data-confirm-reject", "data-approve-ready", "data-store-resolution", "data-review-later", "data-finish-review", "data-reject-receipt"]) {
+for (const attribute of ["data-approve-row", "data-confirm-reject", "data-approve-ready", "data-store-resolution", "data-review-later", "data-finish-review", "data-finish-review-next", "data-reject-receipt"]) {
   assert.match(source, new RegExp(`type="button"[^>]*${attribute}|${attribute}[^>]*type="button"`), `${attribute} must never submit a surrounding form.`);
 }
 assert.match(source, /completed_rows/);
@@ -64,9 +64,15 @@ assert.match(reviewLaterBody, /\/review-later/);
 assert.match(reviewLaterBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
 assert.doesNotMatch(source, /Save &(?:amp;)? Review Next/, "The ambiguous generic action must be removed.");
 
-const finishBody = functionBody("finishAndReviewNext", "renderWorkers");
-assert.match(finishBody, /\/complete/);
-assert.match(finishBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
+const finishNextBody = functionBody("finishAndReviewNext", "finishReview");
+assert.match(finishNextBody, /\/complete/);
+assert.match(finishNextBody, /startReviewNext\(\{ excludeProofId: batchId \}\)/);
+
+const finishStopBody = functionBody("finishReview", "renderWorkers");
+assert.match(finishStopBody, /\/complete/);
+assert.match(finishStopBody, /openAdminTab\("inboxTab"\)/);
+assert.match(finishStopBody, /loadAdminData\(\)/);
+assert.doesNotMatch(finishStopBody, /startReviewNext/, "Finish Review must stop at the Inbox instead of opening another proof.");
 
 const rejectBody = functionBody("rejectReceipt", "approveReviewRows");
 assert.match(rejectBody, /\/reject/);

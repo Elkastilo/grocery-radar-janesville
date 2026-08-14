@@ -268,6 +268,10 @@ async function initDb() {
       original_name TEXT,
       mime_type TEXT,
       size_bytes INTEGER,
+      file_hash TEXT,
+      thumbnail_path TEXT,
+      card_path TEXT,
+      detail_path TEXT,
       alt_text TEXT NOT NULL DEFAULT '',
       source_type TEXT NOT NULL DEFAULT 'admin_upload',
       source_url TEXT,
@@ -285,6 +289,10 @@ async function initDb() {
       FOREIGN KEY (moderated_by) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
+  await addColumnIfMissing("product_images", "file_hash", "TEXT");
+  await addColumnIfMissing("product_images", "thumbnail_path", "TEXT");
+  await addColumnIfMissing("product_images", "card_path", "TEXT");
+  await addColumnIfMissing("product_images", "detail_path", "TEXT");
 
   await run(`
     CREATE TABLE IF NOT EXISTS catalog_import_batches (
@@ -778,6 +786,8 @@ async function initDb() {
       max_analyses_per_hour INTEGER NOT NULL DEFAULT 20,
       max_analyses_per_day INTEGER NOT NULL DEFAULT 100,
       retry_limit INTEGER NOT NULL DEFAULT 2,
+      max_concurrency INTEGER NOT NULL DEFAULT 3,
+      max_queued_jobs INTEGER NOT NULL DEFAULT 200,
       model TEXT NOT NULL DEFAULT '',
       primary_model TEXT NOT NULL DEFAULT '',
       fallback_model TEXT NOT NULL DEFAULT '',
@@ -867,6 +877,100 @@ async function initDb() {
       UNIQUE(job_id, attempt_number),
       FOREIGN KEY (job_id) REFERENCES ai_proof_jobs(id) ON DELETE CASCADE,
       FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS submission_outcomes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      proof_id INTEGER NOT NULL UNIQUE,
+      outcome_type TEXT NOT NULL DEFAULT 'reviewed',
+      approved_count INTEGER NOT NULL DEFAULT 0,
+      rejected_count INTEGER NOT NULL DEFAULT 0,
+      public_summary_json TEXT NOT NULL DEFAULT '{}',
+      finalized_by INTEGER,
+      finalized_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE RESTRICT,
+      FOREIGN KEY (finalized_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS bulk_intake_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      submitted_store_id INTEGER,
+      proof_type TEXT NOT NULL,
+      source_url TEXT,
+      known_valid_from_date TEXT,
+      known_valid_through_date TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'processing',
+      paused INTEGER NOT NULL DEFAULT 0,
+      file_count INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (submitted_store_id) REFERENCES stores(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS bulk_intake_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bulk_batch_id INTEGER NOT NULL,
+      proof_id INTEGER,
+      original_name TEXT NOT NULL,
+      uploaded_path TEXT,
+      file_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      duplicate_of_proof_id INTEGER,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (bulk_batch_id) REFERENCES bulk_intake_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (proof_id) REFERENCES price_import_batches(id) ON DELETE SET NULL,
+      FOREIGN KEY (duplicate_of_proof_id) REFERENCES price_import_batches(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_image_upload_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'owner_photo',
+      source_note TEXT,
+      status TEXT NOT NULL DEFAULT 'needs_review',
+      file_count INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_image_upload_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      original_path TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      file_hash TEXT NOT NULL,
+      suggested_product_id INTEGER,
+      match_confidence TEXT NOT NULL DEFAULT 'unknown',
+      duplicate_of_image_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'needs_review',
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES product_image_upload_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (suggested_product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (duplicate_of_image_id) REFERENCES product_images(id) ON DELETE SET NULL
     )
   `);
 
@@ -1389,6 +1493,41 @@ async function initDb() {
   );
 
   await run(
+    `INSERT INTO homepage_patch_notes (
+      version_label, title, summary, added_json, changed_json, fixed_json,
+      known_issues_json, next_focus_json, release_date, internal_commit_hash,
+      status, published_at, created_at, updated_at
+    )
+    SELECT 'v0.9.5', 'Bulk Intake + Sale Accuracy',
+      'Bulk grocery-price operations with accurate promotion handling and privacy-first submission results.',
+      ?, ?, '[]', ?, '[]', NULL, '', 'draft', NULL, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM homepage_patch_notes WHERE version_label = 'v0.9.5')`,
+    [
+      JSON.stringify([
+        "Bulk screenshot intake for grocery prices.",
+        "Bulk product-image upload and matching.",
+        "Sale dates, one-day promotions, and promotion conditions.",
+        "Reviewers can finish a review without automatically opening another proof.",
+        "Anonymous submission results can be tracked without creating a public account."
+      ]),
+      JSON.stringify([
+        "Price expiration is more accurate for short-term sales.",
+        "Multi-buy, loyalty, and coupon pricing keeps its original conditions.",
+        "Review results explain what was approved and what was not.",
+        "Batch processing isolates failures and duplicate uploads.",
+        "Public submission tracking does not require a shopper account; staff identity and original proof files remain private."
+      ]),
+      JSON.stringify([
+        "Some promotions still require human date/store confirmation.",
+        "Product image matching may require review for similar products.",
+        "Browser QA must still be performed manually if automated browser tooling is unavailable."
+      ]),
+      now,
+      now
+    ]
+  );
+
+  await run(
     `
       INSERT INTO homepage_patch_notes (
         version_label,
@@ -1492,7 +1631,11 @@ async function initDb() {
   await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_import_rows_ai_item ON price_import_rows(ai_analysis_id, ai_item_index) WHERE ai_analysis_id IS NOT NULL");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_jobs_status ON ai_proof_jobs(status, queued_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_attempts_started ON ai_proof_attempts(started_at, attempt_kind, status)");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_submission_outcomes_proof ON submission_outcomes(proof_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_bulk_intake_items_batch_status ON bulk_intake_items(bulk_batch_id, status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_image_upload_items_batch_status ON product_image_upload_items(batch_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_product_images_product_status ON product_images(product_id, status, is_primary)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_images_file_hash ON product_images(file_hash)");
   await run("CREATE INDEX IF NOT EXISTS idx_catalog_import_rows_batch_status ON catalog_import_rows(batch_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_admin_read ON notifications(admin_only, is_read, created_at)");
@@ -1650,6 +1793,13 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "package_price", "REAL");
   await addColumnIfMissing("price_reports", "multibuy_quantity", "REAL");
   await addColumnIfMissing("price_reports", "multibuy_total_price", "REAL");
+  await addColumnIfMissing("price_reports", "valid_from_date", "TEXT");
+  await addColumnIfMissing("price_reports", "valid_through_date", "TEXT");
+  await addColumnIfMissing("price_reports", "valid_from_time", "TEXT");
+  await addColumnIfMissing("price_reports", "valid_through_time", "TEXT");
+  await addColumnIfMissing("price_reports", "promotion_conditions", "TEXT");
+  await addColumnIfMissing("price_reports", "promotion_schedule_text", "TEXT");
+  await addColumnIfMissing("price_reports", "display_offer_text", "TEXT");
   await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 
@@ -1766,6 +1916,10 @@ async function migratePriceImportBatchesTable() {
   await addColumnIfMissing("price_import_batches", "approved_item_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_batches", "rejected_item_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing("price_import_batches", "escalated_item_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("price_import_batches", "anonymous_tracking_token_hash", "TEXT");
+  await addColumnIfMissing("price_import_batches", "bulk_intake_batch_id", "INTEGER");
+  await addColumnIfMissing("price_import_batches", "known_valid_from_date", "TEXT");
+  await addColumnIfMissing("price_import_batches", "known_valid_through_date", "TEXT");
   await addColumnIfMissing("price_import_batches", "updated_at", "TEXT");
   await run("UPDATE price_import_batches SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }
@@ -1827,12 +1981,23 @@ async function migratePriceImportRowsTable() {
   await addColumnIfMissing("price_import_rows", "research_notes", "TEXT");
   await addColumnIfMissing("price_import_rows", "research_sources_json", "TEXT");
   await addColumnIfMissing("price_import_rows", "suggested_new_product", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing("price_import_rows", "valid_from_date", "TEXT");
+  await addColumnIfMissing("price_import_rows", "valid_through_date", "TEXT");
+  await addColumnIfMissing("price_import_rows", "valid_from_time", "TEXT");
+  await addColumnIfMissing("price_import_rows", "valid_through_time", "TEXT");
+  await addColumnIfMissing("price_import_rows", "promotion_conditions", "TEXT");
+  await addColumnIfMissing("price_import_rows", "promotion_schedule_text", "TEXT");
+  await addColumnIfMissing("price_import_rows", "display_offer_text", "TEXT");
+  await addColumnIfMissing("price_import_rows", "public_rejection_reason", "TEXT");
+  await addColumnIfMissing("price_import_rows", "public_reviewer_explanation", "TEXT");
   await run("UPDATE price_import_rows SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR updated_at = ''", [new Date().toISOString()]);
 }
 
 async function migrateAiProcessingSettingsTable() {
   await addColumnIfMissing("ai_processing_settings", "primary_model", "TEXT NOT NULL DEFAULT ''");
   await addColumnIfMissing("ai_processing_settings", "fallback_model", "TEXT NOT NULL DEFAULT ''");
+  await addColumnIfMissing("ai_processing_settings", "max_concurrency", "INTEGER NOT NULL DEFAULT 3");
+  await addColumnIfMissing("ai_processing_settings", "max_queued_jobs", "INTEGER NOT NULL DEFAULT 200");
   await run("UPDATE ai_processing_settings SET primary_model = COALESCE(NULLIF(primary_model, ''), model, '') WHERE primary_model IS NULL OR primary_model = ''");
 }
 
@@ -1929,6 +2094,7 @@ async function refreshExpiredReports() {
       SET status = 'expired', confidence = 'expired'
       WHERE expires_at <= ?
         AND status IN ('pending', 'approved')
+        AND COALESCE(price_type, 'regular') = 'regular'
     `,
     [new Date().toISOString()]
   );
