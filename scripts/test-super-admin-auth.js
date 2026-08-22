@@ -362,6 +362,15 @@ async function updateUser(dataDir, sql, params = []) {
   }
 }
 
+async function queryOne(dataDir, sql, params = []) {
+  const database = openDb(dataDir);
+  try {
+    return await dbGet(database, sql, params);
+  } finally {
+    await closeDb(database);
+  }
+}
+
 function approvedReportCountForItem(browse, itemName) {
   const reports = browse.recently_approved_reports || [];
   return reports.filter((report) => String(report.item_name || "").toLowerCase() === itemName.toLowerCase()).length;
@@ -459,6 +468,160 @@ async function main() {
       is_super_admin: true
     });
     assert.equal(normalAdminRoleChange.response.status, 403);
+
+    const supportClient = new TestClient(app.baseUrl);
+    const supportRegistration = await register(supportClient, {
+      username: "janebuyer",
+      email: "supportshopper@shopper.invalid"
+    });
+    const peerAdminClient = new TestClient(app.baseUrl);
+    const peerAdminRegistration = await register(peerAdminClient, {
+      username: "alicejanes",
+      email: "peeradmin@shopper.invalid"
+    });
+    await updateUser(
+      app.dataDir,
+      "UPDATE users SET is_admin = 1, staff_role = 'manager' WHERE id = ?",
+      [peerAdminRegistration.user.id]
+    );
+
+    const managerOwnerReset = await normalClient.post(`/api/admin/users/${ownerMatches[0].id}/reset-password`, {
+      newPassword: "StolenOwnerPass123!"
+    });
+    assert.equal(managerOwnerReset.response.status, 403);
+    const managerOwnerProfile = await normalClient.post(`/api/admin/users/${ownerMatches[0].id}/profile`, {
+      username: "stolenowner",
+      admin_note: "manager must not mutate owner"
+    });
+    assert.equal(managerOwnerProfile.response.status, 403);
+    const managerOwnerModeration = await normalClient.post(`/api/admin/users/${ownerMatches[0].id}/moderation`, {
+      action: "suspended"
+    });
+    assert.equal(managerOwnerModeration.response.status, 403);
+
+    const managerPeerReset = await normalClient.post(`/api/admin/users/${peerAdminRegistration.user.id}/reset-password`, {
+      newPassword: "PeerTakeoverPass123!"
+    });
+    assert.equal(managerPeerReset.response.status, 403);
+    const managerPeerProfile = await normalClient.post(`/api/admin/users/${peerAdminRegistration.user.id}/profile`, {
+      email: "peerchanged@shopper.invalid",
+      confirm_email_edit: "EDIT EMAIL"
+    });
+    assert.equal(managerPeerProfile.response.status, 403);
+    const managerPeerFlags = await normalClient.post(`/api/admin/users/${peerAdminRegistration.user.id}/flags`, {
+      is_email_verified: false
+    });
+    assert.equal(managerPeerFlags.response.status, 403);
+    const managerPeerModeration = await normalClient.post(`/api/admin/users/${peerAdminRegistration.user.id}/moderation`, {
+      action: "suspended"
+    });
+    assert.equal(managerPeerModeration.response.status, 403);
+
+    const reservedUsernameTransfer = await normalClient.post(`/api/admin/users/${supportRegistration.user.id}/profile`, {
+      username: OWNER_USERNAME
+    });
+    assert.equal(reservedUsernameTransfer.response.status, 400);
+    const reservedEmailTransfer = await normalClient.post(`/api/admin/users/${supportRegistration.user.id}/profile`, {
+      email: OWNER_EMAIL.toUpperCase(),
+      confirm_email_edit: "EDIT EMAIL"
+    });
+    assert.equal(reservedEmailTransfer.response.status, 400);
+
+    const reservedRegistrationUsername = await new TestClient(app.baseUrl).post("/api/auth/register", {
+      username: OWNER_USERNAME.toUpperCase(),
+      email: "reserved-name@shopper.invalid",
+      password: "LaunchPass123!",
+      confirmPassword: "LaunchPass123!"
+    });
+    assert.equal(reservedRegistrationUsername.response.status, 409);
+    const reservedRegistrationEmail = await new TestClient(app.baseUrl).post("/api/auth/register", {
+      username: "reservedemail",
+      email: OWNER_EMAIL.toUpperCase(),
+      password: "LaunchPass123!",
+      confirmPassword: "LaunchPass123!"
+    });
+    assert.equal(reservedRegistrationEmail.response.status, 409);
+
+    const managerNormalProfile = await normalClient.post(`/api/admin/users/${supportRegistration.user.id}/profile`, {
+      username: "janebuyer2",
+      email: "supportshopper2@shopper.invalid",
+      confirm_email_edit: "EDIT EMAIL",
+      is_admin: true,
+      is_super_admin: true,
+      staff_role: "owner"
+    });
+    assert.equal(managerNormalProfile.response.status, 200, JSON.stringify(managerNormalProfile.body));
+    const normalAfterProfile = await userByEmail(app.dataDir, "supportshopper2@shopper.invalid");
+    assert.equal(normalAfterProfile.is_admin, 0);
+    assert.equal(normalAfterProfile.is_super_admin, 0);
+    assert.equal(normalAfterProfile.staff_role, "user");
+
+    const managerNormalReset = await normalClient.post(`/api/admin/users/${supportRegistration.user.id}/reset-password`, {
+      newPassword: "SupportResetPass123!"
+    });
+    assert.equal(managerNormalReset.response.status, 200, JSON.stringify(managerNormalReset.body));
+    assert.equal(Object.prototype.hasOwnProperty.call(managerNormalReset.body, "password_hash"), false);
+    const revokedSession = await supportClient.get("/api/auth/me");
+    assert.equal(revokedSession.response.status, 200);
+    assert.equal(revokedSession.body.loggedIn, false);
+    const oldPasswordLogin = await new TestClient(app.baseUrl).post("/api/auth/login", {
+      email: "supportshopper2@shopper.invalid",
+      password: supportRegistration.password
+    });
+    assert.equal(oldPasswordLogin.response.status, 401);
+    const resetPasswordLogin = await new TestClient(app.baseUrl).post("/api/auth/login", {
+      email: "supportshopper2@shopper.invalid",
+      password: "SupportResetPass123!"
+    });
+    assert.equal(resetPasswordLogin.response.status, 200, JSON.stringify(resetPasswordLogin.body));
+    const passwordResetAudit = await queryOne(
+      app.dataDir,
+      "SELECT * FROM admin_audit_log WHERE action = 'ADMIN_PASSWORD_RESET' AND affected_id = ? ORDER BY id DESC LIMIT 1",
+      [supportRegistration.user.id]
+    );
+    assert.ok(passwordResetAudit);
+    assert.equal(passwordResetAudit.admin_user_id, normalRegistration.user.id);
+    const passwordResetNotice = await queryOne(
+      app.dataDir,
+      "SELECT * FROM notifications WHERE user_id = ? AND type = 'admin_password_reset' ORDER BY id DESC LIMIT 1",
+      [supportRegistration.user.id]
+    );
+    assert.ok(passwordResetNotice);
+
+    const ownerManagesNormalRole = await ownerClient.post(`/api/admin/v2/workers/${supportRegistration.user.id}/role`, {
+      role: "data_entry"
+    });
+    assert.equal(ownerManagesNormalRole.response.status, 200, JSON.stringify(ownerManagesNormalRole.body));
+    const ownerRestoresNormalRole = await ownerClient.post(`/api/admin/v2/workers/${supportRegistration.user.id}/role`, {
+      role: "user"
+    });
+    assert.equal(ownerRestoresNormalRole.response.status, 200, JSON.stringify(ownerRestoresNormalRole.body));
+    const ownerCannotTransferReservedIdentity = await ownerClient.post(`/api/admin/users/${supportRegistration.user.id}/profile`, {
+      username: OWNER_USERNAME
+    });
+    assert.equal(ownerCannotTransferReservedIdentity.response.status, 400);
+
+    const ownerSelfReset = await ownerClient.post(`/api/admin/users/${ownerMatches[0].id}/reset-password`, {
+      newPassword: "OwnerAdminReset123!"
+    });
+    assert.equal(ownerSelfReset.response.status, 403);
+    const ownerSelfProfile = await ownerClient.post(`/api/admin/users/${ownerMatches[0].id}/profile`, {
+      email: "owner-away@example.invalid",
+      confirm_email_edit: "EDIT EMAIL"
+    });
+    assert.equal(ownerSelfProfile.response.status, 403);
+    const ownerSelfRole = await ownerClient.post(`/api/admin/v2/workers/${ownerMatches[0].id}/role`, {
+      role: "manager"
+    });
+    assert.equal(ownerSelfRole.response.status, 403);
+
+    const ownerAfterTransferAttempts = await userByEmail(app.dataDir, OWNER_EMAIL);
+    assert.equal(ownerAfterTransferAttempts.id, ownerMatches[0].id);
+    assert.equal(ownerAfterTransferAttempts.username, OWNER_USERNAME);
+    assert.equal(ownerAfterTransferAttempts.is_super_admin, 1);
+    const managerAfterTransferAttempts = await userByEmail(app.dataDir, "janeshopper@shopper.invalid");
+    assert.equal(managerAfterTransferAttempts.is_super_admin, 0);
+
     const normalAdminDeactivate = await normalClient.post(`/api/admin/users/${normalRegistration.user.id}/moderation`, {
       action: "deactivated"
     });

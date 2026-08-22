@@ -154,6 +154,7 @@ const BOOTSTRAP_SUPER_ADMIN_EMAIL = "juricbu@gmail.com";
 const BOOTSTRAP_SUPER_ADMIN_USERNAME = "elcastilo";
 const OWNER_EMAIL = BOOTSTRAP_SUPER_ADMIN_EMAIL;
 const OWNER_USERNAME = BOOTSTRAP_SUPER_ADMIN_USERNAME;
+let protectedOwnerUserId = null;
 const VERIFICATION_TOKEN_TTL_MS = 1000 * 60 * 60 * 24;
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
   60,
@@ -2791,7 +2792,11 @@ function isBootstrapSuperAdminIdentity(user = {}) {
 }
 
 function isOwnerAccount(user) {
-  return isBootstrapSuperAdminIdentity(user);
+  return Boolean(
+    protectedOwnerUserId &&
+    Number(user?.id) === Number(protectedOwnerUserId) &&
+    isBootstrapSuperAdminIdentity(user)
+  );
 }
 
 function isSuperAdminAccount(user = {}) {
@@ -2803,6 +2808,66 @@ function staffRoleForUser(user = {}) {
   const stored = String(user.staff_role || "").trim().toLowerCase();
   if (["manager", "reviewer", "data_entry"].includes(stored)) return stored;
   return user.is_admin ? "manager" : "user";
+}
+
+const SECURITY_ROLE_LEVEL = Object.freeze({
+  user: 0,
+  data_entry: 1,
+  reviewer: 1,
+  manager: 2,
+  super_admin: 3,
+  owner: 4
+});
+
+function securityRoleForUser(user = {}) {
+  if (isOwnerAccount(user)) return "owner";
+  if (user?.is_super_admin) return "super_admin";
+  return staffRoleForUser(user);
+}
+
+function canManageSecuritySensitiveAccount(actor, target) {
+  const actorRole = securityRoleForUser(actor);
+  const targetRole = securityRoleForUser(target);
+
+  if (targetRole === "owner") return false;
+  if (actorRole === "owner") return true;
+  if (actorRole === "super_admin") {
+    return SECURITY_ROLE_LEVEL[targetRole] < SECURITY_ROLE_LEVEL.super_admin;
+  }
+  if (actorRole === "manager") return targetRole === "user";
+  return false;
+}
+
+function rejectUnauthorizedSensitiveAccountMutation(request, response, target) {
+  if (canManageSecuritySensitiveAccount(request.adminUser, target)) return false;
+  response.status(403).json({
+    error: isOwnerAccount(target)
+      ? "The protected Owner account cannot be changed through this administrative action."
+      : "Your admin role cannot change security-sensitive settings for this account."
+  });
+  return true;
+}
+
+function reservedOwnerIdentityConflict(user, updates = {}) {
+  const targetIsOwner = isOwnerAccount(user);
+
+  if (Object.prototype.hasOwnProperty.call(updates, "username")) {
+    const username = normalizedUsername(updates.username);
+    if ((!targetIsOwner && username === OWNER_USERNAME) ||
+        (targetIsOwner && username !== OWNER_USERNAME)) {
+      return "The protected Owner username is reserved and cannot be reassigned or changed here.";
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, "email")) {
+    const email = normalizedEmail(updates.email);
+    if ((!targetIsOwner && email === OWNER_EMAIL) ||
+        (targetIsOwner && email !== OWNER_EMAIL)) {
+      return "The protected Owner email is reserved and cannot be reassigned or changed here.";
+    }
+  }
+
+  return null;
 }
 
 function staffCan(user, permission) {
@@ -3002,6 +3067,9 @@ async function ensureBootstrapSuperAdmin() {
     );
   }
 
+  // Owner privilege is bound to the single record validated at startup. Matching
+  // editable identity strings alone must never be sufficient for promotion.
+  protectedOwnerUserId = Number(owner.id);
   const updatedOwner = await applyBootstrapSuperAdminFlags(owner);
 
   await run(
@@ -4823,6 +4891,16 @@ function sessionDestroy(request) {
       resolve();
     });
   });
+}
+
+async function revokeUserSessions(userId) {
+  const result = await run(
+    `DELETE FROM app_sessions
+     WHERE json_valid(sess) = 1
+       AND CAST(json_extract(sess, '$.userId') AS INTEGER) = ?`,
+    [userId]
+  );
+  return Number(result.changes || 0);
 }
 
 async function logInSessionUser(request, user) {
@@ -8125,6 +8203,11 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
     return;
   }
   const registration = validateRegistration(request.body);
+  const reservedIdentityError = reservedOwnerIdentityConflict({}, registration);
+  if (reservedIdentityError) {
+    response.status(409).json({ error: reservedIdentityError });
+    return;
+  }
   const moderationReason = await usernameModerationReason(registration.username);
 
   if (moderationReason) {
@@ -8156,10 +8239,6 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
   const verificationToken = crypto.randomBytes(32).toString("hex");
   const verificationExpires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
   const createdAt = new Date().toISOString();
-  const isBootstrapAdmin = isBootstrapSuperAdminIdentity({
-    email: registration.email,
-    username: registration.username
-  });
   const result = await run(
     `
       INSERT INTO users (
@@ -8183,8 +8262,8 @@ app.post("/api/auth/register", asyncRoute(async (request, response) => {
       passwordHash,
       verificationToken,
       verificationExpires,
-      isBootstrapAdmin ? 1 : 0,
-      isBootstrapAdmin ? 1 : 0,
+      0,
+      0,
       createdAt
     ]
   );
@@ -10378,8 +10457,9 @@ async function auditExistingUsernames() {
 app.post("/api/account/username", requireLogin, asyncRoute(async (request, response) => {
   const username = validateUsername(request.body.username);
 
-  if (isOwnerAccount(request.currentUser) && normalizedUsername(username) !== OWNER_USERNAME) {
-    response.status(400).json({ error: "The Owner account username cannot be changed." });
+  const reservedIdentityError = reservedOwnerIdentityConflict(request.currentUser, { username });
+  if (reservedIdentityError) {
+    response.status(400).json({ error: reservedIdentityError });
     return;
   }
 
@@ -15560,10 +15640,7 @@ app.post("/api/admin/v2/workers/:userId/role", requireSuperAdminAccess, asyncRou
     response.status(404).json({ error: "User was not found." });
     return;
   }
-  if (isOwnerAccount(target)) {
-    response.status(400).json({ error: "The protected Owner role cannot be changed here." });
-    return;
-  }
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, target)) return;
   await run("UPDATE users SET staff_role = ?, is_admin = ? WHERE id = ?", [role, role === "user" ? 0 : 1, userId]);
   await appendAdminRoleAuditNote({ targetUserId: userId, adminUserId: request.adminUser.id, note: `Admin V2 role changed to ${role}.` });
   response.json({ message: `Worker role changed to ${role.replace(/_/g, " ")}.` });
@@ -16525,6 +16602,8 @@ app.post("/api/admin/admin-accounts/:id/role", requireSuperAdminAccess, asyncRou
     return;
   }
 
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, target)) return;
+
   const action = cleanText(request.body.action, 40).toLowerCase();
   const confirmation = cleanText(request.body.confirmation, 80);
   const adminNote = cleanText(request.body.admin_note || request.body.adminNote, 500);
@@ -16540,11 +16619,6 @@ app.post("/api/admin/admin-accounts/:id/role", requireSuperAdminAccess, asyncRou
 
     if (!target.is_admin) {
       response.status(400).json({ error: "This account is not currently an admin." });
-      return;
-    }
-
-    if (isOwnerAccount(target)) {
-      response.status(400).json({ error: "The bootstrap Super Admin account cannot be demoted." });
       return;
     }
 
@@ -16573,11 +16647,6 @@ app.post("/api/admin/admin-accounts/:id/role", requireSuperAdminAccess, asyncRou
   } else if (action === "suspend_test") {
     if (confirmation !== "SUSPEND TEST") {
       response.status(400).json({ error: "Type SUSPEND TEST to confirm suspending this test/dev account." });
-      return;
-    }
-
-    if (isOwnerAccount(target)) {
-      response.status(400).json({ error: "The bootstrap Super Admin account cannot be suspended." });
       return;
     }
 
@@ -18004,12 +18073,14 @@ app.post("/api/admin/reports/:id/link-product", requireAdminAccess, requireLogge
 
 app.post("/api/admin/users/:id/reset-password", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
   const userId = Number.parseInt(request.params.id, 10);
-  const user = await get("SELECT id, username, email FROM users WHERE id = ?", [userId]);
+  const user = await get("SELECT * FROM users WHERE id = ?", [userId]);
 
   if (!user) {
     response.status(404).json({ error: "User was not found." });
     return;
   }
+
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, user)) return;
 
   const hasProvidedPassword = typeof request.body.newPassword === "string" &&
     request.body.newPassword.length > 0;
@@ -18023,6 +18094,32 @@ app.post("/api/admin/users/:id/reset-password", requireAdminAccess, requireLogge
     "UPDATE users SET password_hash = ? WHERE id = ?",
     [passwordHash, user.id]
   );
+
+  const revokedSessionCount = await revokeUserSessions(user.id);
+  await createUserNotification(
+    user.id,
+    "admin_password_reset",
+    "Your password was reset",
+    "An administrator reset your Grocery Radar password. Sign in with the temporary password and contact support if you did not expect this change.",
+    { related_type: "user", related_id: user.id, target_tab: "accountView", target_url: "/?tab=accountView" }
+  );
+  await recordAdminAudit({
+    adminUserId: request.adminUser.id,
+    action: "ADMIN_PASSWORD_RESET",
+    method: request.method,
+    path: request.originalUrl || request.path,
+    statusCode: 200,
+    ipAddress: requestIpAddress(request),
+    userAgent: requestUserAgent(request),
+    affectedType: "user",
+    affectedId: user.id,
+    metadata: {
+      actor_role: securityRoleForUser(request.adminUser),
+      target_role: securityRoleForUser(user),
+      sessions_revoked: revokedSessionCount,
+      generated_temporary_password: !hasProvidedPassword
+    }
+  });
 
   response.json({
     message: hasProvidedPassword
@@ -18039,6 +18136,14 @@ app.post("/api/admin/users/:id/profile", requireAdminAccess, requireLoggedInAdmi
 
   if (!user) {
     response.status(404).json({ error: "User was not found." });
+    return;
+  }
+
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, user)) return;
+
+  const reservedIdentityError = reservedOwnerIdentityConflict(user, request.body);
+  if (reservedIdentityError) {
+    response.status(400).json({ error: reservedIdentityError });
     return;
   }
 
@@ -18134,12 +18239,14 @@ app.post("/api/admin/users/:id/notes", requireAdminAccess, requireLoggedInAdminA
 
 app.post("/api/admin/users/:id/flags", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
   const userId = Number.parseInt(request.params.id, 10);
-  const user = await get("SELECT id, username, is_admin FROM users WHERE id = ?", [userId]);
+  const user = await get("SELECT * FROM users WHERE id = ?", [userId]);
 
   if (!user) {
     response.status(404).json({ error: "User was not found." });
     return;
   }
+
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, user)) return;
 
   const updates = [];
   const params = [];
@@ -18283,6 +18390,8 @@ app.post("/api/admin/users/:id/moderation", requireAdminAccess, requireLoggedInA
     return;
   }
 
+  if (rejectUnauthorizedSensitiveAccountMutation(request, response, user)) return;
+
   let message = "User moderation updated.";
   let emailWarning = null;
 
@@ -18294,11 +18403,6 @@ app.post("/api/admin/users/:id/moderation", requireAdminAccess, requireLoggedInA
 
     if (["deleted", "deactivated"].includes(status) && !isSuperAdminAccount(request.adminUser)) {
       response.status(403).json({ error: "Super Admin access is required to delete or deactivate users." });
-      return;
-    }
-
-    if (isOwnerAccount(user) && status !== "active") {
-      response.status(400).json({ error: "The bootstrap Super Admin account cannot be moderated to a blocked status." });
       return;
     }
 
