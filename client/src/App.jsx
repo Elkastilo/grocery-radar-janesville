@@ -25,6 +25,7 @@ import {
   Trash2,
   Upload,
   UsersRound,
+  X,
 } from 'lucide-react'
 import { apiFetch, getJson, postJson, putJson } from './api'
 import { isRenderableProduct, productCardViewModel, reportSize } from './productDisplay'
@@ -280,14 +281,18 @@ function StoreLogo({ store, size = 'md' }) {
 function ProductVisual({ item, label = 'Product', compact = false }) {
   const imageUrl = productImageUrl(item)
   const size = compact ? 'h-16 w-16' : 'h-20 w-20'
+  const [imageFailed, setImageFailed] = useState(false)
 
-  if (imageUrl) {
+  useEffect(() => setImageFailed(false), [imageUrl])
+
+  if (imageUrl && !imageFailed) {
     return (
       <img
         src={imageUrl}
         alt={item.image_alt_text || item.image_alt || `${label} product image`}
         className={`${size} shrink-0 rounded-2xl bg-slate-100 object-cover ring-1 ring-slate-100`}
         loading="lazy"
+        onError={() => setImageFailed(true)}
       />
     )
   }
@@ -302,13 +307,13 @@ function ProductVisual({ item, label = 'Product', compact = false }) {
 
 function SectionHeader({ title, action, onAction }) {
   return (
-    <div className="mb-3 flex items-end justify-between gap-3">
-      <h2 className="text-xl font-black text-slate-950">{title}</h2>
+    <div className="mb-4 flex items-end justify-between gap-3">
+      <h2 className="text-xl font-extrabold tracking-tight text-slate-950 sm:text-2xl">{title}</h2>
       {action ? (
         <button
           type="button"
           onClick={onAction}
-          className="rounded-full bg-white px-3 py-2 text-sm font-bold text-emerald-700 shadow-sm ring-1 ring-emerald-100"
+          className="btn-ghost shrink-0 text-sm"
         >
           {action}
         </button>
@@ -319,50 +324,61 @@ function SectionHeader({ title, action, onAction }) {
 
 function SearchBox({ value, onChange, onFocus, compact = false }) {
   return (
-    <label
-      className={`flex items-center gap-3 rounded-2xl border border-emerald-100 bg-white px-4 shadow-soft ${
-        compact ? 'py-3' : 'py-4'
+    <div
+      className={`flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm transition focus-within:border-emerald-600 focus-within:ring-4 focus-within:ring-emerald-200/70 ${
+        compact ? 'py-2.5' : 'py-3.5 sm:py-4'
       }`}
     >
-      <span className="sr-only">Search groceries</span>
-      <Search className="h-6 w-6 shrink-0 text-emerald-700" />
+      <Search className="h-5 w-5 shrink-0 text-emerald-700 sm:h-6 sm:w-6" aria-hidden="true" />
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onFocus={onFocus}
         placeholder="Search milk, eggs, ground beef..."
-        className="min-w-0 flex-1 bg-transparent text-lg font-semibold text-slate-950 outline-none placeholder:text-slate-400"
+        aria-label="Search groceries"
+        enterKeyHint="search"
+        className="min-w-0 flex-1 bg-transparent text-base font-semibold text-slate-950 outline-none placeholder:font-medium placeholder:text-slate-400 sm:text-lg"
       />
-    </label>
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+          aria-label="Clear grocery search"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      ) : null}
+    </div>
   )
 }
 
 function ScreenTitle({ eyebrow, title, subtitle }) {
   return (
-    <div className="mb-5">
-      <p className="text-sm font-black uppercase text-emerald-700">{eyebrow}</p>
-      <h1 data-route-heading tabIndex="-1" className="mt-1 text-3xl font-black text-slate-950 outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:text-4xl">{title}</h1>
-      <p className="mt-2 text-lg font-semibold text-slate-600">{subtitle}</p>
+    <div className="mb-6 max-w-3xl">
+      <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-emerald-700 sm:text-sm">{eyebrow}</p>
+      <h1 data-route-heading tabIndex="-1" className="mt-1.5 text-3xl font-extrabold tracking-tight text-slate-950 outline-none sm:text-4xl">{title}</h1>
+      <p className="mt-2 text-base font-medium leading-relaxed text-slate-600 sm:text-lg">{subtitle}</p>
     </div>
   )
 }
 
 function EmptyState({ title, body, icon: Icon = AlertTriangle }) {
   return (
-    <div className="rounded-2xl bg-white p-5 text-center shadow-soft ring-1 ring-slate-100">
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-800">
+    <div className="surface-card px-5 py-8 text-center">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100">
         <Icon className="h-6 w-6" />
       </div>
-      <p className="mt-3 text-lg font-black text-slate-950">{title}</p>
-      <p className="mt-1 font-semibold text-slate-500">{body}</p>
+      <p className="mt-4 text-lg font-extrabold text-slate-950">{title}</p>
+      <p className="mx-auto mt-1 max-w-lg font-medium leading-relaxed text-slate-600">{body}</p>
     </div>
   )
 }
 
 function LoadingCard({ label = 'Loading real Grocery Radar data...' }) {
   return (
-    <div className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
-      <div className="flex items-center gap-3 font-black text-slate-700">
+    <div className="surface-card p-5" role="status" aria-live="polite">
+      <div className="flex items-center gap-3 font-bold text-slate-700">
         <Loader2 className="h-5 w-5 animate-spin text-emerald-700" />
         {label}
       </div>
@@ -391,7 +407,7 @@ function ApiError({ message, onRetry }) {
 
 function StoreCard({ store, onOpen }) {
   return (
-    <button type="button" onClick={() => onOpen?.(store.id)} className="min-w-0 overflow-hidden rounded-2xl bg-white p-4 text-left shadow-soft ring-1 ring-slate-100">
+    <button type="button" onClick={() => onOpen?.(store.id)} className="surface-card min-w-0 overflow-hidden p-4 text-left transition hover:border-emerald-200 hover:shadow-md focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
       <div className="flex items-center gap-3">
         <StoreLogo store={store} />
         <div className="min-w-0">
@@ -417,27 +433,31 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
   const brand = productBrand(safeProduct, bestReport)
 
   return (
-    <article className="rounded-2xl bg-white p-4 text-left shadow-soft ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:shadow-lift">
-      <button type="button" onClick={() => onOpen(safeProduct.id)} className="w-full text-left">
+    <article className="surface-card p-4 text-left transition hover:border-emerald-200 hover:shadow-md">
+      <button type="button" onClick={() => onOpen(safeProduct.id)} className="w-full rounded-xl text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
         <div className="flex items-start gap-3">
           <ProductVisual item={safeProduct} label={card.displayName} />
           <div className="min-w-0 flex-1">
-            <p className="text-lg font-black text-slate-950">{displayText(card.displayName)}</p>
-            {brand ? <p className="mt-0.5 text-sm font-black text-emerald-700">{displayText(brand)}</p> : null}
-            <p className="mt-1 text-sm font-semibold text-slate-500">
-              {titleCase(card.category)} | {card.size}
-            </p>
-          </div>
-          <div className={`rounded-2xl px-3 py-2 text-right shadow-sm ${
-            hasPrice ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'
-          }`}>
-            <p className="text-xs font-bold">{hasPrice ? 'Lowest' : 'Waiting'}</p>
-            <p className={`${hasPrice ? 'text-xl' : 'max-w-24 text-sm leading-tight'} font-black`}>
-              {hasPrice ? productPrice(safeProduct) : 'Price needed'}
+            <p className="text-lg font-extrabold leading-snug text-slate-950">{displayText(card.displayName)}</p>
+            {brand ? <p className="mt-0.5 text-sm font-bold text-emerald-700">{displayText(brand)}</p> : null}
+            <p className="mt-1 text-sm font-medium text-slate-600">
+              {[card.size, titleCase(card.category)].filter(Boolean).join(' · ')}
             </p>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{hasPrice ? 'Lowest current price' : 'Community price'}</p>
+            <p className={`mt-0.5 font-extrabold ${hasPrice ? 'text-2xl text-emerald-700' : 'text-base text-slate-600'}`}>
+              {hasPrice ? productPrice(safeProduct) : 'Price needed'}
+            </p>
+          </div>
+          <div className="min-w-0 text-right">
+            <p className="truncate text-sm font-extrabold text-slate-900">{storeName || 'Store pending'}</p>
+            <p className="mt-0.5 text-xs font-medium text-slate-500">{safeProduct.last_reported_at ? checkedDateLabel(safeProduct.last_reported_at) : 'Awaiting verification'}</p>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           {bestReport ? (
             <StatusPill report={bestReport} />
           ) : (
@@ -445,22 +465,10 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
               Help verify this price
             </span>
           )}
-          {storeName ? (
-            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-              {storeName}
-            </span>
-          ) : null}
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
             {compareCountLabel(safeProduct.approved_price_count)}
           </span>
-          {safeProduct.last_reported_at ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-              <Clock3 className="h-3.5 w-3.5" />
-              {checkedDateLabel(safeProduct.last_reported_at)}
-            </span>
-          ) : null}
         </div>
-        {bestReport ? <SourceTrust report={bestReport} showLink={false} /> : null}
         <StoreProductLocation report={bestReport || { store_product_location: safeProduct.best_store_location }} />
       </button>
       {bestReport?.source_url ? (
@@ -478,7 +486,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
         <button
           type="button"
           onClick={() => onAddToCart(safeProduct)}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 font-black text-slate-800"
+          className="btn-secondary mt-4 w-full"
         >
           <Plus className="h-5 w-5 text-emerald-700" />
           Add to My List
@@ -557,47 +565,47 @@ function PriceIssueReporter({ reportId, compact = false }) {
 function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
   const canOpen = Boolean(report.product_id)
   return (
-    <article className="rounded-2xl bg-white p-4 text-left shadow-soft ring-1 ring-slate-100">
+    <article className="surface-card p-4 text-left transition hover:border-emerald-200 hover:shadow-md">
       <button
         type="button"
         onClick={() => canOpen && onOpenProduct(report.product_id)}
-        className="w-full text-left"
+        className="w-full rounded-xl text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200"
         disabled={!canOpen}
       >
         <div className="flex items-start gap-3">
           <ProductVisual item={report} label={reportTitle(report)} compact={compact} />
           <div className="min-w-0 flex-1">
-            <p className="text-lg font-black text-slate-950">{reportTitle(report)}</p>
-            <p className="mt-1 text-sm font-semibold text-slate-500">
-              {report.brand ? `${report.brand} | ` : ''}{reportSize(report)}
+            <p className="text-lg font-extrabold leading-snug text-slate-950">{reportTitle(report)}</p>
+            <p className="mt-1 text-sm font-medium text-slate-600">
+              {[report.brand, reportSize(report)].filter(Boolean).join(' · ')}
             </p>
           </div>
-          <div className="rounded-2xl bg-emerald-600 px-3 py-2 text-right text-white shadow-sm">
-            <p className="text-xs font-bold">{report.sale_price ? 'Sale' : 'Price'}</p>
-            <p className="text-xl font-black">{report.price_label || money(report.price)}</p>
-          </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <StatusPill report={report} />
-          {isDealReport(report) ? (
-            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-black text-amber-800">
-              {report.proof_type === 'weekly_ad' ? 'Weekly ad' : 'Sale'}
-            </span>
-          ) : null}
-        </div>
-
-        <div className={`mt-4 flex items-center justify-between gap-3 ${compact ? 'text-sm' : ''}`}>
+        <div className={`mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-3 ${compact ? 'text-sm' : ''}`}>
           <div className="flex min-w-0 items-center gap-3">
             <StoreLogo store={{ name: report.store_name }} />
             <div className="min-w-0">
-              <p className="truncate font-black text-slate-900">{report.store_name}</p>
-              <p className="truncate text-sm font-semibold text-slate-500">
-                {report.unit_price_label || report.unit} | {checkedDateLabel(report.source_checked_at || report.reviewed_at || report.submitted_at)}
+              <p className="truncate font-extrabold text-slate-900">{report.store_name || 'Store pending'}</p>
+              <p className="truncate text-sm font-medium text-slate-500">
+                {[report.unit_price_label || report.unit, checkedDateLabel(report.source_checked_at || report.reviewed_at || report.submitted_at)].filter(Boolean).join(' · ')}
               </p>
             </div>
           </div>
-          {canOpen ? <ChevronLeft className="h-5 w-5 shrink-0 rotate-180 text-slate-300" /> : null}
+          <div className="shrink-0 text-right">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{report.sale_price ? 'Sale price' : 'Current price'}</p>
+            <p className="text-2xl font-extrabold text-emerald-700">{report.price_label || money(report.price)}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <StatusPill report={report} />
+          {isDealReport(report) ? (
+            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-extrabold text-amber-900">
+              {report.proof_type === 'weekly_ad' ? 'Weekly ad' : 'Sale'}
+            </span>
+          ) : null}
+          {canOpen ? <span className="ml-auto inline-flex items-center gap-1 text-xs font-bold text-emerald-700">Compare <ChevronLeft className="h-4 w-4 rotate-180" /></span> : null}
         </div>
         <SourceTrust report={report} showLink={false} />
         <PromotionDetails report={report} />
@@ -619,7 +627,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
         <button
           type="button"
           onClick={() => onAddToCart(report)}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 py-3 font-black text-slate-800"
+          className="btn-secondary mt-4 w-full"
         >
           <Plus className="h-5 w-5 text-emerald-700" />
           Add to My List
@@ -631,15 +639,15 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
 
 function SummaryCard({ icon: Icon, label, value, note }) {
   return (
-    <article className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100">
+    <article className="surface-card min-w-0 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="rounded-2xl bg-emerald-100 p-3 text-emerald-800">
           <Icon className="h-6 w-6" />
         </div>
       </div>
-      <p className="mt-4 text-sm font-black text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-black text-slate-950">{value}</p>
-      <p className="mt-1 text-sm font-bold text-slate-500">{note}</p>
+      <p className="mt-4 text-sm font-extrabold text-slate-500">{label}</p>
+      <p className="mt-1 break-words text-2xl font-extrabold leading-tight text-slate-950">{value}</p>
+      <p className="mt-1 text-sm font-medium text-slate-600">{note}</p>
     </article>
   )
 }
@@ -1024,10 +1032,15 @@ function LegacyHomeScreen({
 function CatalogTile({ product, reports, openProduct }) {
   const report = bestReportForProduct(product, reports)
   const storeName = report?.store_name || product.best_store_name || ''
+  const imageUrl = productImageUrl(product)
+  const [imageFailed, setImageFailed] = useState(false)
+
+  useEffect(() => setImageFailed(false), [imageUrl])
+
   return (
-    <button type="button" onClick={() => openProduct(product.id)} className="min-w-0 rounded-3xl bg-white p-3 text-left shadow-soft ring-1 ring-slate-100 transition focus-visible:ring-4 focus-visible:ring-emerald-300 sm:p-4">
+    <button type="button" onClick={() => openProduct(product.id)} className="surface-card min-w-0 p-3 text-left transition hover:border-emerald-200 hover:shadow-md focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
       <div className="aspect-square w-full overflow-hidden rounded-2xl bg-emerald-50">
-        {productImageUrl(product) ? <img src={productImageUrl(product)} alt={product.image_alt_text || `${product.display_name} product image`} className="h-full w-full object-cover" loading="lazy" /> : <div className="flex h-full w-full items-center justify-center text-emerald-700"><PackageCheck className="h-12 w-12" aria-hidden="true" /><span className="sr-only">Category placeholder for {product.display_name}</span></div>}
+        {imageUrl && !imageFailed ? <img src={imageUrl} alt={product.image_alt_text || `${product.display_name} product image`} className="h-full w-full object-cover" loading="lazy" onError={() => setImageFailed(true)} /> : <div className="flex h-full w-full items-center justify-center text-emerald-700"><PackageCheck className="h-12 w-12" aria-hidden="true" /><span className="sr-only">Category placeholder for {product.display_name}</span></div>}
       </div>
       <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
       <p className="mt-1 text-2xl font-black text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
@@ -1040,22 +1053,43 @@ function CatalogTile({ product, reports, openProduct }) {
 }
 
 function HomeScreen(props) {
-  const { browse, stores, loading, error, homepageService, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore, arena } = props
-  const service = homepageService?.service || fallbackHomepageService.service
+  const { browse, stores, loading, error, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore, arena } = props
   const products = (browse.products || []).filter(isRenderableProduct)
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
   const visibleCategories = categories.map((category) => ({ ...category, products: products.filter((product) => product.category === category.value).slice(0, 4) })).filter((category) => category.products.length)
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-      <section className="rounded-[2rem] bg-emerald-800 p-5 text-white shadow-soft sm:p-8">
-        <p className="text-sm font-black uppercase tracking-wide text-emerald-100">Grocery Radar Janesville</p>
-        <h1 className="mt-2 max-w-3xl text-3xl font-black leading-tight sm:text-5xl">Find local grocery prices without the clutter.</h1>
-        <div className="mt-6"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
-        <div className="mt-4 flex flex-wrap gap-2 text-sm font-bold text-emerald-50"><span>{titleCase(service.service_status || 'online')}</span><span aria-hidden="true">·</span><span>{service.main_message}</span></div>
+      <section className="overflow-hidden rounded-3xl bg-emerald-800 px-5 py-7 text-white shadow-md sm:px-8 sm:py-10">
+        <div className="max-w-4xl">
+          <p className="inline-flex items-center gap-2 rounded-full bg-emerald-900/40 px-3 py-1.5 text-sm font-bold text-emerald-50 ring-1 ring-white/15">
+            <MapPin className="h-4 w-4" />
+            Community prices in Janesville
+          </p>
+          <h1 data-route-heading tabIndex="-1" className="mt-4 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight outline-none sm:text-5xl">
+            Compare grocery prices before you shop.
+          </h1>
+          <p className="mt-3 max-w-2xl text-base font-medium leading-relaxed text-emerald-50 sm:text-xl">
+            Search verified local prices, compare stores, and help neighbors by submitting a receipt, shelf tag, or store link.
+          </p>
+        </div>
+        <div className="mt-6 max-w-3xl"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+          <button type="button" onClick={() => openScreen('search')} className="btn-primary bg-white text-emerald-900 hover:bg-emerald-50">
+            <Search className="h-5 w-5" /> Search prices
+          </button>
+          <button type="button" onClick={() => openScreen('submit')} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-white/25 bg-emerald-900/30 px-5 py-3 font-extrabold text-white transition hover:bg-emerald-900/50 focus-visible:ring-4 focus-visible:ring-white/30">
+            <Upload className="h-5 w-5" /> Submit proof
+          </button>
+        </div>
+        <div className="mt-6 grid gap-2 border-t border-white/15 pt-5 text-sm font-semibold text-emerald-50 sm:grid-cols-3">
+          <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Community submitted</span>
+          <span className="flex items-center gap-2"><BadgeCheck className="h-4 w-4" /> Reviewed before publishing</span>
+          <span className="flex items-center gap-2"><Clock3 className="h-4 w-4" /> Recency shown with prices</span>
+        </div>
       </section>
 
-      <section className="mt-6 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100"><SectionHeader title="Janesville Price Check" action="See all stores" onAction={() => openScreen('deals')} />{arena?.homepage_module_eligible ? <><p className="font-bold text-slate-500">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-3 grid gap-2 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0,3).map((row) => <div key={row.store_id} className="rounded-xl bg-emerald-50 p-3"><strong>{row.store_name}</strong><p className="text-sm font-bold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-3 text-sm font-bold text-slate-500">Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></> : <p className="font-bold text-slate-600">We’re still building store coverage. Product-level comparisons remain available whenever current comparable prices exist.</p>}</section>
+      <section className="surface-card mt-6 p-5 sm:p-6"><SectionHeader title="Janesville price check" action="Compare stores" onAction={() => openScreen('deals')} />{arena?.homepage_module_eligible ? <><p className="font-medium text-slate-600">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0,3).map((row, index) => <div key={row.store_id} className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4"><p className="text-xs font-extrabold uppercase tracking-wide text-emerald-700">#{index + 1} current coverage</p><strong className="mt-1 block text-lg text-slate-950">{row.store_name}</strong><p className="mt-1 text-sm font-semibold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-3 text-sm font-medium text-slate-600">Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></> : <p className="font-medium leading-relaxed text-slate-600">We’re still building store coverage. Product-level comparisons remain available whenever current comparable prices exist.</p>}</section>
 
       {homepageServiceState?.error ? <p className="mt-4 rounded-2xl bg-amber-50 p-3 font-bold text-amber-900">Service notes are temporarily unavailable. Grocery search is still working.</p> : null}
       {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
@@ -1076,8 +1110,8 @@ function HomeScreen(props) {
         <button type="button" onClick={() => openScreen('stores')} className="mt-4 min-h-12 rounded-2xl bg-emerald-50 px-5 font-black text-emerald-800">View all stores</button>
       </section>
 
-      <details className="mt-6 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100">
-        <summary className="cursor-pointer font-black text-slate-700">Service information and community updates</summary>
+      <details className="surface-card mt-8 p-4">
+        <summary className="cursor-pointer rounded-lg font-extrabold text-slate-700">About data coverage and community updates</summary>
         <div className="mt-4"><LegacyHomeScreen {...props} /></div>
       </details>
     </div>
@@ -1125,8 +1159,9 @@ function SearchScreen({
         title="Search prices"
         subtitle="Search approved local prices and add items to My List."
       />
+      <section className="sticky top-[65px] z-20 -mx-4 border-y border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:rounded-2xl sm:border sm:bg-white sm:p-4 sm:shadow-sm">
       <SearchBox value={searchTerm} onChange={setSearchTerm} compact />
-      <div className="scrollbar-none -mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1">
+      <div className="scrollbar-none -mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0" role="group" aria-label="Search result filters">
         {filters.map((filter) => (
           <button
             key={filter}
@@ -1135,6 +1170,7 @@ function SearchScreen({
               setActiveFilter(filter)
               setActiveCategory(filter === 'household' ? 'household' : '')
             }}
+            aria-pressed={activeFilter === filter}
             className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black capitalize shadow-sm ring-1 ${
               activeFilter === filter
                 ? 'bg-emerald-700 text-white ring-emerald-700'
@@ -1145,12 +1181,13 @@ function SearchScreen({
           </button>
         ))}
       </div>
-      <div className="scrollbar-none -mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1">
+      <div className="scrollbar-none -mx-4 mt-2 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0" role="group" aria-label="Product categories">
         {categories.map((category) => (
           <button
             key={category.value}
             type="button"
             onClick={() => setActiveCategory(activeCategory === category.value ? '' : category.value)}
+            aria-pressed={activeCategory === category.value}
             className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black shadow-sm ring-1 ${
               activeCategory === category.value
                 ? 'bg-emerald-100 text-emerald-900 ring-emerald-200'
@@ -1161,6 +1198,7 @@ function SearchScreen({
           </button>
         ))}
       </div>
+      </section>
 
       <div className="mt-5">
         {loading ? <LoadingCard label="Searching approved Grocery Radar prices..." /> : null}
@@ -1171,6 +1209,12 @@ function SearchScreen({
         <div className="mt-5">
           <EmptyState title="No approved matches yet" body="Try another search, or submit proof to help fill the gap." icon={Search} />
         </div>
+      ) : null}
+
+      {!loading && !error && (reports.length || products.length) ? (
+        <p className="mt-5 text-sm font-semibold text-slate-600" role="status" aria-live="polite">
+          Showing {products.length} product match{products.length === 1 ? '' : 'es'} and {reports.length} verified price{reports.length === 1 ? '' : 's'}{searchTerm ? ` for “${searchTerm}”` : ''}.
+        </p>
       ) : null}
 
       {products.length ? (
@@ -1514,7 +1558,7 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Le
   if (me.loading) return <LoadingCard label="Checking account session..." />
 
   return (
-    <section className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+    <section className="surface-card p-5 sm:p-6">
       <div className="flex items-start gap-3">
         <div className="rounded-2xl bg-emerald-100 p-3 text-emerald-800">
           <LogIn className="h-6 w-6" />
@@ -1526,30 +1570,32 @@ function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Le
       </div>
 
       <form onSubmit={submit} className="mt-5 space-y-4">
-        <input
-          value={form.email}
-          onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
-          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-lg font-bold outline-none focus:border-emerald-500"
-          placeholder="Email"
-          aria-label="Email"
-          type="email"
-          autoComplete="email"
-        />
-        <input
-          value={form.password}
-          onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
-          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-lg font-bold outline-none focus:border-emerald-500"
-          placeholder="Password"
-          aria-label="Password"
-          type="password"
-          autoComplete="current-password"
-        />
-        {status.error ? <p className="rounded-2xl bg-rose-50 p-3 font-bold text-rose-800">{status.error}</p> : null}
-        {status.message ? <p className="rounded-2xl bg-emerald-50 p-3 font-bold text-emerald-800">{status.message}</p> : null}
+        <label className="block text-sm font-extrabold text-slate-700">Email
+          <input
+            value={form.email}
+            onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+            className="field mt-2"
+            type="email"
+            autoComplete="email"
+            required
+          />
+        </label>
+        <label className="block text-sm font-extrabold text-slate-700">Password
+          <input
+            value={form.password}
+            onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+            className="field mt-2"
+            type="password"
+            autoComplete="current-password"
+            required
+          />
+        </label>
+        {status.error ? <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 font-bold text-rose-800">{status.error}</p> : null}
+        {status.message ? <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 font-bold text-emerald-800">{status.message}</p> : null}
         <button
           type="submit"
           disabled={status.loading}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-700 px-5 py-4 text-lg font-black text-white shadow-lift disabled:opacity-60"
+          className="btn-primary w-full text-lg"
         >
           {status.loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <LogIn className="h-6 w-6" />}
           Log in
@@ -1584,12 +1630,12 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
     <div className="mb-5 flex flex-wrap gap-2" role="group" aria-label="Maximum stores">{[['1','One store'],['2','Two stores'],['any','Any stores']].map(([value,label]) => <button key={value} type="button" onClick={() => setCartMode(value)} className={`min-h-12 rounded-full px-5 font-black ${cartMode === value ? 'bg-emerald-700 text-white' : 'bg-white ring-1 ring-slate-200'}`}>{label}</button>)}<button type="button" onClick={() => setOfferMode(offerMode === 'all' ? 'unconditional' : 'all')} className="min-h-12 rounded-full bg-white px-5 font-black ring-1 ring-slate-200">{offerMode === 'all' ? 'Including conditional offers' : 'No special requirements'}</button></div>
     {loading ? <LoadingCard label="Optimizing current verified prices..." /> : null}{error ? <ApiError message={error} onRetry={reload} /> : null}
     <section className="grid gap-3 sm:grid-cols-3"><SummaryCard icon={Store} label="Best one-store" value={one?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={one ? `${one.matched_count}/${one.requested_count} matched · ${money(one.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={Store} label="Best two-store" value={two?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={two ? `${two.matched_count}/${two.requested_count} matched · ${money(two.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={CircleDollarSign} label="Selected plan" value={selected ? money(selected.estimated_total) : '$0.00'} note={savings > 0 ? `${money(savings)} below best one-store plan` : 'Approved current prices only'} /></section>
-    {selected ? <section className="mt-5 rounded-2xl bg-emerald-700 p-5 text-white"><p className="text-sm font-black text-emerald-100">CHEAPEST {cartMode === '1' ? 'ONE-STORE' : cartMode === '2' ? 'TWO-STORE' : 'ALL-STORE'} PLAN</p><h2 className="mt-1 text-3xl font-black">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 text-4xl font-black">{money(selected.estimated_total)}</p><p className="mt-2 font-bold">{selected.matched_count} of {selected.requested_count} products matched</p></section> : null}
+    {selected ? <section className="mt-5 rounded-3xl bg-emerald-800 p-5 text-white shadow-md sm:p-6"><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-emerald-100">Recommended {cartMode === '1' ? 'one-store' : cartMode === '2' ? 'two-store' : 'all-store'} plan</p><h2 className="mt-2 text-2xl font-extrabold leading-tight sm:text-3xl">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-3 text-4xl font-extrabold tracking-tight">{money(selected.estimated_total)}</p><p className="mt-2 font-semibold text-emerald-50">{selected.matched_count} of {selected.requested_count} products matched</p></section> : null}
     {comparison?.coverage_warning ? <p className="mt-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900"><AlertTriangle className="mr-2 inline h-5 w-5" />{comparison.coverage_warning}</p> : null}
     {shoppingMatches.length ? <section className="mt-5 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="min-h-11 rounded-xl bg-white px-4 font-black ring-1 ring-slate-200">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div><h3 className="font-black">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="text-sm font-bold text-slate-500">{match.report.store_name} · {match.report.promotion_conditions || 'No special requirement shown'}</p><StoreProductLocation report={match.report} /></div><p className="text-xl font-black text-emerald-700">{money(match.line_total)}</p></article>)}</section> : null}
     {comparison?.comparable_subset ? <p className="mt-4 text-sm font-bold text-slate-500">Comparable subset across every participating store: {comparison.comparable_subset.product_count} products. Partial store totals are never ranked as complete totals.</p> : null}
     <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-black">Save with substitutes</h2><p className="font-bold text-slate-500">Different products are always labeled, and your list changes only when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="min-h-12 rounded-xl bg-emerald-700 px-5 font-black text-white">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-3 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-xl bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><p className="mt-2 font-bold text-slate-500">Instead of {original.product_display_name || original.item_name}</p><h3 className="text-xl font-black">{candidate.product_name}</h3><p className="font-bold">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p><p className="mt-1 font-black text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-2 text-sm font-bold text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="min-h-11 rounded-xl bg-emerald-700 px-4 font-black text-white">Use Substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="min-h-11 rounded-xl bg-white px-4 font-black">Keep Original</button><button type="button" onClick={() => ignore(original.product_id)} className="min-h-11 rounded-xl bg-white px-4 font-black">Don’t Suggest Again</button></div></article>)}</div></section>
-    <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex items-center justify-between"><h2 className="text-xl font-black">My List Items</h2><button type="button" onClick={clearCart} className="min-h-11 rounded-xl bg-slate-100 px-4 font-black"><Trash2 className="mr-2 inline h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3"><div className="min-w-0"><p className="truncate font-black">{item.product_display_name || item.item_name}</p><p className="text-sm font-bold text-slate-500">{item.size_preference || 'Catalog product'}</p></div><div className="flex items-center gap-2"><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong>{item.quantity_needed || 1}</strong><button type="button" className="h-11 w-11 rounded-full bg-white font-black" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="h-11 w-11 rounded-full bg-white" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add products to compare every active Janesville store." icon={ShoppingCart} /> : null}</div></section>
+    <section className="surface-card mt-5 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-extrabold">My List Items</h2><button type="button" onClick={clearCart} className="btn-ghost text-slate-700"><Trash2 className="h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="list-item-row rounded-xl bg-slate-50 p-3"><div className="min-w-0"><p className="truncate font-extrabold">{item.product_display_name || item.item_name}</p><p className="text-sm font-medium text-slate-600">{item.size_preference || 'Catalog product'}</p></div><div className="list-item-controls"><button type="button" className="h-11 w-11 rounded-full bg-white font-black ring-1 ring-slate-200" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong className="min-w-6 text-center">{item.quantity_needed || 1}</strong><button type="button" className="h-11 w-11 rounded-full bg-white font-black text-emerald-700 ring-1 ring-emerald-200" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="h-11 w-11 rounded-full bg-white text-slate-600 ring-1 ring-slate-200" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add products to compare every active Janesville store." icon={ShoppingCart} /> : null}</div></section>
     <button type="button" onClick={() => openScreen('search')} className="mt-5 min-h-14 w-full rounded-2xl bg-emerald-700 px-5 text-lg font-black text-white">Add another item</button>
   </div>
 }
@@ -1832,6 +1878,14 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
   }
   const [form, setForm] = useState(initialForm)
   const [status, setStatus] = useState({ loading: false, error: '', message: '', result: null })
+  const proofPreview = useMemo(
+    () => form.proof_photo ? URL.createObjectURL(form.proof_photo) : '',
+    [form.proof_photo],
+  )
+
+  useEffect(() => () => {
+    if (proofPreview) URL.revokeObjectURL(proofPreview)
+  }, [proofPreview])
 
   useEffect(() => {
     setForm((current) => ({
@@ -1911,9 +1965,15 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
         title="Submit Proof"
         subtitle="Upload a receipt, shelf tag, weekly ad, screenshot, or source link. We will review it and add useful prices."
       />
-      <button type="button" onClick={() => openScreen('submissions')} className="mb-4 min-h-12 rounded-2xl bg-emerald-50 px-4 font-black text-emerald-800 ring-1 ring-emerald-100">My Submissions</button>
+      <button type="button" onClick={() => openScreen('submissions')} className="btn-secondary mb-4"><ReceiptText className="h-5 w-5" />My Submissions</button>
 
-      <form onSubmit={submit} className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
+      <div className="mb-5 grid gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4 sm:grid-cols-3">
+        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><CheckCircle2 className="h-5 w-5 text-emerald-700" /> Photograph the price clearly</p>
+        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><Store className="h-5 w-5 text-emerald-700" /> Include the store and item</p>
+        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><ShieldCheck className="h-5 w-5 text-emerald-700" /> Reviewed before publishing</p>
+      </div>
+
+      <form onSubmit={submit} className="surface-card p-5 sm:p-6">
         <div className="space-y-5">
           <FormStep number="1" label="Choose proof type">
             <select
@@ -1930,9 +1990,10 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
           </FormStep>
 
           <FormStep number="2" label="Upload image or paste a link">
-            <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-emerald-200 bg-emerald-50 px-4 py-8 text-center font-black text-emerald-800">
-              <Upload className="h-8 w-8" />
-              {form.proof_photo ? form.proof_photo.name : 'Add receipt, shelf tag, or ad screenshot'}
+            <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/70 px-4 py-7 text-center font-extrabold text-emerald-900 transition hover:border-emerald-500 hover:bg-emerald-50 focus-within:ring-4 focus-within:ring-emerald-200">
+              {proofPreview ? <img src={proofPreview} alt="Selected proof preview" className="max-h-64 w-full rounded-xl bg-white object-contain" /> : <Upload className="h-9 w-9" />}
+              <span className="max-w-full break-words">{form.proof_photo ? form.proof_photo.name : 'Choose a receipt, shelf tag, or ad image'}</span>
+              <span className="text-sm font-medium text-emerald-800">JPEG, PNG, or WebP · up to 5 MB</span>
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
@@ -1942,7 +2003,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
                 onChange={(event) => update('proof_photo', event.target.files?.[0] || null)}
               />
             </label>
-            <p className="mt-2 text-sm font-bold text-slate-500">Photo is optional if you include a source link.</p>
+            <p className="helper-text">A photo is optional when you include a public source link.</p>
 
             <input
               type="url"
@@ -1952,7 +2013,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
               placeholder="https://store.com/weekly-ad or product page"
               aria-label="Source link optional"
             />
-            <p className="mt-2 text-sm font-bold text-slate-500">
+            <p className="helper-text">
               Add a store page, weekly ad, or product link if you have one.
             </p>
           </FormStep>
@@ -1968,7 +2029,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
                 <option key={store.id} value={store.id}>{store.name}</option>
               ))}
             </select>
-            <p className="mt-2 text-sm font-bold text-slate-500">Choose the closest match so admin can review the proof faster.</p>
+            <p className="helper-text">Choose the closest match so the reviewer can check the proof faster.</p>
           </FormStep>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -2007,10 +2068,10 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
           </FormStep>
         </div>
 
-        {status.error ? <p className="mt-5 rounded-2xl bg-rose-50 p-4 font-bold text-rose-800">{status.error}</p> : null}
+        {status.error ? <p role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 font-bold text-rose-800">{status.error}</p> : null}
         {status.message ? (
-          <div className="mt-5 rounded-2xl bg-emerald-50 p-4 font-bold text-emerald-800">
-            {status.message}
+          <div role="status" aria-live="polite" className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 font-bold text-emerald-900">
+            <p className="flex items-center gap-2 text-lg"><CheckCircle2 className="h-6 w-6" />{status.message}</p>
             <p className="mt-1 text-sm text-emerald-700">It will not appear publicly until an admin reviews it.</p>
             <p className="mt-1 text-sm text-emerald-700">Return to My Submissions in this browser to see the result.</p>
             {status.result?.batch_id ? (
@@ -2033,7 +2094,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
           <button
             type="submit"
             disabled={status.loading}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-700 px-5 py-4 text-lg font-black text-white shadow-lift disabled:opacity-60"
+            className="btn-primary text-lg"
           >
             {status.loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <CheckCircle2 className="h-6 w-6" />}
             Submit for review
@@ -2044,7 +2105,7 @@ function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId 
               setForm({ ...initialForm, store_id: form.store_id, proof_type: form.proof_type })
               setStatus({ loading: false, error: '', message: '', result: null })
             }}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-slate-100 px-5 py-4 text-lg font-black text-slate-800"
+            className="btn-secondary text-lg"
           >
             <Plus className="h-6 w-6" />
             Submit another proof
@@ -2084,15 +2145,15 @@ function MySubmissionsScreen({ openScreen }) {
 
 function FormStep({ number, label, children }) {
   return (
-    <div>
-      <label className="mb-2 flex items-center gap-2 text-base font-black text-slate-900">
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-sm text-white">
+    <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+      <div className="mb-3 flex items-center gap-2 text-base font-extrabold text-slate-900">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-sm text-white" aria-hidden="true">
           {number}
         </span>
         {label}
-      </label>
+      </div>
       {children}
-    </div>
+    </section>
   )
 }
 
@@ -2358,10 +2419,27 @@ function ProfileScreen({
         openProduct={openProduct}
       />
 
+      <section className="surface-card mb-5 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-4">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-lg font-extrabold text-emerald-800" aria-hidden="true">
+            {initialsFor(user.username)}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-slate-500">Signed in as</p>
+            <h2 className="truncate text-2xl font-extrabold text-slate-950">{user.username}</h2>
+            <p className="mt-1 text-sm font-medium text-slate-600">{profileStats?.trust_level || rankForPoints(points)} · Account {titleCase(user.account_status || 'active')}</p>
+          </div>
+        </div>
+        <span className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-2 text-sm font-extrabold ${user.is_email_verified ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100' : 'bg-amber-50 text-amber-900 ring-1 ring-amber-200'}`}>
+          {user.is_email_verified ? <BadgeCheck className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+          {user.is_email_verified ? 'Email verified' : 'Email verification needed'}
+        </span>
+      </section>
+
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard icon={Star} label="Points" value={points.toLocaleString()} note="Your total" />
         <SummaryCard icon={BadgeCheck} label="Rank" value={profileStats?.rank || rankForPoints(points)} note="Contributor level" />
-        <SummaryCard icon={CircleDollarSign} label="This week" value={Number(profileStats?.points_this_week || 0).toLocaleString()} note="Recent earning" />
+        <SummaryCard icon={Clock3} label="Points this week" value={Number(profileStats?.points_this_week || 0).toLocaleString()} note="Recent contribution activity" />
         <SummaryCard icon={BellRing} label="Unread" value={unreadNotifications} note="Tap updates below" />
       </section>
 
@@ -2418,7 +2496,7 @@ function ProfileScreen({
 
       <section className="mt-5 rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
         <SectionHeader title="Rewards Progress" />
-        <div className="h-5 overflow-hidden rounded-full bg-slate-100">
+        <div className="h-4 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label="Reward tier progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progress}>
           <div className="h-full rounded-full bg-emerald-600" style={{ width: `${progress}%` }} />
         </div>
         <p className="mt-3 font-bold text-slate-600">
@@ -2703,25 +2781,25 @@ function UpdatesScreen({ releases, version, markRead }) {
 
 function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false }) {
   return (
-    <div className="sticky top-0 z-30 border-b border-emerald-100 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <button type="button" onClick={() => openScreen('home')} className="min-w-0 text-left">
-          <span className="block truncate text-base font-black text-slate-950">Grocery Radar Janesville</span>
-          <span className="mt-0.5 flex items-center gap-1 text-xs font-black text-emerald-700">
+    <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
+        <button type="button" onClick={() => openScreen('home')} className="min-w-0 rounded-xl px-1 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
+          <span className="block truncate text-sm font-extrabold tracking-tight text-slate-950 min-[380px]:text-base">Grocery Radar</span>
+          <span className="mt-0.5 flex items-center gap-1 text-[11px] font-bold text-emerald-700 sm:text-xs">
             <MapPin className="h-3.5 w-3.5" />
-            Janesville, Wisconsin
+            Janesville prices
           </span>
         </button>
-        <div className="flex gap-2">
-          <button type="button" onClick={openUpdates} className="relative min-h-12 rounded-2xl bg-white px-3 text-sm font-black text-emerald-800 ring-1 ring-emerald-100">What's New{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600" aria-label="New update available" /> : null}</button>
-          <button type="button" onClick={() => openScreen('profile')} className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open notifications">
-            <BellRing className="h-6 w-6" />
+        <div className="flex shrink-0 gap-1.5 sm:gap-2">
+          <button type="button" onClick={openUpdates} className="relative flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-emerald-800 shadow-sm sm:w-auto sm:px-3" aria-label="What's new"><FileCheck2 className="h-5 w-5" /><span className="ml-2 hidden text-sm font-extrabold sm:inline">What's new</span>{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-white" aria-label="New update available" /> : null}</button>
+          <button type="button" onClick={() => openScreen('profile')} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open account and notifications">
+            <BellRing className="h-5 w-5" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
           </button>
-          <button type="button" onClick={() => openScreen('submissions')} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open My Submissions"><ReceiptText className="h-6 w-6" /></button>
+          <button type="button" onClick={() => openScreen('submissions')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open My Submissions"><ReceiptText className="h-5 w-5" /></button>
         </div>
       </div>
-    </div>
+    </header>
   )
 }
 
@@ -2735,8 +2813,8 @@ function BottomNav({ active, openScreen }) {
   ]
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-emerald-100 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur">
-      <div className="mx-auto grid max-w-4xl grid-cols-5 px-1 py-2">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_25px_rgba(15,23,42,0.08)] backdrop-blur sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(48rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-2xl sm:border sm:pb-0">
+      <div className="mx-auto grid max-w-4xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-1 sm:p-2">
         {navItems.map((item) => {
           const Icon = item.icon
           const selected = active === item.id
@@ -2750,8 +2828,8 @@ function BottomNav({ active, openScreen }) {
                 event.preventDefault()
                 openScreen(item.id)
               }}
-              className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-center text-[10px] font-black leading-tight sm:text-xs ${
-                selected ? 'bg-emerald-100 text-emerald-800' : 'text-slate-500'
+              className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-center text-[11px] font-extrabold leading-tight transition sm:min-h-16 sm:text-xs ${
+                selected ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
               }`}
             >
               <span className="relative">
@@ -3258,13 +3336,15 @@ function App() {
   const selectedProduct = productDetail?.product
 
   return (
-    <div className="min-h-screen bg-white text-slate-950">
+    <div className="min-h-screen bg-slate-50 text-slate-950">
       <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} />
       {toast ? (
         <button
           type="button"
           onClick={() => setToast('')}
-          className="fixed left-4 right-4 top-12 z-50 rounded-2xl bg-slate-950 px-4 py-3 text-left font-bold text-white shadow-soft sm:left-auto sm:right-6 sm:w-96"
+          className="fixed left-4 right-4 top-16 z-50 rounded-xl bg-slate-950 px-4 py-3 text-left font-bold text-white shadow-lg sm:left-auto sm:right-6 sm:w-96"
+          role="status"
+          aria-live="polite"
         >
           {toast}
         </button>
@@ -3398,7 +3478,7 @@ function App() {
           />
         ) : null}
       </main>
-      <footer className="pb-28 pt-10 text-center text-sm font-bold text-slate-500">
+      <footer className="pb-32 pt-12 text-center text-sm font-medium text-slate-600 sm:pb-36">
         <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
         <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy" onClick={(event) => { event.preventDefault(); openScreen('privacy') }}>Privacy</a><a className="underline" href="/terms" onClick={(event) => { event.preventDefault(); openScreen('terms') }}>Terms &amp; acceptable use</a></p>
         <p className="mx-auto mt-3 max-w-2xl px-4">Grocery Radar is an independent price-information service and is not affiliated with or endorsed by listed retailers unless explicitly stated.</p>
