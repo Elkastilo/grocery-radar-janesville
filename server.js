@@ -8,6 +8,7 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
 const multer = require("multer");
+const { securityHeaders } = require("./src/securityHeaders");
 let tesseract = null;
 let sharp = null;
 
@@ -129,8 +130,15 @@ const {
 } = require("./src/promotion");
 
 const app = express();
+const isProduction = process.env.NODE_ENV === "production";
 
-if (process.env.NODE_ENV === "production") {
+app.disable("x-powered-by");
+app.use(...securityHeaders({ production: isProduction }));
+if (isProduction) {
+  console.log("Security headers middleware enabled");
+}
+
+if (isProduction) {
   app.set("trust proxy", 1);
 }
 const PORT = process.env.PORT || 3000;
