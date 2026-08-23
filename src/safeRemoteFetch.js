@@ -10,6 +10,14 @@ const DEFAULTS = Object.freeze({
   userAgent: "GroceryRadarProductImporter/1.0 (+https://thegroceryradar.com)"
 });
 
+const CATEGORY_DEFAULTS = Object.freeze({
+  connectTimeoutMs: 5000,
+  totalTimeoutMs: 18000,
+  maxRedirects: 3,
+  maxBytes: 5 * 1024 * 1024,
+  userAgent: DEFAULTS.userAgent
+});
+
 class SafeFetchError extends Error {
   constructor(code, message, statusCode = 400) {
     super(message);
@@ -173,4 +181,8 @@ async function safeRemoteFetch(input, custom = {}) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, safeRemoteFetch };
+function safeCategoryRemoteFetch(input, custom = {}) {
+  return safeRemoteFetch(input, { ...CATEGORY_DEFAULTS, ...custom });
+}
+
+module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, safeRemoteFetch, safeCategoryRemoteFetch };

@@ -392,12 +392,14 @@ async function main() {
     process.env.PUBLIC_APP_URL = originalPublicAppUrl;
   }
 
-  const app = await startServer({ EMAIL_TEST_MODE: "1" });
+  const app = await startServer({ EMAIL_TEST_MODE: "1", ADMIN_PIN: "2468" });
 
   try {
     const anonymousClient = new TestClient(app.baseUrl);
     const anonymousUrlAnalyze = await anonymousClient.post("/api/admin/product-url-imports/analyze", { url: "https://www.walmart.com/ip/test" });
     assert.equal(anonymousUrlAnalyze.response.status, 403);
+    const anonymousCategoryAnalyze = await anonymousClient.post("/api/admin/product-url-imports/analyze", { url: "https://www.walmart.com/browse/food/fresh-fruits/123", max_products: 50 });
+    assert.equal(anonymousCategoryAnalyze.response.status, 403);
 
     const ownerClient = new TestClient(app.baseUrl);
     const ownerLogin = await ownerClient.post("/api/auth/login", {
@@ -463,6 +465,17 @@ async function main() {
       name: "Unauthorized product", source_url: "https://www.walmart.com/ip/test"
     });
     assert.equal(blockedUrlSave.response.status, 403);
+    const blockedCategorySave = await normalClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
+      items: [{ name: "Unauthorized category item", product_url: "https://www.walmart.com/ip/test" }]
+    });
+    assert.equal(blockedCategorySave.response.status, 403);
+    const pinOnlyClient = new TestClient(app.baseUrl);
+    const pinOnlyCategorySave = await pinOnlyClient.post("/api/admin/product-url-imports/batch", {
+      pin: "2468", category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
+      items: [{ name: "PIN-only category item", product_url: "https://www.walmart.com/ip/test" }]
+    });
+    assert.equal(pinOnlyCategorySave.response.status, 403);
 
     const ownerUrlSave = await ownerClient.post("/api/admin/product-url-imports", {
       name: "Importer Authorization Fixture",
@@ -493,6 +506,28 @@ async function main() {
     assert.equal(savedUrlImport.batch_status, "ready_for_review");
     assert.equal(savedUrlImport.public_report_id, null);
     assert.equal(savedUrlImport.source_domain, "walmart.com");
+
+    const ownerCategorySave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
+      retailer_name: "Walmart",
+      store_id: proofStore.id,
+      price_location_confidence: "confirmed_janesville",
+      location_evidence_text: "Fixture admin explicitly selected the Janesville store; approval is still required.",
+      items: [
+        { name: "Category Bananas Fixture", price: 0.27, quantity: 1, unit: "each", size_text: "1 each", product_url: "https://www.walmart.com/ip/category-bananas/1001", sku: "CAT-1001", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
+        { name: "Category Strawberries Fixture", price: 2.98, quantity: 1, item_size: 1, unit: "lb", size_text: "1 lb", product_url: "https://www.walmart.com/ip/category-strawberries/1002", sku: "CAT-1002", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] }
+      ]
+    });
+    assert.equal(ownerCategorySave.response.status, 201, JSON.stringify(ownerCategorySave.body));
+    assert.equal(ownerCategorySave.body.imports.length, 2);
+    const categoryPersistence = await withDb(app.dataDir, async (database) => ({
+      rows: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_rows WHERE item_name LIKE 'Category % Fixture' AND status = 'ready_for_review'"),
+      batches: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_batches WHERE batch_title LIKE 'Category URL import:%' AND status = 'ready_for_review'"),
+      reports: await dbGet(database, "SELECT COUNT(*) AS count FROM price_reports WHERE item_name LIKE 'Category % Fixture'")
+    }));
+    assert.equal(categoryPersistence.rows.count, 2);
+    assert.equal(categoryPersistence.batches.count, 2);
+    assert.equal(categoryPersistence.reports.count, 0);
 
     const blockedOperations = await normalClient.get("/api/admin/operations/overview");
     assert.equal(blockedOperations.response.status, 403);
