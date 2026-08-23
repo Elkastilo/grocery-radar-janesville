@@ -63,6 +63,12 @@ function closeDb(database) {
   });
 }
 
+async function withDb(dataDir, callback) {
+  const database = openDb(dataDir);
+  try { return await callback(database); }
+  finally { await closeDb(database); }
+}
+
 async function createUsersTable(database) {
   await dbRun(database, `
     CREATE TABLE IF NOT EXISTS users (
@@ -389,6 +395,10 @@ async function main() {
   const app = await startServer({ EMAIL_TEST_MODE: "1" });
 
   try {
+    const anonymousClient = new TestClient(app.baseUrl);
+    const anonymousUrlAnalyze = await anonymousClient.post("/api/admin/product-url-imports/analyze", { url: "https://www.walmart.com/ip/test" });
+    assert.equal(anonymousUrlAnalyze.response.status, 403);
+
     const ownerClient = new TestClient(app.baseUrl);
     const ownerLogin = await ownerClient.post("/api/auth/login", {
       email: OWNER_EMAIL.toUpperCase(),
@@ -444,6 +454,45 @@ async function main() {
       source_url: "https://example.invalid/ad"
     });
     assert.equal(blockedIntake.response.status, 403);
+
+    const blockedUrlAnalyze = await normalClient.post("/api/admin/product-url-imports/analyze", {
+      url: "https://www.walmart.com/ip/test"
+    });
+    assert.equal(blockedUrlAnalyze.response.status, 403);
+    const blockedUrlSave = await normalClient.post("/api/admin/product-url-imports", {
+      name: "Unauthorized product", source_url: "https://www.walmart.com/ip/test"
+    });
+    assert.equal(blockedUrlSave.response.status, 403);
+
+    const ownerUrlSave = await ownerClient.post("/api/admin/product-url-imports", {
+      name: "Importer Authorization Fixture",
+      brand: "Fixture Brand",
+      price: "3.99",
+      quantity: "12",
+      item_size: "12",
+      unit: "fl_oz",
+      size_text: "12 x 12 fl oz",
+      store_id: proofStore.id,
+      source_url: "https://www.walmart.com/ip/importer-auth-fixture",
+      fetched_url: "https://www.walmart.com/ip/importer-auth-fixture",
+      retailer_name: "Walmart",
+      extraction_methods: ["json_ld"],
+      field_confidences: { name: "high", price: "high" },
+      price_location_confidence: "unknown"
+    });
+    assert.equal(ownerUrlSave.response.status, 201, JSON.stringify(ownerUrlSave.body));
+    const savedUrlImport = await withDb(app.dataDir, (database) => dbGet(database, `
+      SELECT rows.status AS row_status, batches.status AS batch_status, reports.id AS public_report_id, imports.source_domain
+      FROM product_url_imports imports
+      JOIN price_import_rows rows ON rows.id = imports.row_id
+      JOIN price_import_batches batches ON batches.id = imports.batch_id
+      LEFT JOIN price_reports reports ON reports.id = rows.price_report_id
+      WHERE imports.id = (SELECT MAX(id) FROM product_url_imports)
+    `));
+    assert.equal(savedUrlImport.row_status, "ready_for_review");
+    assert.equal(savedUrlImport.batch_status, "ready_for_review");
+    assert.equal(savedUrlImport.public_report_id, null);
+    assert.equal(savedUrlImport.source_domain, "walmart.com");
 
     const blockedOperations = await normalClient.get("/api/admin/operations/overview");
     assert.equal(blockedOperations.response.status, 403);

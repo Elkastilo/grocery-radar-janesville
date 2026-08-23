@@ -9,6 +9,8 @@ const bcrypt = require("bcrypt");
 const session = require("express-session");
 const multer = require("multer");
 const { securityHeaders } = require("./src/securityHeaders");
+const { safeRemoteFetch, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
+const { extractProduct, findDuplicateCandidates } = require("./src/productImporter");
 let tesseract = null;
 let sharp = null;
 
@@ -737,6 +739,10 @@ const PRICE_IMPORT_SOURCE_TYPES = [
   "paste_text",
   "other"
 ];
+
+const productUrlImportAttempts = new Map();
+const PRODUCT_URL_IMPORT_WINDOW_MS = 15 * 60 * 1000;
+const PRODUCT_URL_IMPORT_LIMIT = 10;
 
 const REVIEW_ROW_REJECTION_REASONS = [...PUBLIC_REJECTION_REASONS];
 const REVIEW_PROOF_REJECTION_REASONS = [...PUBLIC_REJECTION_REASONS];
@@ -5805,6 +5811,20 @@ function requireStaffPermission(permission) {
     }
     next();
   };
+}
+
+function limitProductUrlImports(request, response, next) {
+  const key = String(request.adminUser?.id || "unknown");
+  const now = Date.now();
+  const recent = (productUrlImportAttempts.get(key) || []).filter((timestamp) => now - timestamp < PRODUCT_URL_IMPORT_WINDOW_MS);
+  if (recent.length >= PRODUCT_URL_IMPORT_LIMIT) {
+    response.setHeader("Retry-After", String(Math.ceil((PRODUCT_URL_IMPORT_WINDOW_MS - (now - recent[0])) / 1000)));
+    response.status(429).json({ error: "Too many product URL analyses. Try again in a few minutes." });
+    return;
+  }
+  recent.push(now);
+  productUrlImportAttempts.set(key, recent);
+  next();
 }
 
 const adminV2RoleGuard = asyncRoute(async (request, response, next) => {
@@ -17632,6 +17652,160 @@ app.post("/api/admin/suggestions/:id/status", requireAdminAccess, requireLoggedI
   );
 
   response.json({ message: `Suggestion marked ${status}.` });
+}));
+
+app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductUrlImports, asyncRoute(async (request, response) => {
+  const requestedUrl = cleanText(request.body.url, 2000);
+  if (!requestedUrl) {
+    response.status(400).json({ error: "Enter an HTTPS product URL." });
+    return;
+  }
+
+  try {
+    const stores = await all("SELECT id, name, address, city, state FROM stores WHERE active = 1 ORDER BY name");
+    const fetched = await safeRemoteFetch(requestedUrl);
+    const extraction = extractProduct(fetched.body, fetched.url, stores);
+    const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
+    const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
+    const duplicates = findDuplicateCandidates(extraction.fields, products, priorImports, extraction.retailer.store_id);
+    response.json({
+      message: "Product page analyzed. Review every field before saving.",
+      extraction,
+      duplicate_candidates: duplicates,
+      image_policy: "Remote images are not loaded in the browser or copied into public assets. Choosing Use image source only preserves the URL for later human image review."
+    });
+  } catch (error) {
+    if (error instanceof SafeFetchError) {
+      response.status(error.statusCode || 400).json({ error: error.message, code: error.code });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const draft = cleanImportRowDraft({
+    ...request.body,
+    item_name: request.body.name || request.body.item_name,
+    proof_type: "no_photo",
+    source_url: request.body.source_url,
+    source_title: request.body.name || request.body.item_name,
+    source_checked_at: request.body.source_timestamp || new Date().toISOString(),
+    extraction_confidence: request.body.overall_confidence || "low",
+    status: "ready_for_review"
+  });
+  if (!draft.item_name) {
+    response.status(400).json({ error: "Product name is required before saving." });
+    return;
+  }
+  if (!draft.source_url || !/^https:\/\//i.test(draft.source_url)) {
+    response.status(400).json({ error: "A valid HTTPS source URL is required." });
+    return;
+  }
+  try {
+    draft.source_url = validateRemoteUrl(draft.source_url).toString();
+  } catch (error) {
+    response.status(400).json({ error: error instanceof SafeFetchError ? error.message : "A valid HTTPS source URL is required." });
+    return;
+  }
+  if (draft.store_id) {
+    const store = await get("SELECT id FROM stores WHERE id = ? AND active = 1", [draft.store_id]);
+    if (!store) {
+      response.status(400).json({ error: "Choose an existing active store." });
+      return;
+    }
+  }
+
+  const locationConfidence = cleanText(request.body.price_location_confidence || "unknown", 40);
+  if (!["confirmed_janesville", "likely_janesville", "unknown"].includes(locationConfidence)) {
+    response.status(400).json({ error: "Price location confidence is not valid." });
+    return;
+  }
+  const sourceDomain = sourceDomainFromUrl(draft.source_url);
+  const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
+  const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
+  const duplicateCandidates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: request.body.gtin, sku: request.body.sku }, products, priorImports, draft.store_id);
+  const now = new Date().toISOString();
+  const warnings = Array.isArray(request.body.warnings) ? request.body.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
+  const confidences = request.body.field_confidences && typeof request.body.field_confidences === "object" && !Array.isArray(request.body.field_confidences) ? request.body.field_confidences : {};
+  const extractionMethods = Array.isArray(request.body.extraction_methods) ? request.body.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
+  const duplicateWarning = duplicateCandidates.length ? duplicateCandidates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500) : "";
+
+  let batchId = null;
+  let rowId = null;
+  try {
+    const batch = await run(`
+      INSERT INTO price_import_batches (
+        source_type, proof_type, photo_path, status, source_url, source_title, source_domain,
+        source_checked_at, default_store_id, batch_title, observed_at, source_text, notes,
+        created_by, location_verification_status, applicable_store_id, location_evidence_text,
+        review_status, created_at, updated_at
+      ) VALUES ('website', 'no_photo', '', 'ready_for_review', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'waiting', ?, ?)
+    `, [
+      draft.source_url, draft.item_name, sourceDomain, draft.source_checked_at || now, draft.store_id,
+      `URL import: ${draft.item_name}`, draft.observed_at || now,
+      "Created by the Admin Product URL Importer. Human approval is required before publication.", request.adminUser.id,
+      locationConfidence === "confirmed_janesville" ? "verified_exact_store" : "legacy_unknown",
+      locationConfidence === "confirmed_janesville" ? draft.store_id : null,
+      cleanText(request.body.location_evidence_text, 500), now, now
+    ]);
+    batchId = batch.lastID;
+    const row = await run(`
+      INSERT INTO price_import_rows (
+        batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price,
+        size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type,
+        observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line,
+        extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit,
+        extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by,
+        created_at, updated_by, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'no_photo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready_for_review', ?, ?, ?, ?)
+    `, [
+      batchId, draft.store_id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price,
+      draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit,
+      draft.price_basis, draft.comparison_price, draft.comparison_unit, draft.observed_at || now,
+      draft.source_url, draft.item_name, sourceDomain, draft.source_checked_at || now,
+      cleanText(request.body.raw_size_text || request.body.raw_price_text, 500), draft.item_name,
+      draft.price, draft.quantity, Number.isFinite(Number(request.body.item_size)) ? Number(request.body.item_size) : null,
+      draft.unit, draft.extraction_confidence, `Methods: ${extractionMethods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}`.slice(0, 1000),
+      duplicateWarning, cleanText(request.body.notes, 500), request.adminUser.id, now, request.adminUser.id, now
+    ]);
+    rowId = row.lastID;
+    await run(`
+      INSERT INTO product_url_imports (
+        batch_id, row_id, source_url, source_domain, fetched_url, extraction_method, raw_price_text,
+        raw_size_text, image_source_url, sku, gtin, availability, field_confidences_json,
+        extraction_warnings_json, retailer_name, price_location_confidence, location_evidence_text,
+        imported_by, imported_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      batchId, rowId, draft.source_url, sourceDomain, cleanText(request.body.fetched_url || draft.source_url, 2000),
+      extractionMethods.join(","), cleanText(request.body.raw_price_text, 120), cleanText(request.body.raw_size_text, 120),
+      request.body.use_image_source ? cleanText(request.body.image_source_url, 2000) : "", cleanText(request.body.sku, 100),
+      cleanText(request.body.gtin, 40), cleanText(request.body.availability, 120), JSON.stringify(confidences).slice(0, 5000),
+      JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence,
+      cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now
+    ]);
+  } catch (error) {
+    if (batchId) await run("DELETE FROM price_import_batches WHERE id = ?", [batchId]);
+    throw error;
+  }
+
+  await recordAdminAudit({
+    adminUserId: request.adminUser.id,
+    action: "PRODUCT_URL_IMPORT_SAVED",
+    method: request.method,
+    path: request.path,
+    statusCode: 201,
+    affectedType: "price_import_batch",
+    affectedId: batchId,
+    metadata: { row_id: rowId, source_domain: sourceDomain, duplicate_candidate_count: duplicateCandidates.length }
+  });
+  response.status(201).json({
+    message: "Saved as a pending import. It has not been published and still requires approval.",
+    batch_id: batchId,
+    row_id: rowId,
+    duplicate_candidates: duplicateCandidates
+  });
 }));
 
 app.get("/api/admin/product-tools", requireAdminAccess, asyncRoute(async (request, response) => {

@@ -142,6 +142,7 @@ let allStores = [];
 let allStoreRequests = [];
 let allSuggestions = [];
 let productTools = null;
+let productUrlAnalysis = null;
 let betaReadiness = null;
 let analyticsData = null;
 let sponsorData = null;
@@ -3822,6 +3823,15 @@ function renderProductTools() {
   const cartItems = productTools?.popular_cart_items || [];
 
   productToolsContent.innerHTML = `
+    <article class="admin-card compact-card" data-product-url-importer>
+      <div class="admin-panel-heading"><div><h3>Import from product URL</h3><p class="field-help">Analyze an HTTPS retailer page, review every detected field, then save it to the existing pending approval queue. Nothing is published automatically.</p></div><span class="badge confidence-medium">Human review required</span></div>
+      <form class="admin-control-grid" data-product-url-analyze-form>
+        <label><span>Product URL</span><input name="url" type="url" inputmode="url" autocomplete="url" maxlength="2000" required placeholder="https://retailer.example/product/..."></label>
+        <button class="primary-button" type="submit" data-product-url-analyze>Analyze URL</button>
+      </form>
+      <div class="message" data-product-url-message aria-live="polite"></div>
+      <section data-product-url-preview hidden></section>
+    </article>
     <article class="admin-card compact-card">
       <h3>Scan / Enter Barcode</h3>
       <p class="field-help">Exact UPC-A, EAN-8, EAN-13, and GTIN-14 matches are preferred. Camera scanning is progressive enhancement; manual entry always works.</p>
@@ -3920,6 +3930,7 @@ function renderProductTools() {
 
   productToolsContent.querySelector("[data-barcode-lookup]")?.addEventListener("click", lookupProductBarcode);
   productToolsContent.querySelector("[data-barcode-camera]")?.addEventListener("click", startProductBarcodeCamera);
+  productToolsContent.querySelector("[data-product-url-analyze-form]")?.addEventListener("submit", analyzeProductUrl);
 
   productToolsContent.querySelector("[data-create-product]").addEventListener("click", createProduct);
 
@@ -3962,6 +3973,90 @@ function renderProductTools() {
   for (const button of productToolsContent.querySelectorAll("[data-unlink-report-product]")) {
     button.addEventListener("click", () => unlinkReportProduct(button.dataset.unlinkReportProduct));
   }
+}
+
+function confidenceBadge(value) {
+  const confidence = ["high", "medium", "low"].includes(value) ? value : "low";
+  return `<span class="badge confidence-${confidence}">${escapeHtml(titleCase(value || "unknown"))}</span>`;
+}
+
+function importerField(name, label, value, confidence, options = {}) {
+  const attributes = [options.type ? `type="${options.type}"` : 'type="text"', options.step ? `step="${options.step}"` : "", options.min !== undefined ? `min="${options.min}"` : "", options.maxlength ? `maxlength="${options.maxlength}"` : ""].filter(Boolean).join(" ");
+  return `<label><span>${escapeHtml(label)} ${confidenceBadge(confidence)}</span><input name="${escapeHtml(name)}" ${attributes} value="${escapeHtml(value ?? "")}"></label>`;
+}
+
+function renderProductUrlPreview(data) {
+  const preview = productToolsContent.querySelector("[data-product-url-preview]");
+  const extraction = data.extraction || {};
+  const fields = extraction.fields || {};
+  const confidence = extraction.confidence || {};
+  productUrlAnalysis = data;
+  preview.hidden = false;
+  preview.innerHTML = `
+    <div class="admin-panel-heading"><div><h4>Product found</h4><p class="field-help">Review every field. Low and Unknown fields need extra attention.</p></div>${confidenceBadge(extraction.overall_confidence)}</div>
+    <form class="admin-control-grid" data-product-url-review-form>
+      ${importerField("name", "Product name", fields.name, confidence.name, { maxlength: 120 })}
+      ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
+      ${importerField("variant", "Variant", fields.variant, confidence.variant, { maxlength: 80 })}
+      <label><span>Category</span><select name="category">${optionRows(categories, "other")}</select></label>
+      ${importerField("price", "Current price", fields.price, confidence.price, { type: "number", min: 0, step: "0.01" })}
+      ${importerField("regular_price", "Regular/original price", fields.regular_price, confidence.regular_price, { type: "number", min: 0, step: "0.01" })}
+      <label><span>Sale price?</span><select name="sale_price"><option value="false">No / unclear</option><option value="true" ${fields.regular_price && fields.price < fields.regular_price ? "selected" : ""}>Yes</option></select></label>
+      ${importerField("quantity", "Package quantity", fields.quantity, confidence.quantity, { type: "number", min: 0, step: "0.01" })}
+      ${importerField("item_size", "Item size", fields.item_size, confidence.item_size, { type: "number", min: 0, step: "0.01" })}
+      ${importerField("unit", "Unit", fields.unit, confidence.unit, { maxlength: 30 })}
+      ${importerField("size_text", "Package text", fields.raw_size_text, confidence.raw_size_text, { maxlength: 80 })}
+      ${importerField("unit_price", "Unit price (if provided)", fields.unit_price, confidence.unit_price, { type: "number", min: 0, step: "0.0001" })}
+      <label><span>Store</span><select name="store_id">${storeOptionsWithEmpty(extraction.retailer?.recognized ? "Select existing location" : "Retailer not recognized", extraction.retailer?.store_id)}</select></label>
+      ${importerField("gtin", "UPC / GTIN", fields.gtin, confidence.gtin, { maxlength: 40 })}
+      ${importerField("sku", "Retailer SKU", fields.sku, confidence.sku, { maxlength: 100 })}
+      ${importerField("availability", "Availability", fields.availability, confidence.availability, { maxlength: 120 })}
+      <label><span>Price location confidence</span><select name="price_location_confidence"><option value="unknown" ${extraction.location?.confidence === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${extraction.location?.confidence === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville" ${extraction.location?.confidence === "confirmed_janesville" ? "selected" : ""}>Confirmed Janesville</option></select><small class="field-help">${escapeHtml(extraction.location?.evidence || "No location evidence detected.")}</small></label>
+      <label><span>Source URL</span><input name="source_url" type="url" readonly value="${escapeHtml(extraction.source_url || "")}"></label>
+      <label><span>Detected image source</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small class="field-help">Remote images are not displayed or copied, preserving CSP and avoiding unreviewed third-party content.</small></label>
+      <label><span>Image provenance</span><span><input name="use_image_source" type="checkbox" value="true" ${fields.image_url ? "" : "disabled"}> Use image source URL for later human review</span><small class="field-help">This only records provenance; it does not download or publish the image.</small></label>
+      <label><span>Admin notes</span><textarea name="notes" maxlength="500" placeholder="Corrections or review notes"></textarea></label>
+      <div class="card-actions"><button class="primary-button" type="submit">Save as pending import</button><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button></div>
+    </form>
+    <section class="technical-details"><h4>Source and confidence</h4><p><strong>Retailer:</strong> ${escapeHtml(extraction.retailer?.retailer_name || "Retailer not recognized")} · <strong>Domain:</strong> ${escapeHtml(extraction.retailer?.hostname || "Unknown")}</p><p><strong>Extraction:</strong> ${escapeHtml((extraction.methods_used || []).map(titleCase).join(", ") || "HTML heuristic only")}</p>${(extraction.warnings || []).map((warning) => `<p class="field-help">⚠ ${escapeHtml(warning)}</p>`).join("")}</section>
+    <section><h4>Likely duplicates</h4>${(data.duplicate_candidates || []).length ? data.duplicate_candidates.map((candidate) => `<div class="mini-row"><strong>${escapeHtml(candidate.name || `Earlier import #${candidate.import_id}`)}</strong><span>${escapeHtml(titleCase(candidate.type))} · ${escapeHtml(titleCase(candidate.confidence))}</span></div>`).join("") : '<p class="field-help">No likely duplicate was detected. Admin review is still required.</p>'}</section>
+  `;
+  preview.querySelector("[data-product-url-review-form]")?.addEventListener("submit", saveProductUrlImport);
+  preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
+}
+
+async function analyzeProductUrl(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const button = form.querySelector("[data-product-url-analyze]");
+  button.disabled = true;
+  setMessage(message, "Analyzing product page…", "info");
+  try {
+    const data = await fetchJson("/api/admin/product-url-imports/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: new FormData(form).get("url") }) });
+    renderProductUrlPreview(data);
+    setMessage(message, data.message, "success");
+  } catch (error) { setMessage(message, error.message, "error"); }
+  finally { button.disabled = false; }
+}
+
+async function saveProductUrlImport(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const values = Object.fromEntries(new FormData(form).entries());
+  const extraction = productUrlAnalysis?.extraction || {};
+  try {
+    const data = await fetchJson("/api/admin/product-url-imports", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...values, use_image_source: Boolean(form.elements.use_image_source?.checked), fetched_url: extraction.source_url, source_timestamp: extraction.extracted_at, raw_price_text: extraction.fields?.raw_price_text || "", raw_size_text: extraction.fields?.raw_size_text || "", retailer_name: extraction.retailer?.retailer_name || "", overall_confidence: extraction.overall_confidence, field_confidences: extraction.confidence || {}, extraction_methods: extraction.methods_used || [], warnings: extraction.warnings || [], location_evidence_text: extraction.location?.evidence || "" })
+    });
+    productUrlAnalysis = null;
+    const preview = form.closest("[data-product-url-preview]");
+    preview.hidden = true;
+    preview.innerHTML = "";
+    setMessage(message, `${data.message} Batch #${data.batch_id}.`, "success");
+  } catch (error) { setMessage(message, error.message, "error"); }
 }
 
 async function lookupProductBarcode() {

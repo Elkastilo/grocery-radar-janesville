@@ -26,9 +26,10 @@
     "test:routing": "node scripts/test-routing.js",
     "test:store-locations": "node scripts/test-store-locations-curated-import.js",
     "test:security-headers": "node scripts/test-security-headers.js",
+    "test:product-importer": "node scripts/test-product-url-importer.js",
     "test:restore-drill": "node scripts/test-restore-drill.js",
     "restore:drill": "node scripts/restore-drill.js",
-    "test": "npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:public-products-null && npm run test:major-intake && npm run test:operations-scale && npm run test:price-arena && npm run test:shopper-price-reports && npm run test:routing && npm run test:store-locations && npm run test:security-headers && npm run test:restore-drill && npm run test:owner-repair && npm run test:owner-startup-repair && npm run test:operations",
+    "test": "npm run test:product-importer && npm run test:intake && npm run test:ai-proof && npm run test:workflow-schema && npm run test:auth && npm run test:review-ux && npm run test:public-products-null && npm run test:major-intake && npm run test:operations-scale && npm run test:price-arena && npm run test:shopper-price-reports && npm run test:routing && npm run test:store-locations && npm run test:security-headers && npm run test:restore-drill && npm run test:owner-repair && npm run test:owner-startup-repair && npm run test:operations",
     "setup:email": "node scripts/setup-email.js",
     "debug:email": "node scripts/debug-email.js"
   },

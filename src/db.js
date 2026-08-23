@@ -825,6 +825,35 @@ async function initDb() {
   await migratePriceImportRowsTable();
 
   await run(`
+    CREATE TABLE IF NOT EXISTS product_url_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL UNIQUE,
+      row_id INTEGER NOT NULL UNIQUE,
+      source_url TEXT NOT NULL,
+      source_domain TEXT NOT NULL,
+      fetched_url TEXT NOT NULL,
+      extraction_method TEXT,
+      raw_price_text TEXT,
+      raw_size_text TEXT,
+      image_source_url TEXT,
+      sku TEXT,
+      gtin TEXT,
+      availability TEXT,
+      field_confidences_json TEXT NOT NULL DEFAULT '{}',
+      extraction_warnings_json TEXT NOT NULL DEFAULT '[]',
+      retailer_name TEXT,
+      price_location_confidence TEXT NOT NULL DEFAULT 'unknown',
+      location_evidence_text TEXT,
+      imported_by INTEGER,
+      imported_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES price_import_batches(id) ON DELETE CASCADE,
+      FOREIGN KEY (row_id) REFERENCES price_import_rows(id) ON DELETE CASCADE,
+      FOREIGN KEY (imported_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS ai_processing_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled INTEGER NOT NULL DEFAULT 0,
@@ -2014,6 +2043,8 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_product_store ON price_import_rows(product_id, store_id, status)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_report ON price_import_rows(price_report_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_price_import_rows_duplicate_warning ON price_import_rows(duplicate_warning)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_url_imports_gtin ON product_url_imports(gtin)");
+  await run("CREATE INDEX IF NOT EXISTS idx_product_url_imports_sku ON product_url_imports(sku, source_domain)");
   await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_import_rows_ai_item ON price_import_rows(ai_analysis_id, ai_item_index) WHERE ai_analysis_id IS NOT NULL");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_jobs_status ON ai_proof_jobs(status, queued_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_attempts_started ON ai_proof_attempts(started_at, attempt_kind, status)");
