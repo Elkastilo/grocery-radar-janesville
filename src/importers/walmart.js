@@ -76,15 +76,16 @@ function walmartPackageData(item) {
     item.variant
   ];
   let eachFallback = null;
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
     const normalized = normalizePackage(candidate);
     if (!normalized.raw_text) continue;
-    if (normalized.unit === "each") { eachFallback ||= normalized; continue; }
-    return normalized;
+    const sourced = { ...normalized, source: `structured_package_field_${index + 1}` };
+    if (normalized.unit === "each") { eachFallback ||= sourced; continue; }
+    return sourced;
   }
   const titlePackage = packageFromProductTitle(item.name || item.title || item.productName);
-  if (titlePackage.raw_text) return titlePackage;
-  return eachFallback || normalizePackage(null);
+  if (titlePackage.raw_text) return { ...titlePackage, source: "title_expression" };
+  return eachFallback || { ...normalizePackage(null), source: "" };
 }
 
 function walmartSellingData(item) {
@@ -143,6 +144,22 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
       unit: packageInfo.unit ? "high" : "unknown", package_type: packageInfo.package_type ? "high" : "unknown", sell_quantity: selling.quantity ? "high" : "unknown", sell_unit: selling.unit ? "high" : "unknown", retailer_description: retailerDescription ? "medium" : "unknown", image_url: imageSource ? "high" : "unknown", product_url: productUrl ? "high" : "unknown",
       unit_price: prices.unit.confidence, availability: item.availabilityStatusDisplayValue || item.availabilityStatus || item.availability ? "high" : "unknown",
       sku: item.usItemId || item.sku || item.itemId ? "high" : "unknown", gtin: item.gtin || item.upc ? "high" : "unknown"
+    },
+    field_origins: {
+      name: "category_listing",
+      brand: item.brand || item.brandName || item.brandInfo?.name ? "category_listing:explicit_brand" : "",
+      price: prices.current.source ? `category_listing:${prices.current.source}` : "",
+      regular_price: prices.regular.source ? `category_listing:${prices.regular.source}` : "",
+      unit_price: prices.unit.source ? `category_listing:${prices.unit.source}` : "",
+      raw_size_text: packageInfo.source ? `category_listing:${packageInfo.source}` : "",
+      quantity: packageInfo.source ? `category_listing:${packageInfo.source}` : "",
+      item_size: packageInfo.source ? `category_listing:${packageInfo.source}` : "",
+      unit: packageInfo.source ? `category_listing:${packageInfo.source}` : "",
+      package_type: packageInfo.source ? `category_listing:${packageInfo.source}` : "",
+      sku: item.usItemId || item.sku || item.itemId ? "category_listing:structured_identifier" : "",
+      gtin: item.gtin || item.upc ? "category_listing:structured_identifier" : "",
+      image_url: imageSource ? "category_listing:image" : "",
+      product_url: productUrl ? "category_listing:product_url" : ""
     },
     methods_used: [extractionMethod],
     overall_confidence: currentPrice === null ? "medium" : "high",

@@ -3987,6 +3987,37 @@ function positiveImporterPrice(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function importerRowReadiness(row) {
+  const values = collectImporterRowData(row);
+  const reasons = [];
+  if (!String(values.name || "").trim()) reasons.push("name_required");
+  if (positiveImporterPrice(values.price) === null) reasons.push("price_required");
+  if (!Number.isInteger(Number(values.store_id)) || Number(values.store_id) <= 0) reasons.push("store_required");
+  try { if (new URL(String(values.product_url || "")).protocol !== "https:") reasons.push("source_required"); }
+  catch { reasons.push("source_required"); }
+  if (row.dataset.hasDuplicates === "true" && !["use_existing", "create_separate"].includes(values.duplicate_decision)) reasons.push("duplicate_decision_required");
+  return { ready: reasons.length === 0, reasons, imageRequired: false };
+}
+
+function refreshImporterRowReadiness(row) {
+  const readiness = importerRowReadiness(row);
+  row.dataset.approvalReady = String(readiness.ready);
+  const approve = row.querySelector("[data-approve-import]");
+  if (approve && !row.classList.contains("is-approved") && !row.classList.contains("is-approving")) {
+    approve.disabled = !readiness.ready;
+    approve.textContent = readiness.ready ? "Approve" : "Complete details";
+  }
+  const fetchDetails = row.querySelector("[data-fetch-import-details]");
+  if (fetchDetails && !row.classList.contains("is-fetching-details")) fetchDetails.hidden = readiness.ready;
+  const required = row.querySelector("[data-required-status]");
+  if (required) {
+    const labels = { name_required: "Name required", price_required: "Price required", store_required: "Store required", source_required: "Source required", duplicate_decision_required: "Resolve duplicate" };
+    required.textContent = readiness.reasons.map((reason) => labels[reason]).filter(Boolean).join(" · ");
+    required.hidden = readiness.ready;
+  }
+  return readiness;
+}
+
 function importerPriceLabel(value, fallback = "Price unavailable") {
   const number = positiveImporterPrice(value);
   return number === null ? fallback : `$${number.toFixed(2)}`;
@@ -4124,12 +4155,14 @@ function renderCategoryUrlPreview(data) {
     const packageLabel = importerPackageLabel(fields);
     const unitPriceLabel = importerUnitPriceLabel(fields);
     const relevance = product.category_relevance || "medium";
-    return `<article class="importer-product-row ${selected ? "is-selected" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}">
+    const initialReadiness = product.readiness || {};
+    const needsCriticalDetails = positiveImporterPrice(fields.price) === null || !String(fields.name || "").trim();
+    return `<article class="importer-product-row ${selected ? "is-selected" : ""} ${needsCriticalDetails ? "needs-details" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}" data-has-duplicates="${duplicates.length > 0}" data-approval-ready="${initialReadiness.ready === true}">
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
         <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
         <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
-        <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong></div>
+        <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong><span data-price-required ${positiveImporterPrice(fields.price) === null ? "" : "hidden"}>Required</span></div>
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
@@ -4137,8 +4170,9 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
         <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
         <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
-        <div class="importer-row-actions"><button class="primary-button importer-approve-button" type="button" data-approve-import="${index}">Approve</button>${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
+        <div class="importer-row-actions"><button class="primary-button importer-approve-button" type="button" data-approve-import="${index}" ${initialReadiness.ready === true ? "" : "disabled"}>${initialReadiness.ready === true ? "Approve" : "Complete details"}</button>${needsCriticalDetails && fields.product_url ? `<button class="importer-icon-button importer-fetch-details" type="button" data-fetch-import-details="${index}">Fetch details</button>` : ""}${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
       </div>
+      <div class="importer-required-status" data-required-status ${initialReadiness.ready === true ? "hidden" : ""}>${positiveImporterPrice(fields.price) === null ? "Price required" : "Complete required details"}</div>
       <div class="importer-row-result" data-import-result hidden role="status" aria-live="polite"></div>
       <div class="importer-duplicate-resolution" data-duplicate-resolution hidden></div>
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
@@ -4167,7 +4201,7 @@ function renderCategoryUrlPreview(data) {
           <label class="importer-checkbox-field"><span><input name="use_image_source" type="checkbox" ${fields.image_url ? "checked" : "disabled"}> Import approved image</span><small>Fetched again, validated, and stored privately. Image failure will not block this product.</small></label>
           <label><span>Confidence</span><select name="overall_confidence"><option value="high" ${product.overall_confidence === "high" ? "selected" : ""}>High</option><option value="medium" ${product.overall_confidence === "medium" ? "selected" : ""}>Medium</option><option value="low" ${product.overall_confidence === "low" ? "selected" : ""}>Low</option></select></label>
         </div>
-        ${(product.warnings || []).length ? `<div class="importer-evidence"><strong>Extraction warnings</strong>${product.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+        <div class="importer-evidence" data-import-evidence ${!(product.warnings || []).length && !Object.keys(product.field_origins || {}).length ? "hidden" : ""}><strong>Extraction evidence</strong><div data-import-warnings>${(product.warnings || []).map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div><div data-field-origins>${Object.entries(product.field_origins || {}).filter(([, origin]) => origin).map(([field, origin]) => `<p>${escapeHtml(titleCase(field))}: ${escapeHtml(origin)}</p>`).join("")}</div></div>
       </section>
     </article>`;
   }).join("");
@@ -4179,29 +4213,38 @@ function renderCategoryUrlPreview(data) {
       <div class="importer-bulk-toolbar"><div><button class="importer-link" type="button" data-category-select-all>Select all</button><button class="importer-link" type="button" data-category-select-none>Clear selection</button></div><button class="primary-button" type="submit" data-import-save-top>Approve selected</button></div>
       <div class="importer-table-head" aria-hidden="true"><span></span><span>Image</span><span>Product</span><span>Current price</span><span>Regular</span><span>Size / quantity</span><span>Unit price</span><span>Store & location</span><span>Confidence</span><span>Duplicate</span><span>Image / source</span><span>Actions</span></div>
       <div class="importer-product-list" data-category-products>${productRows || '<div class="empty-state">No listing products were detected.</div>'}</div>
-      <div class="importer-save-bar"><div class="importer-save-summary" aria-live="polite"><strong><span data-selected-count>0</span> selected</strong><span>Ready: <b data-ready-count>0</b></span><span>Possible duplicates: <b data-duplicate-count>0</b></span><span>Images ready: <b data-image-ready-count>0</b></span></div><div class="importer-save-actions"><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button><button class="primary-button" type="submit" data-import-save-bottom>Approve selected</button></div></div>
+      <div class="importer-save-bar"><div class="importer-save-summary" aria-live="polite"><strong><span data-selected-count>0</span> selected</strong><span>Ready: <b data-ready-count>0</b></span><span>Needs details: <b data-needs-details-count>0</b></span><span>Possible duplicates: <b data-duplicate-count>0</b></span><span>Images ready: <b data-image-ready-count>0</b></span></div><div class="importer-save-actions"><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button><button class="primary-button" type="submit" data-import-save-bottom>Approve selected</button></div></div>
       <div class="importer-progress" data-import-progress hidden role="status" aria-live="polite"><span class="importer-spinner" aria-hidden="true"></span><div><strong>Approving products…</strong><span data-import-progress-text>Preparing selected products and safe images.</span></div></div>
     </form>`;
   const updateSummary = () => {
     const selectedCards = [...preview.querySelectorAll("[data-category-product]")].filter((card) => card.querySelector('input[name="selected"]')?.checked);
     const duplicates = selectedCards.filter((card) => card.querySelector(".duplicate-warning")).length;
+    const ready = selectedCards.filter((card) => importerRowReadiness(card).ready).length;
+    const needsDetails = selectedCards.length - ready;
     const imagesReady = selectedCards.filter((card) => card.querySelector("[data-image-status]")?.textContent === "Image ready").length;
     preview.querySelectorAll("[data-selected-count]").forEach((node) => { node.textContent = String(selectedCards.length); });
-    preview.querySelectorAll("[data-ready-count]").forEach((node) => { node.textContent = String(Math.max(0, selectedCards.length - duplicates)); });
+    preview.querySelectorAll("[data-ready-count]").forEach((node) => { node.textContent = String(ready); });
+    preview.querySelectorAll("[data-needs-details-count]").forEach((node) => { node.textContent = String(needsDetails); });
     preview.querySelectorAll("[data-duplicate-count]").forEach((node) => { node.textContent = String(duplicates); });
     preview.querySelectorAll("[data-image-ready-count]").forEach((node) => { node.textContent = String(imagesReady); });
-    preview.querySelectorAll("[data-import-save-top],[data-import-save-bottom]").forEach((button) => { button.disabled = selectedCards.length === 0; });
+    preview.querySelectorAll("[data-import-save-top],[data-import-save-bottom]").forEach((button) => { button.disabled = ready === 0; button.textContent = ready ? `Approve ${ready} ready` : "Approve selected"; });
     preview.querySelectorAll("[data-category-product]").forEach((card) => card.classList.toggle("is-selected", Boolean(card.querySelector('input[name="selected"]')?.checked)));
   };
   preview.querySelector("[data-category-select-all]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = true; }); updateSummary(); });
   preview.querySelector("[data-category-select-none]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = false; }); updateSummary(); });
   preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => input.addEventListener("change", updateSummary));
   preview.querySelector('.importer-location-controls select[name="store_id"]')?.addEventListener("change", (event) => {
-    preview.querySelectorAll("[data-row-store]").forEach((select) => { if (!select.dataset.manuallyChanged) select.value = event.currentTarget.value; });
+    preview.querySelectorAll("[data-row-store]").forEach((select) => {
+      if (!select.dataset.manuallyChanged) select.value = event.currentTarget.value;
+      const row = select.closest("[data-category-product]");
+      if (row) refreshImporterRowReadiness(row);
+    });
+    preview.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
   });
-  preview.querySelectorAll("[data-row-store]").forEach((select) => select.addEventListener("change", () => { select.dataset.manuallyChanged = "true"; }));
+  preview.querySelectorAll("[data-row-store]").forEach((select) => select.addEventListener("change", () => { select.dataset.manuallyChanged = "true"; refreshImporterRowReadiness(select.closest("[data-category-product]")); select.closest("[data-category-product]")?.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change")); }));
   preview.querySelectorAll("[data-toggle-import-details]").forEach((button) => button.addEventListener("click", () => { const panel = preview.querySelector(`#import-details-${button.dataset.toggleImportDetails}`); const expanded = panel.hidden; panel.hidden = !expanded; button.setAttribute("aria-expanded", String(expanded)); button.closest("[data-category-product]")?.classList.toggle("is-expanded", expanded); }));
   preview.querySelectorAll("[data-approve-import]").forEach((button) => button.addEventListener("click", () => approveCategoryImportCard(button.closest("[data-category-product]"))));
+  preview.querySelectorAll("[data-fetch-import-details]").forEach((button) => button.addEventListener("click", () => fetchImporterRowDetails(button.closest("[data-category-product]"))));
   preview.querySelectorAll("[data-view-match]").forEach((button) => button.addEventListener("click", () => openAdminTab("productToolsTab", { productId: button.dataset.viewMatch })));
   bindImporterPreviewImages(preview);
   preview.querySelectorAll("[data-category-product]").forEach((card) => {
@@ -4216,8 +4259,20 @@ function renderCategoryUrlPreview(data) {
       set("package", importerPackageLabel({ raw_size_text: values.size_text, quantity: values.quantity, item_size: values.item_size, unit: values.unit }));
       const unitPriceNode = card.querySelector(".importer-unit-price strong");
       if (unitPriceNode) unitPriceNode.textContent = importerUnitPriceLabel({ price: values.price, unit_price: values.unit_price, unit_price_unit: values.unit_price_unit });
+      const missingPrice = positiveImporterPrice(values.price) === null;
+      card.classList.toggle("needs-details", missingPrice || !String(values.name || "").trim());
+      const priceRequired = card.querySelector("[data-price-required]");
+      if (priceRequired) priceRequired.hidden = !missingPrice;
+      refreshImporterRowReadiness(card);
+      card.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
     };
     card.querySelectorAll(".importer-edit-panel input,.importer-edit-panel select").forEach((input) => input.addEventListener("input", refreshDisplay));
+  });
+  (category.products || []).forEach((product, index) => {
+    const card = preview.querySelector(`[data-category-product="${index}"]`);
+    if (!card) return;
+    if ((product.duplicate_candidates || []).length) renderImporterDuplicateDecision(card, product.duplicate_candidates);
+    refreshImporterRowReadiness(card);
   });
   preview.querySelector("[data-category-import-form]")?.addEventListener("submit", saveCategoryUrlImports);
   preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
@@ -4263,6 +4318,109 @@ function collectImporterRowData(row) {
   values.existing_product_id = row.dataset?.existingProductId || "";
   values.location_confirmation = row.dataset?.locationConfirmation || "";
   return values;
+}
+
+function importerProductWithRowEdits(row) {
+  const index = Number(row.dataset.categoryProduct);
+  const source = productUrlAnalysis?.category?.products?.[index] || {};
+  const values = collectImporterRowData(row);
+  const fields = { ...(source.fields || {}) };
+  const confidence = { ...(source.confidence || {}) };
+  const fieldOrigins = { ...(source.field_origins || {}) };
+  const mappings = { name: "name", brand: "brand", price: "price", regular_price: "regular_price", quantity: "quantity", item_size: "item_size", unit: "unit", package_type: "package_type", sell_quantity: "sell_quantity", sell_unit: "sell_unit", unit_price: "unit_price", unit_price_unit: "unit_price_unit", size_text: "raw_size_text", sku: "sku", gtin: "gtin", availability: "availability", product_url: "product_url", image_source_url: "image_url", retailer_description: "retailer_description" };
+  for (const [inputName, fieldName] of Object.entries(mappings)) {
+    if (!Object.prototype.hasOwnProperty.call(values, inputName)) continue;
+    const value = values[inputName];
+    if (String(value ?? "") !== String(fields[fieldName] ?? "")) {
+      fields[fieldName] = value;
+      confidence[fieldName] = "high";
+      fieldOrigins[fieldName] = "manual_admin_edit";
+    }
+  }
+  return { ...source, fields, confidence, field_origins: fieldOrigins };
+}
+
+function applyImporterProductToRow(row, product) {
+  const fields = product.fields || {};
+  const mappings = { name: fields.name, brand: fields.brand, price: fields.price, regular_price: fields.regular_price, quantity: fields.quantity, item_size: fields.item_size, unit: fields.unit, package_type: fields.package_type, sell_quantity: fields.sell_quantity, sell_unit: fields.sell_unit, unit_price: fields.unit_price, unit_price_unit: fields.unit_price_unit, size_text: fields.raw_size_text, sku: fields.sku, gtin: fields.gtin, availability: fields.availability, product_url: fields.product_url, image_source_url: fields.image_url, retailer_description: fields.retailer_description, overall_confidence: product.overall_confidence };
+  for (const [name, value] of Object.entries(mappings)) {
+    const control = row.querySelector(`[name="${name}"]`);
+    if (control && value !== undefined && value !== null) control.value = value;
+  }
+  const imageChoice = row.querySelector('[name="use_image_source"]');
+  if (imageChoice && fields.image_url) { imageChoice.disabled = false; imageChoice.checked = true; }
+  const imageFrame = row.querySelector(".importer-thumb");
+  if (imageFrame && fields.image_url && imageFrame.dataset.importImageUrl !== fields.image_url) {
+    imageFrame.dataset.importImageFrame = "";
+    imageFrame.dataset.importImageUrl = fields.image_url;
+    let image = imageFrame.querySelector("[data-import-image]");
+    if (!image) {
+      image = document.createElement("img");
+      image.dataset.importImage = "";
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.alt = `Sanitized product preview for ${String(fields.name || "detected product")}`;
+      imageFrame.prepend(image);
+    }
+    let retry = imageFrame.querySelector("[data-retry-import-image]");
+    if (!retry) {
+      retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "importer-image-retry";
+      retry.dataset.retryImportImage = "";
+      retry.textContent = "Retry";
+      retry.hidden = true;
+      imageFrame.append(retry);
+    }
+    image.src = importerImagePreviewUrl(fields.image_url, String(Date.now()));
+    bindImporterPreviewImages(row);
+  }
+  row.dataset.hasDuplicates = String((product.duplicate_candidates || []).length > 0);
+  const duplicate = row.querySelector(".importer-duplicate");
+  if (duplicate) duplicate.innerHTML = (product.duplicate_candidates || []).length ? '<span class="duplicate-warning">⚠ Possible duplicate</span>' : '<span class="duplicate-clear">✓ No match</span>';
+  if ((product.duplicate_candidates || []).length) renderImporterDuplicateDecision(row, product.duplicate_candidates);
+  else {
+    delete row.dataset.duplicateDecision;
+    delete row.dataset.existingProductId;
+    const panel = row.querySelector("[data-duplicate-resolution]");
+    if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+  }
+  const priceConfidence = row.querySelector(".importer-field-confidence");
+  if (priceConfidence) priceConfidence.textContent = `Price: ${titleCase(product.confidence?.price || "unknown")}`;
+  const warnings = row.querySelector("[data-import-warnings]");
+  if (warnings) warnings.innerHTML = (product.warnings || []).map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("");
+  const origins = row.querySelector("[data-field-origins]");
+  if (origins) origins.innerHTML = Object.entries(product.field_origins || {}).filter(([, origin]) => origin).map(([field, origin]) => `<p>${escapeHtml(titleCase(field))}: ${escapeHtml(origin)}</p>`).join("");
+  const evidence = row.querySelector("[data-import-evidence]");
+  if (evidence) evidence.hidden = !(product.warnings || []).length && !Object.keys(product.field_origins || {}).length;
+  row.querySelector('[name="price"]')?.dispatchEvent(new Event("input"));
+}
+
+async function fetchImporterRowDetails(row) {
+  if (!row || row.classList.contains("is-fetching-details")) return;
+  const values = collectImporterRowData(row);
+  const button = row.querySelector("[data-fetch-import-details]");
+  const result = row.querySelector("[data-import-result]");
+  row.classList.add("is-fetching-details");
+  if (button) { button.disabled = true; button.textContent = "Fetching details…"; }
+  if (result) { result.hidden = false; result.className = "importer-row-result"; result.textContent = "Fetching secure product-page details…"; }
+  try {
+    const product = importerProductWithRowEdits(row);
+    const data = await fetchJson("/api/admin/product-url-imports/enrich", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ product_url: values.product_url, store_id: values.store_id, duplicate_decision: values.duplicate_decision, product }) });
+    productUrlAnalysis.category.products[Number(row.dataset.categoryProduct)] = data.product;
+    applyImporterProductToRow(row, data.product);
+    if (result) { result.hidden = false; result.className = `importer-row-result ${importerRowReadiness(row).ready ? "is-success" : "is-error"}`; result.textContent = data.message; }
+    if (button) { button.textContent = importerRowReadiness(row).ready ? "Details updated" : "Retry details"; button.hidden = importerRowReadiness(row).ready; }
+  } catch (error) {
+    if (result) { result.hidden = false; result.className = "importer-row-result is-error"; result.textContent = "Could not retrieve additional product details. You can edit the required fields manually."; }
+    if (button) { button.disabled = false; button.textContent = "Retry details"; }
+    console.warn("Product importer detail enrichment failed.", { code: error?.data?.code || "DETAIL_FETCH_FAILED" });
+  } finally {
+    row.classList.remove("is-fetching-details");
+    if (button && !button.hidden) button.disabled = false;
+    refreshImporterRowReadiness(row);
+    row.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
+  }
 }
 
 function importerApprovalErrorMessage(error) {
@@ -4312,11 +4470,15 @@ function renderImporterDuplicateDecision(card, candidates = []) {
     card.dataset.duplicateDecision = "use_existing";
     card.dataset.existingProductId = selected.value;
     panel.querySelector("p").textContent = "Existing product selected. Click Approve to attach this verified store price.";
+    refreshImporterRowReadiness(card);
+    card.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
   });
   panel.querySelector("[data-create-separate]")?.addEventListener("click", () => {
     card.dataset.duplicateDecision = "create_separate";
     delete card.dataset.existingProductId;
     panel.querySelector("p").textContent = "Separate product confirmed. Click Approve to continue.";
+    refreshImporterRowReadiness(card);
+    card.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
   });
 }
 
@@ -4345,8 +4507,13 @@ async function approveCategoryImportCard(card, options = {}) {
   const form = card.closest("[data-category-import-form]");
   const category = productUrlAnalysis?.category || {};
   const message = productToolsContent.querySelector("[data-product-url-message]");
-  const price = positiveImporterPrice(card.querySelector('[name="price"]')?.value);
-  if (price === null) { setMessage(message, "Price unavailable — edit this row before approval.", "warning"); card.querySelector("[data-toggle-import-details]")?.click(); return false; }
+  const readiness = refreshImporterRowReadiness(card);
+  if (!readiness.ready) {
+    const missingPrice = readiness.reasons.includes("price_required");
+    setMessage(message, missingPrice ? "Price unavailable — fetch or edit this row before approval." : "Complete the required product details before approval.", "warning");
+    if (missingPrice) card.querySelector("[data-toggle-import-details]")?.click();
+    return false;
+  }
   const storeId = card.querySelector('[name="store_id"]')?.value || form?.querySelector('.importer-location-controls [name="store_id"]')?.value || "";
   if (!storeId) { setMessage(message, "Choose the exact Grocery Radar store before approval.", "warning"); return false; }
   card.classList.add("is-approving");
@@ -4399,12 +4566,11 @@ async function saveCategoryUrlImports(event) {
   const selectedCards = [...form.querySelectorAll("[data-category-product]")].filter((card) => card.querySelector('input[name="selected"]')?.checked && !card.classList.contains("is-approved"));
   const message = productToolsContent.querySelector("[data-product-url-message]");
   if (!selectedCards.length) { setMessage(message, "Select at least one unapproved product.", "warning"); return; }
-  if (selectedCards.some((card) => !card.querySelector('[name="store_id"]')?.value)) { setMessage(message, "Choose the exact Grocery Radar store for every selected row before approval.", "warning"); return; }
-  const unresolved = selectedCards.filter((card) => card.querySelector(".duplicate-warning") && !card.dataset.duplicateDecision);
-  const readyCards = selectedCards.filter((card) => !unresolved.includes(card));
-  if (!readyCards.length) { setMessage(message, "Every selected row needs a duplicate decision before approval.", "warning"); return; }
+  const readyCards = selectedCards.filter((card) => importerRowReadiness(card).ready);
+  const incomplete = selectedCards.filter((card) => !readyCards.includes(card));
+  if (!readyCards.length) { setMessage(message, `${incomplete.length} selected product${incomplete.length === 1 ? " needs" : "s need"} required details before approval.`, "warning"); return; }
   const selectedStoreNames = [...new Set(readyCards.map((card) => card.querySelector('[name="store_id"]')?.selectedOptions[0]?.textContent).filter(Boolean))];
-  const confirmLocation = window.confirm(`Confirm the selected prices apply to ${selectedStoreNames.join(", ") || "the selected store"}?\n\nThis records administrator confirmation; it does not claim the retailer proved the location.`);
+  const confirmLocation = window.confirm(`${selectedCards.length} selected\n\n${readyCards.length} ready for approval\n${incomplete.length} need product details\n\nConfirm the ready prices apply to ${selectedStoreNames.join(", ") || "the selected store"}?\n\nThis records administrator confirmation; it does not claim the retailer proved the location.`);
   if (!confirmLocation) return;
   const progress = form.querySelector("[data-import-progress]");
   const progressText = form.querySelector("[data-import-progress-text]");
@@ -4418,11 +4584,11 @@ async function saveCategoryUrlImports(event) {
     const result = await approveCategoryImportCard(card, { confirmLocation: true, bulk: true });
     if (result) approved += 1; else failed += 1;
   }
-  if (progressText) progressText.textContent = `${approved} / ${readyCards.length} approved${failed ? ` · ${failed} need review` : ""}${unresolved.length ? ` · ${unresolved.length} duplicate decision${unresolved.length === 1 ? "" : "s"} skipped` : ""}.`;
+  if (progressText) progressText.textContent = `${approved} / ${readyCards.length} approved${failed ? ` · ${failed} need review` : ""}${incomplete.length ? ` · ${incomplete.length} still need details` : ""}.`;
   if (progress) window.setTimeout(() => { progress.hidden = true; }, 1200);
   buttons.forEach((button) => { button.disabled = false; });
   form.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
-  setMessage(message, `${approved} product${approved === 1 ? "" : "s"} approved.${failed || unresolved.length ? " Some rows still need review." : " Prices and available images are live."}`, failed || unresolved.length ? "warning" : "success");
+  setMessage(message, `${approved} product${approved === 1 ? "" : "s"} approved.${failed || incomplete.length ? ` ${failed + incomplete.length} still need details or review.` : " Prices and available images are live."}`, failed || incomplete.length ? "warning" : "success");
 }
 
 async function saveProductUrlImport(event) {

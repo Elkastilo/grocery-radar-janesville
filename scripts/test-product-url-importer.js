@@ -5,7 +5,7 @@ const path = require("path");
 const sharp = require("sharp");
 const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
-const { categoryUrlHint, extractCategory, analyzePage } = require("../src/categoryImporter");
+const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage } = require("../src/categoryImporter");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "..", "test", "fixtures", "product-importer", name), "utf8");
@@ -15,7 +15,7 @@ const stores = [
   { id: 3, name: "Woodman's Food Market", city: "Janesville", state: "WI" }
 ];
 
-function loadNamedFunction(source, name) {
+function namedFunctionSource(source, name) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `${name} must exist.`);
   const bodyStart = source.indexOf("{", start);
@@ -27,7 +27,11 @@ function loadNamedFunction(source, name) {
     if (depth === 0) { end = index + 1; break; }
   }
   assert.ok(end > bodyStart, `${name} must have a complete function body.`);
-  return Function(`"use strict"; ${source.slice(start, end)}; return ${name};`)();
+  return source.slice(start, end);
+}
+
+function loadNamedFunction(source, name) {
+  return Function(`"use strict"; ${namedFunctionSource(source, name)}; return ${name};`)();
 }
 
 async function expectCode(promise, code) {
@@ -106,6 +110,58 @@ async function main() {
   assert.equal(walmartPrices.products[2].fields.unit_price, 2.08);
   assert.equal(walmartPrices.products[2].confidence.price, "unknown");
   assert.ok(!walmartPrices.products.some((item) => /recommendation/i.test(item.fields.name)));
+
+  const missingRockitCategory = extractCategory(fixture("walmart-rockit-category-missing-price.html"), "https://www.walmart.com/browse/food/fresh-apples/456", stores, 25);
+  const missingRockit = missingRockitCategory.products[0];
+  assert.equal(missingRockit.fields.name, "Fresh Rockit, Crisp Sweet Miniature Apples, 3lb Tub");
+  assert.equal(missingRockit.fields.price, null);
+  assert.equal(missingRockit.fields.raw_size_text, "3 lb Tub");
+  assert.equal(missingRockit.confidence.price, "unknown");
+  assert.deepEqual(productImportReadiness(missingRockit.fields, { storeId: 1 }), { ready: false, reasons: ["price_required"], image_required: false });
+  const rockitDetail = extractProduct(fixture("walmart-rockit-product.html"), "https://www.walmart.com/ip/rockit-apples/2001", stores);
+  const enrichedRockit = mergeCategoryProductDetails(missingRockit, rockitDetail);
+  assert.equal(enrichedRockit.fields.price, 8.97);
+  assert.equal(enrichedRockit.confidence.price, "high");
+  assert.equal(enrichedRockit.fields.raw_size_text, "3 lb Tub");
+  assert.equal(enrichedRockit.fields.sku, "2001");
+  assert.equal(enrichedRockit.field_origins.price, "individual_product_page:json_ld");
+  assert.equal(productImportReadiness(enrichedRockit.fields, { storeId: 1 }).ready, true);
+
+  const preservedCategoryPrice = mergeCategoryProductDetails({ fields: { name: "Strong listing", price: 4.25, product_url: "https://www.walmart.com/ip/strong/1" }, confidence: { name: "high", price: "high" }, field_origins: { price: "category_listing:currentPrice" } }, { fields: { price: 9.99 }, confidence: { price: "medium" }, field_methods: { price: "open_graph" } });
+  assert.equal(preservedCategoryPrice.fields.price, 4.25, "Weaker product-page data must not replace a high-confidence listing price.");
+
+  const automatic = { url_type: "category", products: [missingRockit, walmartPrices.products[0]], retailer: { store_id: 1 } };
+  let automaticFetches = 0;
+  await enrichCategoryAnalysis(automatic, { stores, fetchProductPage: async (url) => { automaticFetches += 1; return { url, body: fixture("walmart-rockit-product.html") }; } });
+  assert.equal(automaticFetches, 1, "Automatic enrichment must fetch only incomplete critical rows.");
+  assert.equal(automatic.products[0].fields.price, 8.97);
+  assert.equal(automatic.products[1].fields.price, 4.97);
+
+  const manyIncomplete = { url_type: "category", products: Array.from({ length: 12 }, (_, index) => ({ fields: { name: `Missing ${index}`, price: null, product_url: `https://www.walmart.com/ip/missing/${index}` }, confidence: { name: "high", price: "unknown" }, warnings: [] })) };
+  let activeEnrichment = 0;
+  let maximumActiveEnrichment = 0;
+  let boundedFetches = 0;
+  await enrichCategoryAnalysis(manyIncomplete, { stores, fetchProductPage: async (url) => {
+    boundedFetches += 1;
+    activeEnrichment += 1;
+    maximumActiveEnrichment = Math.max(maximumActiveEnrichment, activeEnrichment);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    activeEnrichment -= 1;
+    return { url, body: fixture("walmart-product-no-price.html") };
+  } });
+  assert.equal(CATEGORY_ENRICHMENT_MAX_REQUESTS, 8);
+  assert.equal(CATEGORY_ENRICHMENT_CONCURRENCY, 2);
+  assert.equal(boundedFetches, 8);
+  assert.ok(maximumActiveEnrichment <= 2);
+  assert.equal(manyIncomplete.enrichment.deferred, 4);
+  assert.equal(manyIncomplete.products[0].fields.price, null);
+  assert.equal(manyIncomplete.products[0].enrichment.status, "incomplete");
+  const blockedDetails = { url_type: "category", products: [{ fields: { name: "Blocked apple", price: null, product_url: "https://www.walmart.com/ip/blocked/22" }, confidence: { name: "high", price: "unknown" }, warnings: [] }] };
+  await enrichCategoryAnalysis(blockedDetails, { stores, fetchProductPage: async () => { throw new SafeFetchError("RETAILER_BLOCKED", "Retailer blocked automated retrieval.", 422); } });
+  assert.equal(blockedDetails.products[0].enrichment.status, "unavailable");
+  assert.equal(blockedDetails.products[0].fields.price, null);
+  assert.ok(blockedDetails.products[0].warnings.some((warning) => /manual correction/i.test(warning)));
+  assert.equal(productImportReadiness({ name: "No-image apple", price: 2.46, product_url: "https://www.walmart.com/ip/no-image/33", image_url: "" }, { storeId: 1 }).ready, true, "Image availability must not block approval readiness.");
 
   for (const invalidPrice of [0, 0.00, -1, NaN, Infinity, "", null, undefined, "$0.00", "-$3.99"]) assert.equal(parsePrice(invalidPrice), null);
   assert.equal(parsePrice("$4.97"), 4.97);
@@ -240,7 +296,15 @@ async function main() {
   assert.match(adminScript, /function importerPackageLabel\(/);
   assert.match(adminScript, /Retailer description evidence/);
   assert.match(adminScript, /data-approve-import/);
+  assert.match(adminScript, /data-fetch-import-details/);
+  assert.match(adminScript, /Complete details/);
   assert.match(adminScript, /Approve selected/);
+  assert.match(adminScript, /Needs details: <b data-needs-details-count>/);
+  assert.match(adminScript, /const ready = selectedCards\.filter\(\(card\) => importerRowReadiness\(card\)\.ready\)\.length;/, "Footer readiness must inspect required row data.");
+  assert.match(adminScript, /const readyCards = selectedCards\.filter\(\(card\) => importerRowReadiness\(card\)\.ready\);/, "Bulk approval must process only ready rows.");
+  assert.doesNotMatch(adminScript, /selectedCards\.length - duplicates/, "Duplicate counts alone must not define approval readiness.");
+  assert.match(adminScript, /function fetchImporterRowDetails\(/);
+  assert.match(adminScript, /\/api\/admin\/product-url-imports\/enrich/);
   assert.match(adminScript, /product-url-imports\/\$\{card\.dataset\.importId\}\/approve/);
   assert.doesNotMatch(adminScript, /new FormData\(card\)/, "Importer product articles must never be passed to FormData.");
   assert.doesNotMatch(adminScript, /new FormData\((?:preview|result|container)\)/, "Bulk importer containers must never be passed to FormData.");
@@ -286,6 +350,18 @@ async function main() {
     existing_product_id: "91",
     location_confirmation: "admin_confirmed"
   }, "Canonical importer state must retain edited price, package, store, duplicate, and location values.");
+  const importerRowReadiness = Function(`"use strict"; ${namedFunctionSource(adminScript, "positiveImporterPrice")} ${namedFunctionSource(adminScript, "collectImporterRowData")} ${namedFunctionSource(adminScript, "importerRowReadiness")} return importerRowReadiness;`)();
+  const readinessControls = controls.map((control) => ({ ...control }));
+  const readinessRow = { dataset: { hasDuplicates: "false" }, querySelectorAll(selector) { assert.equal(selector, "[name]"); return readinessControls; } };
+  readinessControls.push({ name: "product_url", type: "url", value: "https://www.walmart.com/ip/fresh-strawberries/3002" });
+  assert.equal(importerRowReadiness(readinessRow).ready, true);
+  readinessControls.find((control) => control.name === "price").value = "";
+  assert.deepEqual(importerRowReadiness(readinessRow).reasons, ["price_required"]);
+  readinessControls.find((control) => control.name === "price").value = "2.46";
+  readinessRow.dataset.hasDuplicates = "true";
+  assert.deepEqual(importerRowReadiness(readinessRow).reasons, ["duplicate_decision_required"]);
+  readinessRow.dataset.duplicateDecision = "create_separate";
+  assert.equal(importerRowReadiness(readinessRow).ready, true, "Manual price edits and duplicate decisions must immediately make a valid row ready.");
   const importerApprovalErrorMessage = loadNamedFunction(adminScript, "importerApprovalErrorMessage");
   const originalConsoleError = console.error;
   const loggedApprovalErrors = [];
@@ -300,6 +376,7 @@ async function main() {
   assert.doesNotMatch(adminScript, /fields\.(?:description|retailer_description)\s*\|\|\s*fields\.raw_size_text/);
   const adminStyle = fs.readFileSync(path.join(__dirname, "..", "public", "style.css"), "utf8");
   assert.match(adminStyle, /\.importer-package strong[^}]*-webkit-line-clamp:\s*2/);
+  assert.match(adminStyle, /\.importer-product-row\.needs-details \.importer-price strong/);
 
   const walmartSellingPackages = extractCategory(fixture("walmart-selling-package-cases.html"), "https://www.walmart.com/browse/food/fresh-fruits/123", stores, 25);
   const bySku = Object.fromEntries(walmartSellingPackages.products.map((product) => [product.fields.sku, product.fields]));

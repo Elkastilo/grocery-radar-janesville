@@ -6,12 +6,128 @@ const { extractWalmartCategory } = require("./importers/walmart");
 const MAX_CATEGORY_PRODUCTS = 50;
 const CATEGORY_PRODUCT_CHOICES = Object.freeze([10, 25, 50]);
 const CATEGORY_PARSE_TIMEOUT_MS = 1500;
+const CATEGORY_ENRICHMENT_MAX_REQUESTS = 8;
+const CATEGORY_ENRICHMENT_CONCURRENCY = 2;
+const CONFIDENCE_RANK = Object.freeze({ unknown: 0, low: 1, medium: 2, high: 3 });
 
 class CategoryImportError extends Error {
   constructor(code, message) { super(message); this.name = "CategoryImportError"; this.code = code; }
 }
 
 function clean(value, limit = 500) { return normalizeRetailerText(value, limit); }
+
+function validHttpsSource(value) {
+  try { return new URL(String(value || "")).protocol === "https:"; } catch { return false; }
+}
+
+function productImportReadiness(fields = {}, options = {}) {
+  const reasons = [];
+  if (!clean(fields.name, 120)) reasons.push("name_required");
+  if (parsePrice(fields.price) === null) reasons.push("price_required");
+  if (!Number.isInteger(Number(options.storeId)) || Number(options.storeId) <= 0) reasons.push("store_required");
+  if (!validHttpsSource(fields.product_url || fields.source_url)) reasons.push("source_required");
+  if (options.hasDuplicates && !["use_existing", "create_separate"].includes(options.duplicateDecision)) reasons.push("duplicate_decision_required");
+  if (options.locationConfirmable === false) reasons.push("location_confirmation_required");
+  return { ready: reasons.length === 0, reasons, image_required: false };
+}
+
+function needsCriticalProductDetails(product = {}) {
+  const fields = product.fields || {};
+  return !clean(fields.name, 120) || parsePrice(fields.price) === null;
+}
+
+function sourceForField(product, field, fallback = "category_listing") {
+  return product.field_origins?.[field] || product.field_methods?.[field] || fallback;
+}
+
+function mergeCategoryProductDetails(categoryProduct = {}, detail = {}) {
+  const merged = {
+    ...categoryProduct,
+    fields: { ...(categoryProduct.fields || {}) },
+    confidence: { ...(categoryProduct.confidence || {}) },
+    field_origins: { ...(categoryProduct.field_origins || {}) },
+    methods_used: [...new Set([...(categoryProduct.methods_used || []), ...(detail.methods_used || []).map((method) => `product_page_${method}`)])],
+    warnings: [...(categoryProduct.warnings || [])]
+  };
+  const detailFields = detail.fields || {};
+  const detailConfidence = detail.confidence || {};
+  const replaceField = (field, valid = (value) => value !== null && value !== undefined && value !== "") => {
+    const candidate = detailFields[field];
+    if (!valid(candidate)) return false;
+    const current = merged.fields[field];
+    const currentValid = valid(current);
+    const currentRank = CONFIDENCE_RANK[merged.confidence[field] || "unknown"];
+    const detailRank = CONFIDENCE_RANK[detailConfidence[field] || "unknown"];
+    if (currentValid && currentRank >= detailRank) return false;
+    merged.fields[field] = candidate;
+    merged.confidence[field] = detailConfidence[field] || "low";
+    merged.field_origins[field] = `individual_product_page:${detail.field_methods?.[field] || "structured_data"}`;
+    return true;
+  };
+
+  replaceField("name", (value) => Boolean(clean(value, 120)));
+  replaceField("price", (value) => parsePrice(value) !== null);
+  replaceField("regular_price", (value) => parsePrice(value) !== null);
+  replaceField("unit_price", (value) => parsePrice(value) !== null);
+  for (const field of ["brand", "sku", "gtin", "availability"]) replaceField(field, (value) => Boolean(clean(value, 120)));
+  replaceField("image_url", (value) => validHttpsSource(value));
+
+  const detailPackage = normalizePackage(detailFields.raw_size_text);
+  const currentPackage = normalizePackage(merged.fields.raw_size_text);
+  const detailPackageRank = CONFIDENCE_RANK[detailConfidence.raw_size_text || "unknown"];
+  const currentPackageRank = CONFIDENCE_RANK[merged.confidence.raw_size_text || "unknown"];
+  if (detailPackage.raw_text && (!currentPackage.raw_text || detailPackageRank > currentPackageRank)) {
+    for (const field of ["raw_size_text", "quantity", "item_size", "unit", "package_type"]) {
+      merged.fields[field] = field === "raw_size_text" ? detailPackage.raw_text : detailPackage[field];
+      merged.confidence[field] = detailConfidence[field] || detailConfidence.raw_size_text || "medium";
+      merged.field_origins[field] = `individual_product_page:${detail.field_methods?.raw_size_text || "size_normalization"}`;
+    }
+  }
+
+  for (const field of Object.keys(merged.fields)) if (!merged.field_origins[field] && merged.fields[field] !== null && merged.fields[field] !== "") merged.field_origins[field] = sourceForField(categoryProduct, field);
+  if (parsePrice(merged.fields.price) !== null) merged.warnings = merged.warnings.filter((warning) => !/price was not present|no reliable current price/i.test(warning));
+  merged.overall_confidence = merged.confidence.name === "high" && merged.confidence.price === "high" ? "high" : clean(merged.fields.name, 120) && parsePrice(merged.fields.price) !== null ? "medium" : "low";
+  merged.enrichment = { status: "updated", fetched_at: detail.extracted_at || new Date().toISOString(), source_url: detail.source_url || merged.fields.product_url || "" };
+  return merged;
+}
+
+async function enrichCategoryAnalysis(analysis, options = {}) {
+  const fetchProductPage = options.fetchProductPage;
+  if (!analysis || analysis.url_type !== "category" || typeof fetchProductPage !== "function") return analysis;
+  const maxRequests = Math.max(0, Math.min(Number(options.maxRequests) || CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_MAX_REQUESTS));
+  const concurrency = Math.max(1, Math.min(Number(options.concurrency) || CATEGORY_ENRICHMENT_CONCURRENCY, CATEGORY_ENRICHMENT_CONCURRENCY));
+  const targets = analysis.products.filter((product) => needsCriticalProductDetails(product) && validHttpsSource(product.fields?.product_url));
+  const attempted = targets.slice(0, maxRequests);
+  const targetIndexes = new Map(attempted.map((product) => [product, analysis.products.indexOf(product)]));
+  let cursor = 0;
+  let updated = 0;
+  let failed = 0;
+  const workers = Array.from({ length: Math.min(concurrency, attempted.length) }, async () => {
+    while (cursor < attempted.length) {
+      const product = attempted[cursor++];
+      const index = targetIndexes.get(product);
+      try {
+        const fetched = await fetchProductPage(product.fields.product_url);
+        const detail = extractProduct(fetched.body, fetched.url || product.fields.product_url, options.stores || []);
+        const merged = mergeCategoryProductDetails(product, detail);
+        analysis.products[index] = merged;
+        if (!needsCriticalProductDetails(merged)) updated += 1;
+        else {
+          failed += 1;
+          merged.enrichment = { status: "incomplete", source_url: product.fields.product_url };
+          if (!merged.warnings.some((warning) => /additional product details/i.test(warning))) merged.warnings.push("Additional product details did not contain a valid current price.");
+        }
+      } catch (error) {
+        failed += 1;
+        analysis.products[index] = { ...product, enrichment: { status: "unavailable", code: clean(error.code, 50), source_url: product.fields.product_url }, warnings: [...(product.warnings || []), "Could not retrieve additional product details. Manual correction remains available."] };
+      }
+    }
+  });
+  await Promise.all(workers);
+  for (const product of targets.slice(maxRequests)) product.enrichment = { status: "not_attempted", source_url: product.fields.product_url };
+  analysis.enrichment = { attempted: attempted.length, updated, failed, deferred: Math.max(0, targets.length - attempted.length), max_requests: maxRequests, concurrency };
+  return analysis;
+}
 
 function categoryUrlHint(input) {
   let url;
@@ -159,7 +275,7 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
   const location = categoryLocation(html, matchedStore);
-  products = products.map((item) => ({ ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location }));
+  products = products.map((item) => ({ ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, readiness: productImportReadiness(item.fields, { storeId: retailer.store_id, locationConfirmable: Boolean(retailer.store_id) }) }));
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");
   if (products.length >= maxProducts) warnings.push(`Detection stopped at the selected ${maxProducts}-product limit.`);
@@ -176,4 +292,4 @@ function analyzePage(html, pageUrl, stores = [], options = {}) {
   return category.products.length > 1 ? category : { url_type: "unsupported", source_url: pageUrl, warnings: [...(category.warnings || []), "The page was not recognized as an individual product or product listing."] };
 }
 
-module.exports = { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_PARSE_TIMEOUT_MS, CategoryImportError, categoryUrlHint, extractCategory, analyzePage };
+module.exports = { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_PARSE_TIMEOUT_MS, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, needsCriticalProductDetails, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage };

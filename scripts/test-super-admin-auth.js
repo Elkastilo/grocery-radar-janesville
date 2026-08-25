@@ -402,6 +402,8 @@ async function main() {
     assert.equal(anonymousUrlAnalyze.response.status, 403);
     const anonymousCategoryAnalyze = await anonymousClient.post("/api/admin/product-url-imports/analyze", { url: "https://www.walmart.com/browse/food/fresh-fruits/123", max_products: 50 });
     assert.equal(anonymousCategoryAnalyze.response.status, 403);
+    const anonymousDetailEnrichment = await anonymousClient.post("/api/admin/product-url-imports/enrich", { product_url: "https://www.walmart.com/ip/test" });
+    assert.equal(anonymousDetailEnrichment.response.status, 403);
     const anonymousImagePreview = await anonymousClient.get("/api/admin/product-url-imports/image-preview?url=https%3A%2F%2Fimages.example.invalid%2Fproduct.jpg");
     assert.equal(anonymousImagePreview.response.status, 403);
 
@@ -477,6 +479,8 @@ async function main() {
       url: "https://www.walmart.com/ip/test"
     });
     assert.equal(blockedUrlAnalyze.response.status, 403);
+    const blockedDetailEnrichment = await normalClient.post("/api/admin/product-url-imports/enrich", { product_url: "https://www.walmart.com/ip/test" });
+    assert.equal(blockedDetailEnrichment.response.status, 403);
     const blockedUrlSave = await normalClient.post("/api/admin/product-url-imports", {
       name: "Unauthorized product", source_url: "https://www.walmart.com/ip/test"
     });
@@ -491,6 +495,8 @@ async function main() {
     const pinOnlyClient = new TestClient(app.baseUrl);
     const pinOnlyImagePreview = await pinOnlyClient.get("/api/admin/product-url-imports/image-preview?pin=2468&url=https%3A%2F%2Fimages.example.invalid%2Fproduct.jpg");
     assert.equal(pinOnlyImagePreview.response.status, 403);
+    const pinOnlyDetailEnrichment = await pinOnlyClient.post("/api/admin/product-url-imports/enrich", { pin: "2468", product_url: "https://www.walmart.com/ip/test" });
+    assert.equal(pinOnlyDetailEnrichment.response.status, 403);
     const pinOnlyCategorySave = await pinOnlyClient.post("/api/admin/product-url-imports/batch", {
       pin: "2468", category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
       items: [{ name: "PIN-only category item", product_url: "https://www.walmart.com/ip/test" }]
@@ -616,6 +622,8 @@ async function main() {
     assert.equal(missingPriceSave.response.status, 201);
     const missingPriceApproval = await ownerClient.post(`/api/admin/product-url-imports/${missingPriceSave.body.imports[0].import_id}/approve`, { confirm_location: true });
     assert.equal(missingPriceApproval.response.status, 400);
+    assert.equal(missingPriceApproval.body.code, "IMPORT_DETAILS_REQUIRED");
+    assert.ok(missingPriceApproval.body.readiness.reasons.includes("price_required"));
     assert.match(missingPriceApproval.body.error, /price/i);
     const savedUrlImport = await withDb(app.dataDir, (database) => dbGet(database, `
       SELECT rows.status AS row_status, batches.status AS batch_status, reports.id AS public_report_id, imports.source_domain

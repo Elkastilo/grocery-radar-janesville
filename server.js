@@ -12,7 +12,7 @@ const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
 const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
 const { findDuplicateCandidates, parsePrice, normalizeRetailerText } = require("./src/productImporter");
-const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CategoryImportError, categoryUrlHint, analyzePage } = require("./src/categoryImporter");
+const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, analyzePage } = require("./src/categoryImporter");
 let tesseract = null;
 let sharp = null;
 
@@ -17816,18 +17816,30 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     const hint = categoryUrlHint(requestedUrl);
     const fetched = hint === "category" ? await safeCategoryRemoteFetch(requestedUrl) : await safeRemoteFetch(requestedUrl);
     const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts });
+    if (analysis.url_type === "category") {
+      await enrichCategoryAnalysis(analysis, {
+        stores,
+        maxRequests: CATEGORY_ENRICHMENT_MAX_REQUESTS,
+        concurrency: CATEGORY_ENRICHMENT_CONCURRENCY,
+        fetchProductPage: (url) => safeRemoteFetch(url, { totalTimeoutMs: 8000 })
+      });
+    }
     const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
     const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
     if (analysis.url_type === "category") {
-      analysis.products = analysis.products.map((item) => ({
-        ...item,
-        duplicate_candidates: findDuplicateCandidates(item.fields, products, priorImports, analysis.retailer.store_id)
-      }));
+      analysis.products = analysis.products.map((item) => {
+        const duplicateCandidates = findDuplicateCandidates(item.fields, products, priorImports, analysis.retailer.store_id);
+        return {
+          ...item,
+          duplicate_candidates: duplicateCandidates,
+          readiness: productImportReadiness(item.fields, { storeId: analysis.retailer.store_id, hasDuplicates: duplicateCandidates.length > 0, locationConfirmable: Boolean(analysis.retailer.store_id) })
+        };
+      });
       response.json({
         message: `${analysis.detected_count} product${analysis.detected_count === 1 ? "" : "s"} detected. Review and select pending imports.`,
         url_type: "category",
         category: analysis,
-        limits: { allowed_product_counts: CATEGORY_PRODUCT_CHOICES, maximum_products: MAX_CATEGORY_PRODUCTS, response_bytes: CATEGORY_DEFAULTS.maxBytes },
+        limits: { allowed_product_counts: CATEGORY_PRODUCT_CHOICES, maximum_products: MAX_CATEGORY_PRODUCTS, response_bytes: CATEGORY_DEFAULTS.maxBytes, automatic_enrichment_requests: CATEGORY_ENRICHMENT_MAX_REQUESTS, enrichment_concurrency: CATEGORY_ENRICHMENT_CONCURRENCY },
         image_policy: "Retailer images are fetched through a bounded SSRF-safe sanitizer for same-origin previews. Only selected images are stored as private pending assets."
       });
       return;
@@ -17852,6 +17864,34 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     }
     if (error instanceof CategoryImportError) {
       response.status(422).json({ error: error.message, code: error.code });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.post("/api/admin/product-url-imports/enrich", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductUrlImports, asyncRoute(async (request, response) => {
+  const currentProduct = request.body.product && typeof request.body.product === "object" && !Array.isArray(request.body.product) ? request.body.product : {};
+  const currentFields = currentProduct.fields && typeof currentProduct.fields === "object" && !Array.isArray(currentProduct.fields) ? currentProduct.fields : {};
+  const sourceUrl = cleanText(request.body.product_url || currentFields.product_url, 2000);
+  if (!sourceUrl) { response.status(400).json({ error: "A source product URL is required to fetch details." }); return; }
+  try {
+    const stores = await all("SELECT id, name, address, city, state FROM stores WHERE active = 1 ORDER BY name");
+    const fetched = await safeRemoteFetch(sourceUrl, { totalTimeoutMs: 8000 });
+    const extraction = analyzePage(fetched.body, fetched.url, stores, { maxProducts: 10 });
+    if (extraction.url_type !== "product") { response.status(422).json({ error: "Could not retrieve additional product details.", code: "PRODUCT_DETAILS_UNAVAILABLE" }); return; }
+    const merged = mergeCategoryProductDetails({ ...currentProduct, fields: { ...currentFields, product_url: sourceUrl } }, extraction.extraction);
+    const storeId = Number.parseInt(request.body.store_id || merged.retailer?.store_id, 10);
+    const [products, priorImports] = await Promise.all([
+      all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000"),
+      all("SELECT imports.id, imports.sku, imports.approved_product_id, imports.approved_product_id AS product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000")
+    ]);
+    merged.duplicate_candidates = findDuplicateCandidates(merged.fields, products, priorImports, storeId);
+    merged.readiness = productImportReadiness(merged.fields, { storeId, hasDuplicates: merged.duplicate_candidates.length > 0, duplicateDecision: cleanText(request.body.duplicate_decision, 40), locationConfirmable: Number.isInteger(storeId) && storeId > 0 });
+    response.json({ message: merged.readiness.ready ? "Details updated. This product is ready for review." : "Details updated, but required information is still missing.", product: merged });
+  } catch (error) {
+    if (error instanceof SafeFetchError || error instanceof CategoryImportError) {
+      response.status(error.statusCode || 422).json({ error: "Could not retrieve additional product details.", code: error.code || "PRODUCT_DETAILS_UNAVAILABLE" });
       return;
     }
     throw error;
@@ -17966,6 +18006,12 @@ app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requi
   if (!imported.store_id) { response.status(409).json({ error: "Choose an active Grocery Radar store before approval.", code: "STORE_REQUIRED" }); return; }
   const store = await get("SELECT id,name,city,state FROM stores WHERE id=? AND active=1", [imported.store_id]);
   if (!store) { response.status(409).json({ error: "The selected store is no longer active.", code: "STORE_REQUIRED" }); return; }
+
+  const requiredData = productImportReadiness({ name: imported.item_name, price: imported.price, product_url: imported.source_url }, { storeId: store.id, locationConfirmable: true });
+  if (!requiredData.ready) {
+    response.status(400).json({ error: requiredData.reasons.includes("price_required") ? "A valid current price greater than zero is required before approval." : "Required product details are missing or invalid.", code: "IMPORT_DETAILS_REQUIRED", readiness: requiredData });
+    return;
+  }
 
   const duplicateCandidates = await productUrlImportDuplicateCandidates(imported);
   const duplicateDecision = cleanText(request.body.duplicate_decision, 40);
