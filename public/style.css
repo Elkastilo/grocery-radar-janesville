@@ -98,6 +98,7 @@
 .importer-price strong { color: #17683e; font-size: 1.02rem; white-space: nowrap; }
 .importer-price span, .importer-regular span, .importer-package span, .importer-unit-price span, .importer-source-status span:last-child { color: #78847c; font-size: .68rem; }
 .importer-regular strong, .importer-package strong, .importer-unit-price strong, .importer-store strong { color: #283a2f; font-size: .78rem; }
+.importer-package strong { display: -webkit-box; overflow: hidden; max-height: 2.7em; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .importer-location-badge, .importer-confidence > [class^="relevance-"] { width: fit-content; padding: 3px 6px; border-radius: 999px; background: #eef2ef; color: #536259; font-size: .64rem; font-weight: 700; }
 .importer-field-confidence { color: #66756c; font-size: .66rem; font-weight: 750; }
 .importer-location-badge.location-likely_janesville { background: #edf7f0; color: #246c43; }
@@ -119,6 +120,8 @@
 .importer-edit-grid label { min-width: 0; }
 .importer-edit-grid label > span { display: block; min-height: 20px; margin-bottom: 5px; color: #3c4d43; font-size: .72rem; font-weight: 750; }
 .importer-edit-grid input, .importer-edit-grid select { width: 100%; min-height: 44px; font-size: 1rem; }
+.importer-edit-grid textarea { width: 100%; min-height: 88px; resize: vertical; font: inherit; font-size: 1rem; }
+.importer-description-evidence { grid-column: span 2; }
 .importer-edit-grid small { display: block; margin-top: 5px; color: #718078; font-size: .68rem; line-height: 1.35; }
 .importer-edit-grid .badge { font-size: .58rem; }
 .importer-checkbox-field { align-self: end; }
@@ -195,6 +198,7 @@
   .importer-product-main { grid-template-columns: 44px 74px minmax(0, 1fr); }
   .importer-thumb { width: 72px; height: 72px; }
   .importer-edit-grid { grid-template-columns: 1fr; }
+  .importer-description-evidence { grid-column: auto; }
   .importer-edit-heading { flex-direction: column; }
   .importer-save-bar { align-items: stretch; flex-direction: column; gap: 10px; }
   .importer-save-summary { justify-content: space-between; }

@@ -1,6 +1,6 @@
 "use strict";
 
-const { parsePrice, normalizePackage, detectRetailer, extractProduct } = require("./productImporter");
+const { parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct } = require("./productImporter");
 const { extractWalmartCategory } = require("./importers/walmart");
 
 const MAX_CATEGORY_PRODUCTS = 50;
@@ -11,7 +11,7 @@ class CategoryImportError extends Error {
   constructor(code, message) { super(message); this.name = "CategoryImportError"; this.code = code; }
 }
 
-function clean(value, limit = 500) { return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit); }
+function clean(value, limit = 500) { return normalizeRetailerText(value, limit); }
 
 function categoryUrlHint(input) {
   let url;
@@ -49,7 +49,7 @@ function genericProduct(value, pageUrl, method = "generic_serialized_data") {
   const offer = Array.isArray(value.offers) ? value.offers[0] || {} : value.offers || {};
   const price = parsePrice(offer.price ?? offer.lowPrice ?? value.currentPrice ?? value.price?.value ?? value.price);
   const regular = parsePrice(offer.regularPrice ?? offer.originalPrice ?? value.regularPrice ?? value.originalPrice);
-  const sizeText = clean(value.size || value.packageSize || value.weight || value.description, 120);
+  const sizeText = normalizeRetailerText(value.size || value.packageSize || value.weight, 120);
   const pkg = normalizePackage(sizeText);
   const imageValue = Array.isArray(value.image) ? value.image[0] : value.image;
   const imageUrl = safeUrl(typeof imageValue === "string" ? imageValue : imageValue?.url || imageValue?.contentUrl || value.imageUrl, pageUrl);
@@ -62,7 +62,7 @@ function genericProduct(value, pageUrl, method = "generic_serialized_data") {
       raw_price_text: clean(offer.price ?? offer.lowPrice ?? value.currentPrice ?? value.price, 120),
       unit_price: parsePrice(value.unitPrice || offer.unitPrice), image_url: imageUrl, product_url: productUrl,
       sku: clean(value.sku || value.itemId || value.productId, 100), gtin: clean(value.gtin14 || value.gtin13 || value.gtin12 || value.gtin || value.upc, 40),
-      availability: clean(offer.availability || value.availability, 120).split("/").pop()
+      availability: clean(offer.availability || value.availability, 120).split("/").pop(), retailer_description: clean(value.shortDescription || value.description, 500)
     },
     confidence: {
       name: "high", price: price === null ? "unknown" : "high", brand: value.brand || value.brandName ? "medium" : "unknown",

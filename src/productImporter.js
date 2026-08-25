@@ -14,16 +14,24 @@ function text(value, limit = 500) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
-function decodeHtml(value) {
+function normalizeRetailerText(value, limit = 500) {
   const entities = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
-  return text(String(value || "").replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity) => {
+  const withoutMarkup = String(value ?? "")
+    .replace(/<\s*br\s*\/?\s*>/gi, " ")
+    .replace(/<\/?(?:li|p|div|ul|ol|span)\b[^>]*>/gi, " ")
+    .replace(/<[^>]*>/g, " ");
+  return text(withoutMarkup.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity) => {
     const lower = entity.toLowerCase();
     if (lower[0] === "#") {
       const number = lower[1] === "x" ? Number.parseInt(lower.slice(2), 16) : Number.parseInt(lower.slice(1), 10);
-      return Number.isFinite(number) ? String.fromCodePoint(number) : "";
+      return Number.isFinite(number) && number >= 0 && number <= 0x10ffff ? String.fromCodePoint(number) : "";
     }
     return entities[lower] || "";
-  }));
+  }), limit);
+}
+
+function decodeHtml(value) {
+  return normalizeRetailerText(value);
 }
 
 function parsePrice(value) {
@@ -37,23 +45,30 @@ function parsePrice(value) {
 
 function normalizeUnit(value) {
   const key = text(value, 30).toLowerCase().replace(/[.\s_-]+/g, "");
-  return ({ floz: "fl oz", fluidounce: "fl oz", fluidounces: "fl oz", oz: "oz", ounce: "oz", ounces: "oz", lb: "lb", lbs: "lb", pound: "lb", pounds: "lb", g: "g", gram: "g", grams: "g", kg: "kg", kilogram: "kg", kilograms: "kg", ml: "ml", milliliter: "ml", milliliters: "ml", l: "l", liter: "l", liters: "l", gal: "gallon", gallon: "gallon", gallons: "gallon", ct: "count", count: "count", counts: "count", pk: "count", pack: "count", each: "each", ea: "each" })[key] || "";
+  return ({ floz: "fl oz", fluidounce: "fl oz", fluidounces: "fl oz", oz: "oz", ounce: "oz", ounces: "oz", lb: "lb", lbs: "lb", pound: "lb", pounds: "lb", g: "g", gram: "g", grams: "g", kg: "kg", kilogram: "kg", kilograms: "kg", ml: "ml", milliliter: "ml", milliliters: "ml", l: "l", liter: "l", liters: "l", gal: "gallon", gallon: "gallon", gallons: "gallon", qt: "qt", quart: "qt", quarts: "qt", pt: "pt", pint: "pt", pints: "pt", ct: "count", count: "count", counts: "count", pk: "pack", pack: "pack", packs: "pack", bag: "bag", bags: "bag", tub: "tub", tubs: "tub", bottle: "bottle", bottles: "bottle", can: "can", cans: "can", box: "box", boxes: "box", each: "each", ea: "each" })[key] || "";
 }
 
 function normalizePackage(value) {
-  const raw = text(value, 120);
-  if (!raw) return { raw_text: "", quantity: null, item_size: null, unit: "", normalized_text: "" };
-  const unitPattern = "fl\\s*\\.?\\s*oz|fluid\\s+ounces?|oz|ounces?|lbs?|pounds?|kg|kilograms?|g|grams?|ml|milliliters?|l|liters?|gal|gallons?|ct|count|pk|pack";
+  const original = String(value ?? "");
+  const raw = normalizeRetailerText(original, 120);
+  const empty = { raw_text: null, quantity: null, item_size: null, unit: "", normalized_text: "" };
+  if (!raw || raw.length > 80) return empty;
+  if (/<\/?(?:li|ul|ol)\b/i.test(original) || /[•▪◦]/.test(original)) return empty;
+  if ((raw.match(/[.!?](?:\s|$)/g) || []).length > 1) return empty;
+  if (/\b(?:best when|enjoyed|refreshing|flavorful|healthy|sweet treat|perfect for|great for|addition to|recipes?|ingredients?|instructions?|made with)\b/i.test(raw)) return empty;
+  if (/^each$/i.test(raw)) return { raw_text: "Each", quantity: 1, item_size: null, unit: "each", normalized_text: "Each" };
+  const unitPattern = "fl\\s*\\.?\\s*oz|fluid\\s+ounces?|oz|ounces?|lbs?|pounds?|kg|kilograms?|g|grams?|ml|milliliters?|l|liters?|gal|gallons?|qt|quarts?|pt|pints?|ct|count|pk|packs?|bags?|tubs?|bottles?|cans?|box(?:es)?|each|ea";
   let match = raw.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:x|×)\\s*(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`, "i"));
   if (match) {
     const unit = normalizeUnit(match[3]);
     return { raw_text: raw, quantity: Number(match[1]), item_size: Number(match[2]), unit, normalized_text: `${Number(match[1])} × ${Number(match[2])} ${unit}` };
   }
   match = raw.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`, "i"));
-  if (!match) return { raw_text: raw, quantity: null, item_size: null, unit: "", normalized_text: "" };
+  if (!match) return empty;
   const amount = Number(match[1]);
   const unit = normalizeUnit(match[2]);
-  if (unit === "count") return { raw_text: raw, quantity: amount, item_size: null, unit, normalized_text: `${amount} count` };
+  if (["count", "pack", "bag", "tub", "bottle", "can", "box"].includes(unit)) return { raw_text: raw, quantity: amount, item_size: null, unit, normalized_text: `${amount} ${unit}` };
+  if (unit === "each") return { raw_text: raw, quantity: amount, item_size: null, unit, normalized_text: amount === 1 ? "Each" : `${amount} each` };
   return { raw_text: raw, quantity: 1, item_size: amount, unit, normalized_text: `${amount} ${unit}` };
 }
 
@@ -86,26 +101,26 @@ function offerFrom(value) {
   return {
     price,
     regular_price: regular && price !== null && regular > price ? regular : null,
-    currency: text(offer.priceCurrency || offer.priceSpecification?.priceCurrency, 10),
-    availability: text(offer.availability, 200).split("/").pop(),
+    currency: normalizeRetailerText(offer.priceCurrency || offer.priceSpecification?.priceCurrency, 10),
+    availability: normalizeRetailerText(offer.availability, 200).split("/").pop(),
     url: text(offer.url, 1000)
   };
 }
 
 function productCandidate(product, method) {
   const offer = offerFrom(product.offers);
-  const sizeRaw = text(product.size || product.weight || product.description, 300);
+  const sizeRaw = normalizeRetailerText(product.size || product.weight, 120);
   const packageInfo = normalizePackage(sizeRaw);
   return {
     method,
-    name: text(product.name, 200), brand: brandName(product.brand), variant: text(product.variant || product.model, 100), description: text(product.description, 500),
-    image_url: imageUrl(product.image), sku: text(product.sku || product.mpn, 100),
-    gtin: text(product.gtin14 || product.gtin13 || product.gtin12 || product.gtin8 || product.gtin, 40),
+    name: normalizeRetailerText(product.name, 200), brand: normalizeRetailerText(brandName(product.brand), 100), variant: normalizeRetailerText(product.variant || product.model, 100), description: normalizeRetailerText(product.description, 500),
+    image_url: imageUrl(product.image), sku: normalizeRetailerText(product.sku || product.mpn, 100),
+    gtin: normalizeRetailerText(product.gtin14 || product.gtin13 || product.gtin12 || product.gtin8 || product.gtin, 40),
     price: offer.price, regular_price: offer.regular_price, unit_price: parsePrice(product.unitPrice || product.offers?.unitPrice), currency: offer.currency,
     availability: offer.availability, product_url: offer.url || text(product.url, 1000),
-    raw_price_text: offer.price === null ? "" : String(product.offers?.price ?? product.offers?.lowPrice ?? offer.price),
+    raw_price_text: offer.price === null ? "" : normalizeRetailerText(product.offers?.price ?? product.offers?.lowPrice ?? offer.price, 120),
     raw_size_text: packageInfo.raw_text, package: packageInfo,
-    seller: text(product.offers?.seller?.name || product.manufacturer?.name, 120)
+    seller: normalizeRetailerText(product.offers?.seller?.name || product.manufacturer?.name, 120)
   };
 }
 
@@ -244,4 +259,4 @@ function findDuplicateCandidates(imported, products = [], priorImports = [], sto
   return matches.slice(0, 10);
 }
 
-module.exports = { DOMAIN_RETAILERS, parsePrice, normalizePackage, detectRetailer, extractProduct, findDuplicateCandidates };
+module.exports = { DOMAIN_RETAILERS, parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct, findDuplicateCandidates };

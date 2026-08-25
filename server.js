@@ -11,7 +11,7 @@ const multer = require("multer");
 const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
 const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
-const { findDuplicateCandidates, parsePrice } = require("./src/productImporter");
+const { findDuplicateCandidates, parsePrice, normalizeRetailerText } = require("./src/productImporter");
 const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CategoryImportError, categoryUrlHint, analyzePage } = require("./src/categoryImporter");
 let tesseract = null;
 let sharp = null;
@@ -17871,12 +17871,13 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       if (currentPrice === null) confidences.price = "unknown";
       const methods = Array.isArray(input.extraction_methods) ? input.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
       const warnings = Array.isArray(input.warnings) ? input.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
+      const retailerDescription = normalizeRetailerText(input.retailer_description, 500);
       const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, store?.id || null);
       const duplicateWarning = duplicates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500);
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
       const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?, 'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, store?.id || null, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, locationConfidence === "confirmed_janesville" ? "verified_exact_store" : "legacy_unknown", locationConfidence === "confirmed_janesville" ? store.id : null, cleanText(request.body.location_evidence_text, 500), now, now]);
       currentBatchId = batch.lastID;
-      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, store?.id || null, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
+      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, store?.id || null, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
       let imageSource = "";
       if (input.use_image_source && input.image_source_url) {
         try { imageSource = validateRemoteUrl(input.image_source_url).toString(); } catch { imageSource = ""; warnings.push("Invalid image source URL was not retained."); }
@@ -17953,6 +17954,7 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
   const confidences = request.body.field_confidences && typeof request.body.field_confidences === "object" && !Array.isArray(request.body.field_confidences) ? { ...request.body.field_confidences } : {};
   if (currentPrice === null) confidences.price = "unknown";
   const extractionMethods = Array.isArray(request.body.extraction_methods) ? request.body.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
+  const retailerDescription = normalizeRetailerText(request.body.retailer_description, 500);
   const duplicateWarning = duplicateCandidates.length ? duplicateCandidates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500) : "";
 
   let batchId = null;
@@ -17991,7 +17993,7 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
       draft.source_url, draft.item_name, sourceDomain, draft.source_checked_at || now,
       cleanText(request.body.raw_size_text || request.body.raw_price_text, 500), draft.item_name,
       draft.price, draft.quantity, Number.isFinite(Number(request.body.item_size)) ? Number(request.body.item_size) : null,
-      draft.unit, draft.extraction_confidence, `Methods: ${extractionMethods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}`.slice(0, 1000),
+      draft.unit, draft.extraction_confidence, `Methods: ${extractionMethods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000),
       duplicateWarning, cleanText(request.body.notes, 500), request.adminUser.id, now, request.adminUser.id, now
     ]);
     rowId = row.lastID;

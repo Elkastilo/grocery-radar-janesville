@@ -3,7 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const sharp = require("sharp");
-const { extractProduct, parsePrice, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
+const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { categoryUrlHint, extractCategory, analyzePage } = require("../src/categoryImporter");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
@@ -51,10 +51,22 @@ async function main() {
   assert.equal(walmartCategory.products.length, 4);
   assert.equal(walmartCategory.products[0].fields.name, "Bananas");
   assert.equal(walmartCategory.products[0].fields.price, 0.27);
+  assert.equal(walmartCategory.products[0].fields.raw_size_text, "Each");
+  assert.equal(walmartCategory.products[0].fields.unit, "each");
   assert.equal(walmartCategory.products[1].fields.regular_price, 3.48);
+  assert.equal(walmartCategory.products[1].fields.raw_size_text, "1 lb Container");
+  assert.equal(walmartCategory.products[1].fields.item_size, 1);
+  assert.equal(walmartCategory.products[1].fields.retailer_description, "Best when enjoyed at room temperature Light, refreshing taste Healthy sweet treat");
+  assert.ok(!walmartCategory.products[1].fields.raw_size_text.includes("Best when"));
   assert.equal(walmartCategory.products[2].fields.raw_size_text, "18 oz");
+  assert.equal(walmartCategory.products[2].fields.brand, "Freshness Guaranteed");
   assert.equal(walmartCategory.products[2].fields.image_url, "");
   assert.equal(walmartCategory.products[3].fields.price, null);
+  assert.equal(walmartCategory.products[3].fields.raw_size_text, null);
+  assert.equal(walmartCategory.products[3].fields.quantity, null);
+  assert.equal(walmartCategory.products[3].fields.item_size, null);
+  assert.equal(walmartCategory.products[3].fields.unit, "");
+  assert.equal(walmartCategory.products[3].fields.retailer_description, "Refreshing and sweet golden melon Flavorful addition to many recipes");
   assert.ok(walmartCategory.products.every((item) => item.category_relevance === "high"));
   assert.ok(!walmartCategory.products.some((item) => /seafood|meat|shrimp/i.test(item.fields.name)));
   assert.equal(walmartCategory.location.confidence, "unknown");
@@ -65,6 +77,7 @@ async function main() {
   const walmartPrices = extractCategory(fixture("walmart-price-cases.html"), "https://www.walmart.com/browse/food/fresh-apples/456", stores, 25);
   assert.equal(walmartPrices.products.length, 3);
   assert.equal(walmartPrices.products[0].fields.price, 4.97);
+  assert.equal(walmartPrices.products[0].fields.raw_size_text, "3lb Tub");
   assert.equal(walmartPrices.products[0].fields.regular_price, 5.48);
   assert.equal(walmartPrices.products[0].fields.unit_price, 1.66);
   assert.equal(walmartPrices.products[0].confidence.price, "high");
@@ -92,8 +105,16 @@ async function main() {
   assert.equal(CATEGORY_DEFAULTS.maxBytes, 5 * 1024 * 1024);
 
   assert.deepEqual(normalizePackage("12 x 12 fl oz"), { raw_text: "12 x 12 fl oz", quantity: 12, item_size: 12, unit: "fl oz", normalized_text: "12 × 12 fl oz" });
+  assert.deepEqual(normalizePackage("1 lb Container"), { raw_text: "1 lb Container", quantity: 1, item_size: 1, unit: "lb", normalized_text: "1 lb" });
+  assert.deepEqual(normalizePackage("3lb Tub"), { raw_text: "3lb Tub", quantity: 1, item_size: 3, unit: "lb", normalized_text: "3 lb" });
+  assert.deepEqual(normalizePackage("Each"), { raw_text: "Each", quantity: 1, item_size: null, unit: "each", normalized_text: "Each" });
   assert.equal(normalizePackage("2 lb").item_size, 2);
   assert.deepEqual(normalizePackage("12 ct").quantity, 12);
+  assert.equal(normalizePackage(null).raw_text, null);
+  assert.equal(normalizePackage("Best when enjoyed at room temperature. Light, refreshing taste. Healthy sweet treat.").raw_text, null);
+  assert.equal(normalizePackage("x".repeat(200)).raw_text, null);
+  assert.equal(normalizePackage("<li>Refreshing and sweet golden melon</li><li>Flavorful addition to many recipes</li>").raw_text, null);
+  assert.equal(normalizeRetailerText("<div>Fresh &amp; sweet<br><span>fruit</span></div>"), "Fresh & sweet fruit");
   assert.equal(detectRetailer("https://unknown-retailer.example/product", "", stores).recognized, false);
 
   const duplicates = findDuplicateCandidates({ name: "Coke", brand: "Coca-Cola", raw_size_text: "12 x 12 fl oz", gtin: "049000028904", sku: "WM-123" }, [{ id: 9, display_name: "Other", upc: "049000028904" }], [{ id: 7, sku: "WM-123", store_id: 1, item_name: "Coke" }], 1);
@@ -198,6 +219,11 @@ async function main() {
   assert.match(adminScript, /data-retry-import-image/);
   assert.match(adminScript, /Downloading preview…/);
   assert.match(adminScript, /Price unavailable/);
+  assert.match(adminScript, /function importerPackageLabel\(/);
+  assert.match(adminScript, /Retailer description evidence/);
+  assert.doesNotMatch(adminScript, /fields\.(?:description|retailer_description)\s*\|\|\s*fields\.raw_size_text/);
+  const adminStyle = fs.readFileSync(path.join(__dirname, "..", "public", "style.css"), "utf8");
+  assert.match(adminStyle, /\.importer-package strong[^}]*-webkit-line-clamp:\s*2/);
 
   console.log("Product/category extraction, compact UI, price confidence, duplicate, SSRF, and safe image preview tests passed.");
 }

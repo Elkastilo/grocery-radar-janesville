@@ -3992,6 +3992,22 @@ function importerPriceLabel(value, fallback = "Price unavailable") {
   return number === null ? fallback : `$${number.toFixed(2)}`;
 }
 
+function importerPackageLabel(fields = {}) {
+  const raw = String(fields.raw_size_text || "").replace(/\s+/g, " ").trim();
+  const validRaw = raw.length <= 80 && !/<\/?(?:li|ul|ol|div|span|br)\b/i.test(raw) && (
+    /^each$/i.test(raw) || /\d+(?:\.\d+)?\s*(?:x|×)?\s*\d*(?:\.\d+)?\s*(?:fl\s*oz|oz|lb|g|kg|ml|l|gal|qt|pt|ct|count|each|pack|bag|tub|container|bottle|cans?|box(?:es)?)\b/i.test(raw)
+  );
+  if (validRaw) return raw;
+  const quantity = Number(fields.quantity);
+  const itemSize = Number(fields.item_size);
+  const unit = String(fields.unit || "").trim();
+  if (unit === "each" && Number.isFinite(quantity) && quantity > 0) return quantity === 1 ? "Each" : `${quantity} each`;
+  if (Number.isFinite(quantity) && quantity > 1 && Number.isFinite(itemSize) && itemSize > 0 && unit) return `${quantity} × ${itemSize} ${unit}`;
+  if (Number.isFinite(itemSize) && itemSize > 0 && unit) return `${itemSize} ${unit}`;
+  if (Number.isFinite(quantity) && quantity > 0 && unit) return `${quantity} ${unit}`;
+  return "Not provided";
+}
+
 function importerImagePreviewUrl(remoteUrl, retryToken = "") {
   const params = new URLSearchParams({ url: String(remoteUrl || "") });
   if (retryToken) params.set("retry", retryToken);
@@ -4081,7 +4097,7 @@ function renderCategoryUrlPreview(data) {
     const imagePreview = fields.image_url ? importerImagePreviewUrl(fields.image_url) : "";
     const priceLabel = importerPriceLabel(fields.price);
     const regularLabel = importerPriceLabel(fields.regular_price, "—");
-    const packageLabel = fields.raw_size_text || [fields.quantity && Number(fields.quantity) !== 1 ? `${fields.quantity} ×` : "", fields.item_size, fields.unit].filter(Boolean).join(" ") || "Not provided";
+    const packageLabel = importerPackageLabel(fields);
     const unitPrice = positiveImporterPrice(fields.unit_price);
     const unitPriceLabel = unitPrice === null ? "—" : `$${unitPrice.toFixed(2)}${fields.unit ? ` / ${fields.unit}` : ""}`;
     const relevance = product.category_relevance || "medium";
@@ -4092,7 +4108,7 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
         <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong>${fields.raw_price_text && fields.raw_price_text !== String(fields.price ?? "") ? `<span>${escapeHtml(fields.raw_price_text)}</span>` : ""}</div>
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
-        <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong><span>${Number(fields.quantity) > 1 ? `${escapeHtml(fields.quantity)} items` : "Package size"}</span></div>
+        <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
         <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong><span class="importer-location-badge location-${escapeHtml(locationValue)}">${escapeHtml(titleCase(locationValue))}</span></div>
         <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
@@ -4117,6 +4133,7 @@ function renderCategoryUrlPreview(data) {
           ${importerField("availability", "Availability", fields.availability, product.confidence?.availability, { maxlength: 120 })}
           <label><span>Product source URL</span><input name="product_url" type="url" value="${escapeHtml(fields.product_url || category.source_url || "")}" maxlength="2000"></label>
           <label><span>Image provenance</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small>${fields.image_url ? `Source: ${escapeHtml(category.retailer?.retailer_name || category.retailer?.hostname || "retailer")}` : "No image source detected."}</small></label>
+          <label class="importer-description-evidence"><span>Retailer description evidence</span><textarea name="retailer_description" rows="3" maxlength="500" readonly>${escapeHtml(fields.retailer_description || "")}</textarea><small>Kept separate from package size and never rendered as HTML.</small></label>
           <label class="importer-checkbox-field"><span><input name="use_image_source" type="checkbox" ${fields.image_url ? "checked" : "disabled"}> Import approved image</span><small>Fetched again, validated, and stored privately. Image failure will not block this product.</small></label>
           <label><span>Confidence</span><select name="overall_confidence"><option value="high" ${product.overall_confidence === "high" ? "selected" : ""}>High</option><option value="medium" ${product.overall_confidence === "medium" ? "selected" : ""}>Medium</option><option value="low" ${product.overall_confidence === "low" ? "selected" : ""}>Low</option></select></label>
         </div>
@@ -4158,7 +4175,7 @@ function renderCategoryUrlPreview(data) {
       set("brand", values.brand || "");
       set("price", importerPriceLabel(values.price));
       set("regular_price", importerPriceLabel(values.regular_price, "—"));
-      set("package", values.size_text || [Number(values.quantity) > 1 ? `${values.quantity} ×` : "", values.item_size, values.unit].filter(Boolean).join(" ") || "Not provided");
+      set("package", importerPackageLabel({ raw_size_text: values.size_text, quantity: values.quantity, item_size: values.item_size, unit: values.unit }));
     };
     card.querySelectorAll(".importer-edit-panel input,.importer-edit-panel select").forEach((input) => input.addEventListener("input", refreshDisplay));
   });
