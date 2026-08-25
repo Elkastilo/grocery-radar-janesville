@@ -27,11 +27,12 @@ function decodeHtml(value) {
 }
 
 function parsePrice(value) {
-  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : null;
   const cleaned = text(value, 80).replace(/,/g, "");
+  if (!cleaned || /^\s*-\s*(?:\$|USD)?/i.test(cleaned)) return null;
   const match = cleaned.match(/(?:\$|USD\s*)?(-?\d+(?:\.\d{1,2})?)/i);
   const number = match ? Number(match[1]) : NaN;
-  return Number.isFinite(number) && number >= 0 ? number : null;
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function normalizeUnit(value) {
@@ -219,9 +220,9 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   if (!retailer.store_id) result.warnings.push(retailer.recognized ? "Retailer recognized, but no existing Grocery Radar store location was matched." : "Retailer not recognized. Select an existing store manually.");
   if (result.location.confidence !== "confirmed_janesville") result.warnings.push("This price may be location-dependent and is not confirmed for the Janesville store.");
   if (!result.fields.name) result.warnings.push("No reliable product name was found.");
-  if (result.fields.price === undefined) result.warnings.push("No reliable current price was found.");
+  if (result.fields.price == null) result.warnings.push("No reliable current price was found.");
   result.methods_used = [...new Set(result.methods_used)];
-  result.overall_confidence = result.confidence.name === "high" && result.confidence.price === "high" ? "high" : result.fields.name && result.fields.price !== undefined ? "medium" : "low";
+  result.overall_confidence = result.confidence.name === "high" && result.confidence.price === "high" ? "high" : result.fields.name && result.fields.price != null ? "medium" : "low";
   return result;
 }
 

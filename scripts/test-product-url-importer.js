@@ -3,10 +3,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const sharp = require("sharp");
-const { extractProduct, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
+const { extractProduct, parsePrice, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { categoryUrlHint, extractCategory, analyzePage } = require("../src/categoryImporter");
-const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
+const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "..", "test", "fixtures", "product-importer", name), "utf8");
 const stores = [
@@ -62,6 +62,26 @@ async function main() {
   assert.ok(walmartCategory.warnings.some((warning) => warning.includes("malformed")));
   assert.ok(walmartCategory.warnings.some((warning) => warning.includes("other pages")));
 
+  const walmartPrices = extractCategory(fixture("walmart-price-cases.html"), "https://www.walmart.com/browse/food/fresh-apples/456", stores, 25);
+  assert.equal(walmartPrices.products.length, 3);
+  assert.equal(walmartPrices.products[0].fields.price, 4.97);
+  assert.equal(walmartPrices.products[0].fields.regular_price, 5.48);
+  assert.equal(walmartPrices.products[0].fields.unit_price, 1.66);
+  assert.equal(walmartPrices.products[0].confidence.price, "high");
+  assert.equal(walmartPrices.products[0].confidence.regular_price, "high");
+  assert.equal(walmartPrices.products[0].confidence.unit_price, "high");
+  assert.equal(walmartPrices.products[1].fields.price, null);
+  assert.equal(walmartPrices.products[1].confidence.price, "unknown");
+  assert.notEqual(walmartPrices.products[1].overall_confidence, "high");
+  assert.equal(walmartPrices.products[2].fields.price, null);
+  assert.equal(walmartPrices.products[2].fields.regular_price, 6.25);
+  assert.equal(walmartPrices.products[2].fields.unit_price, 2.08);
+  assert.equal(walmartPrices.products[2].confidence.price, "unknown");
+  assert.ok(!walmartPrices.products.some((item) => /recommendation/i.test(item.fields.name)));
+
+  for (const invalidPrice of [0, 0.00, -1, NaN, Infinity, "", null, undefined, "$0.00", "-$3.99"]) assert.equal(parsePrice(invalidPrice), null);
+  assert.equal(parsePrice("$4.97"), 4.97);
+
   const genericCategory = analyzePage(fixture("generic-category.html"), "https://shop.example.test/category/pantry", stores, { maxProducts: 10 });
   assert.equal(genericCategory.url_type, "category");
   assert.equal(genericCategory.products.length, 2);
@@ -115,6 +135,24 @@ async function main() {
     assert.equal(sanitized.mimeType, "image/webp");
     assert.equal(magicType(sanitized.buffer), "image/webp");
   }
+  const previewResponse = { headers: {}, statusCode: 200, setHeader(name, value) { this.headers[name.toLowerCase()] = value; }, status(code) { this.statusCode = code; return this; }, send(body) { this.body = body; }, json(body) { this.body = body; } };
+  const previewHandler = createProductImagePreviewHandler({ getPreview: async (url) => {
+    assert.equal(url, "https://images.example.test/product.jpg?width=320&quality=80");
+    return { buffer: validWebp, mimeType: "image/webp" };
+  } });
+  await previewHandler({ query: { url: "https://images.example.test/product.jpg?width=320&quality=80" } }, previewResponse);
+  assert.equal(previewResponse.statusCode, 200);
+  assert.equal(previewResponse.headers["content-type"], "image/webp");
+  assert.equal(previewResponse.headers["x-content-type-options"], "nosniff");
+  assert.equal(previewResponse.headers["content-length"], String(validWebp.length));
+  assert.equal(magicType(previewResponse.body), "image/webp");
+  const previewWarnings = [];
+  const failedPreviewResponse = { ...previewResponse, headers: {}, statusCode: 200, body: null };
+  const failedPreviewHandler = createProductImagePreviewHandler({ getPreview: async () => { throw new RemoteImageError("IMAGE_DECODE_FAILED", "Image unavailable."); }, logWarning: (message, details) => previewWarnings.push({ message, details }) });
+  await failedPreviewHandler({ query: { url: "https://images.example.test/product.jpg?private_token=not-logged" } }, failedPreviewResponse);
+  assert.equal(failedPreviewResponse.statusCode, 422);
+  assert.equal(failedPreviewResponse.body.code, "IMAGE_DECODE_FAILED");
+  assert.deepEqual(previewWarnings[0].details, { code: "IMAGE_DECODE_FAILED", source_domain: "images.example.test", status: 422 });
   await assert.rejects(() => sanitizeImageBuffer(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'></svg>")), (error) => error instanceof RemoteImageError && error.code === "INVALID_IMAGE_SIGNATURE");
   await assert.rejects(() => sanitizeImageBuffer(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from("<html><script>alert(1)</script></html>")])), (error) => error instanceof RemoteImageError && error.code === "IMAGE_DECODE_FAILED");
   await assert.rejects(() => sanitizeImageBuffer(validJpeg, { contentType: "image/png" }), (error) => error instanceof RemoteImageError && error.code === "IMAGE_TYPE_MISMATCH");
@@ -152,7 +190,16 @@ async function main() {
     assert.equal(fs.statSync(path.join(tempDir, stored.filename)).mode & 0o777, 0o600);
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 
-  console.log("Product/category extraction, relevance, normalization, duplicate, SSRF, and safe image pipeline tests passed.");
+  const adminScript = fs.readFileSync(path.join(__dirname, "..", "public", "admin.js"), "utf8");
+  assert.equal((adminScript.match(/function renderCategoryUrlPreview\(/g) || []).length, 1, "Category imports must have one renderer.");
+  assert.match(adminScript, /class="importer-product-row/);
+  assert.match(adminScript, /class="importer-edit-panel"[^>]*hidden/);
+  assert.doesNotMatch(adminScript, /class="admin-card compact-card" data-category-product/);
+  assert.match(adminScript, /data-retry-import-image/);
+  assert.match(adminScript, /Downloading preview…/);
+  assert.match(adminScript, /Price unavailable/);
+
+  console.log("Product/category extraction, compact UI, price confidence, duplicate, SSRF, and safe image preview tests passed.");
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

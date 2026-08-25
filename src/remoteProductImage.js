@@ -114,6 +114,29 @@ async function getSanitizedPreview(url, options = {}) {
   return { ...entry, cacheHit: false };
 }
 
+function createProductImagePreviewHandler(options = {}) {
+  const loadPreview = options.getPreview || getSanitizedPreview;
+  const logWarning = options.logWarning || ((message, details) => console.warn(message, details));
+  return async function productImagePreviewHandler(request, response) {
+    const requestedImageUrl = String(request.query?.url || "").trim().slice(0, 2000);
+    try {
+      const image = await loadPreview(requestedImageUrl);
+      response.setHeader("Content-Type", image.mimeType);
+      response.setHeader("Cache-Control", "private, max-age=300");
+      response.setHeader("Content-Disposition", "inline");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.setHeader("Content-Length", String(image.buffer.length));
+      response.send(image.buffer);
+    } catch (error) {
+      if (!(error instanceof SafeFetchError) && !(error instanceof RemoteImageError)) throw error;
+      let sourceDomain = "invalid-url";
+      try { sourceDomain = new URL(requestedImageUrl).hostname.toLowerCase(); } catch {}
+      logWarning("Product image preview failed", { code: error.code || "IMAGE_PREVIEW_FAILED", source_domain: sourceDomain, status: error.statusCode || 422 });
+      response.status(error.statusCode || 422).json({ error: error.message, code: error.code });
+    }
+  };
+}
+
 async function storeSanitizedRemoteImage(url, uploadDir, options = {}) {
   const image = await imageQueue.run(() => fetchAndSanitizeRemoteImage(url, { ...options, preview: false }));
   const hash = crypto.createHash("sha256").update(image.buffer).digest("hex");
@@ -140,6 +163,7 @@ module.exports = {
   sanitizeImageBuffer,
   fetchAndSanitizeRemoteImage,
   getSanitizedPreview,
+  createProductImagePreviewHandler,
   storeSanitizedRemoteImage,
   cleanupPreviewCache,
   clearPreviewCacheForTests,

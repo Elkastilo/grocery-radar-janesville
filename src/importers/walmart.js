@@ -14,10 +14,54 @@ function safeUrl(value, baseUrl) {
   } catch { return ""; }
 }
 
+function firstWalmartPrice(candidates) {
+  for (const candidate of candidates) {
+    const value = parsePrice(candidate.value);
+    if (value !== null) return { value, confidence: candidate.confidence, source: candidate.source, raw: clean(candidate.raw ?? candidate.value, 120) };
+  }
+  return { value: null, confidence: "unknown", source: "", raw: "" };
+}
+
+function walmartPriceData(item) {
+  const priceInfo = item?.priceInfo && typeof item.priceInfo === "object" ? item.priceInfo : {};
+  const current = firstWalmartPrice([
+    { value: priceInfo.currentPrice?.price, raw: priceInfo.currentPrice?.priceString || priceInfo.currentPrice?.priceDisplay, confidence: "high", source: "priceInfo.currentPrice.price" },
+    { value: priceInfo.currentPrice?.linePrice, confidence: "high", source: "priceInfo.currentPrice.linePrice" },
+    { value: priceInfo.currentPrice?.itemPrice, confidence: "high", source: "priceInfo.currentPrice.itemPrice" },
+    { value: priceInfo.linePrice, confidence: "high", source: "priceInfo.linePrice" },
+    { value: priceInfo.itemPrice, confidence: "high", source: "priceInfo.itemPrice" },
+    { value: item.currentPrice?.price ?? item.currentPrice, confidence: "high", source: "item.currentPrice" },
+    { value: item.linePrice, confidence: "high", source: "item.linePrice" },
+    { value: item.itemPrice, confidence: "high", source: "item.itemPrice" },
+    { value: priceInfo.currentPrice?.priceString || priceInfo.currentPrice?.priceDisplay || priceInfo.currentPrice?.displayPrice, confidence: "medium", source: "priceInfo.currentPrice.display" },
+    { value: priceInfo.minPrice, confidence: "medium", source: "priceInfo.minPrice" },
+    { value: priceInfo.maxPrice, confidence: "medium", source: "priceInfo.maxPrice" },
+    { value: priceInfo.displayPrice, confidence: "medium", source: "priceInfo.displayPrice" },
+    { value: typeof priceInfo.price === "object" ? priceInfo.price?.price : priceInfo.price, confidence: "medium", source: "priceInfo.price" },
+    { value: typeof item.price === "object" ? item.price?.price : item.price, confidence: "medium", source: "item.price" }
+  ]);
+  const regular = firstWalmartPrice([
+    { value: priceInfo.wasPrice?.price ?? priceInfo.wasPrice, confidence: "high", source: "priceInfo.wasPrice" },
+    { value: priceInfo.strikeThroughPrice?.price ?? priceInfo.strikeThroughPrice, confidence: "high", source: "priceInfo.strikeThroughPrice" },
+    { value: priceInfo.listPrice?.price ?? priceInfo.listPrice, confidence: "high", source: "priceInfo.listPrice" },
+    { value: item.regularPrice?.price ?? item.regularPrice, confidence: "medium", source: "item.regularPrice" }
+  ]);
+  const unit = firstWalmartPrice([
+    { value: priceInfo.unitPrice?.price, raw: priceInfo.unitPrice?.priceString || priceInfo.unitPrice?.priceDisplay, confidence: "high", source: "priceInfo.unitPrice.price" },
+    { value: priceInfo.unitPrice?.linePrice, confidence: "high", source: "priceInfo.unitPrice.linePrice" },
+    { value: typeof priceInfo.unitPrice === "object" ? priceInfo.unitPrice?.value : priceInfo.unitPrice, confidence: "medium", source: "priceInfo.unitPrice" },
+    { value: item.unitPrice?.price ?? item.unitPrice, confidence: "medium", source: "item.unitPrice" }
+  ]);
+  return {
+    current,
+    regular: regular.value !== null && (current.value === null || regular.value > current.value) ? regular : { value: null, confidence: "unknown", source: "", raw: "" },
+    unit
+  };
+}
+
 function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMethod = "walmart_listing_collection") {
-  const priceInfo = item.priceInfo || item.price || {};
-  const currentPrice = parsePrice(priceInfo.currentPrice?.price ?? priceInfo.currentPrice ?? priceInfo.price ?? item.price);
-  const regularPrice = parsePrice(priceInfo.wasPrice?.price ?? priceInfo.wasPrice ?? priceInfo.listPrice?.price ?? item.regularPrice);
+  const prices = walmartPriceData(item);
+  const currentPrice = prices.current.value;
   const sizeText = clean(item.productSize || item.productSizeLabel || item.weight || item.variant || item.description, 120);
   const packageInfo = normalizePackage(sizeText);
   const productUrl = safeUrl(item.canonicalUrl || item.productUrl || item.productPageUrl || item.url, pageUrl);
@@ -30,13 +74,13 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
       name,
       brand: clean(item.brand || item.brandName, 100),
       price: currentPrice,
-      regular_price: regularPrice !== null && currentPrice !== null && regularPrice > currentPrice ? regularPrice : null,
+      regular_price: prices.regular.value,
       quantity: packageInfo.quantity,
       item_size: packageInfo.item_size,
       unit: packageInfo.unit,
       raw_size_text: packageInfo.raw_text,
-      raw_price_text: clean(priceInfo.currentPrice?.priceString || priceInfo.currentPrice?.priceDisplay || (currentPrice === null ? "" : String(currentPrice)), 120),
-      unit_price: parsePrice(priceInfo.unitPrice?.price ?? priceInfo.unitPrice),
+      raw_price_text: prices.current.raw || (currentPrice === null ? "" : String(currentPrice)),
+      unit_price: prices.unit.value,
       image_url: imageSource,
       product_url: productUrl,
       sku: clean(item.usItemId || item.sku || item.itemId, 100),
@@ -44,10 +88,10 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
       availability: clean(item.availabilityStatusDisplayValue || item.availabilityStatus || item.availability, 120)
     },
     confidence: {
-      name: "high", price: currentPrice === null ? "unknown" : "high", brand: item.brand || item.brandName ? "high" : "unknown",
+      name: "high", price: prices.current.confidence, regular_price: prices.regular.confidence, brand: item.brand || item.brandName ? "high" : "unknown",
       raw_size_text: sizeText ? "medium" : "unknown", quantity: sizeText ? "medium" : "unknown", item_size: sizeText ? "medium" : "unknown",
       unit: sizeText ? "medium" : "unknown", image_url: imageSource ? "high" : "unknown", product_url: productUrl ? "high" : "unknown",
-      unit_price: priceInfo.unitPrice ? "high" : "unknown", availability: item.availabilityStatusDisplayValue || item.availabilityStatus || item.availability ? "high" : "unknown",
+      unit_price: prices.unit.confidence, availability: item.availabilityStatusDisplayValue || item.availabilityStatus || item.availability ? "high" : "unknown",
       sku: item.usItemId || item.sku || item.itemId ? "high" : "unknown", gtin: item.gtin || item.upc ? "high" : "unknown"
     },
     methods_used: [extractionMethod],
@@ -121,4 +165,4 @@ function extractWalmartCategory(jsonValues, context) {
   return products;
 }
 
-module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, findSearchResults, listingCollections, excludedListingItem };
+module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, findSearchResults, listingCollections, excludedListingItem };

@@ -3981,6 +3981,45 @@ function confidenceBadge(value) {
   return `<span class="badge confidence-${confidence}">${escapeHtml(titleCase(value || "unknown"))}</span>`;
 }
 
+function positiveImporterPrice(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function importerPriceLabel(value, fallback = "Price unavailable") {
+  const number = positiveImporterPrice(value);
+  return number === null ? fallback : `$${number.toFixed(2)}`;
+}
+
+function importerImagePreviewUrl(remoteUrl, retryToken = "") {
+  const params = new URLSearchParams({ url: String(remoteUrl || "") });
+  if (retryToken) params.set("retry", retryToken);
+  return `/api/admin/product-url-imports/image-preview?${params.toString()}`;
+}
+
+function bindImporterPreviewImages(root) {
+  for (const frame of root.querySelectorAll("[data-import-image-frame]")) {
+    const image = frame.querySelector("[data-import-image]");
+    const fallback = frame.querySelector(".importer-image-fallback");
+    const retry = frame.querySelector("[data-retry-import-image]");
+    const status = frame.closest("[data-category-product]")?.querySelector("[data-image-status]");
+    const setStatus = (value) => { if (status) status.textContent = value; };
+    if (!image) { fallback?.classList.add("is-visible"); setStatus("Image unavailable"); continue; }
+    image.addEventListener("load", () => { image.hidden = false; fallback?.classList.remove("is-visible"); if (retry) retry.hidden = true; setStatus("Image ready"); });
+    image.addEventListener("error", () => { image.hidden = true; fallback?.classList.add("is-visible"); if (retry) retry.hidden = false; setStatus("Image unavailable"); });
+    retry?.addEventListener("click", () => {
+      const remoteUrl = frame.dataset.importImageUrl;
+      if (!remoteUrl) return;
+      fallback?.classList.remove("is-visible");
+      retry.hidden = true;
+      image.hidden = false;
+      setStatus("Downloading preview…");
+      image.src = importerImagePreviewUrl(remoteUrl, String(Date.now()));
+    });
+  }
+}
+
 function importerField(name, label, value, confidence, options = {}) {
   const attributes = [options.type ? `type="${options.type}"` : 'type="text"', options.step ? `step="${options.step}"` : "", options.min !== undefined ? `min="${options.min}"` : "", options.maxlength ? `maxlength="${options.maxlength}"` : ""].filter(Boolean).join(" ");
   return `<label><span>${escapeHtml(label)} ${confidenceBadge(confidence)}</span><input name="${escapeHtml(name)}" ${attributes} value="${escapeHtml(value ?? "")}"></label>`;
@@ -3991,19 +4030,19 @@ function renderProductUrlPreview(data) {
   const extraction = data.extraction || {};
   const fields = extraction.fields || {};
   const confidence = extraction.confidence || {};
-  const imagePreview = fields.image_url ? `/api/admin/product-url-imports/image-preview?url=${encodeURIComponent(fields.image_url)}${adminQuery().replace("?", "&")}` : "";
+  const imagePreview = fields.image_url ? importerImagePreviewUrl(fields.image_url) : "";
   productUrlAnalysis = data;
   preview.hidden = false;
   preview.innerHTML = `
     <div class="admin-panel-heading"><div><h4>Product found</h4><p class="field-help">Review every field. Low and Unknown fields need extra attention.</p></div>${confidenceBadge(extraction.overall_confidence)}</div>
-    <div class="importer-single-preview">${imagePreview ? `<div class="importer-thumb"><img src="${escapeHtml(imagePreview)}" alt="Sanitized preview of ${escapeHtml(fields.name || "detected product")}"><span class="importer-image-fallback">Image unavailable</span></div>` : '<div class="importer-thumb"><span class="importer-image-fallback is-visible">No image</span></div>'}<div><strong>${escapeHtml(fields.name || "Detected product")}</strong><span>${escapeHtml([fields.brand, fields.raw_size_text].filter(Boolean).join(" · "))}</span><b>${Number.isFinite(Number(fields.price)) ? `$${Number(fields.price).toFixed(2)}` : "Price unavailable"}</b></div></div>
+    <div class="importer-single-preview">${imagePreview ? `<div class="importer-thumb" data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"><img src="${escapeHtml(imagePreview)}" alt="Sanitized preview of ${escapeHtml(fields.name || "detected product")}" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button></div>` : '<div class="importer-thumb"><span class="importer-image-fallback is-visible">No image</span></div>'}<div><strong>${escapeHtml(fields.name || "Detected product")}</strong><span>${escapeHtml([fields.brand, fields.raw_size_text].filter(Boolean).join(" · "))}</span><b>${escapeHtml(importerPriceLabel(fields.price))}</b></div></div>
     <form class="admin-control-grid" data-product-url-review-form>
       ${importerField("name", "Product name", fields.name, confidence.name, { maxlength: 120 })}
       ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
       ${importerField("variant", "Variant", fields.variant, confidence.variant, { maxlength: 80 })}
       <label><span>Category</span><select name="category">${optionRows(categories, "other")}</select></label>
-      ${importerField("price", "Current price", fields.price, confidence.price, { type: "number", min: 0, step: "0.01" })}
-      ${importerField("regular_price", "Regular/original price", fields.regular_price, confidence.regular_price, { type: "number", min: 0, step: "0.01" })}
+      ${importerField("price", "Current price", fields.price, confidence.price, { type: "number", min: 0.01, step: "0.01" })}
+      ${importerField("regular_price", "Regular/original price", fields.regular_price, confidence.regular_price, { type: "number", min: 0.01, step: "0.01" })}
       <label><span>Sale price?</span><select name="sale_price"><option value="false">No / unclear</option><option value="true" ${fields.regular_price && fields.price < fields.regular_price ? "selected" : ""}>Yes</option></select></label>
       ${importerField("quantity", "Package quantity", fields.quantity, confidence.quantity, { type: "number", min: 0, step: "0.01" })}
       ${importerField("item_size", "Item size", fields.item_size, confidence.item_size, { type: "number", min: 0, step: "0.01" })}
@@ -4025,7 +4064,7 @@ function renderProductUrlPreview(data) {
     <section><h4>Likely duplicates</h4>${(data.duplicate_candidates || []).length ? data.duplicate_candidates.map((candidate) => `<div class="mini-row"><strong>${escapeHtml(candidate.name || `Earlier import #${candidate.import_id}`)}</strong><span>${escapeHtml(titleCase(candidate.type))} · ${escapeHtml(titleCase(candidate.confidence))}</span></div>`).join("") : '<p class="field-help">No likely duplicate was detected. Admin review is still required.</p>'}</section>
   `;
   preview.querySelector("[data-product-url-review-form]")?.addEventListener("submit", saveProductUrlImport);
-  preview.querySelector(".importer-single-preview img")?.addEventListener("error", (event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling?.classList.add("is-visible"); });
+  bindImporterPreviewImages(preview);
   preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
 }
 
@@ -4039,25 +4078,26 @@ function renderCategoryUrlPreview(data) {
     const fields = product.fields || {};
     const duplicates = product.duplicate_candidates || [];
     const selected = product.selected_by_default !== false && product.category_relevance !== "low";
-    const imagePreview = fields.image_url ? `/api/admin/product-url-imports/image-preview?url=${encodeURIComponent(fields.image_url)}${adminQuery().replace("?", "&")}` : "";
-    const priceLabel = Number.isFinite(Number(fields.price)) ? `$${Number(fields.price).toFixed(2)}` : "Price unavailable";
-    const regularLabel = Number.isFinite(Number(fields.regular_price)) ? `$${Number(fields.regular_price).toFixed(2)}` : "—";
+    const imagePreview = fields.image_url ? importerImagePreviewUrl(fields.image_url) : "";
+    const priceLabel = importerPriceLabel(fields.price);
+    const regularLabel = importerPriceLabel(fields.regular_price, "—");
     const packageLabel = fields.raw_size_text || [fields.quantity && Number(fields.quantity) !== 1 ? `${fields.quantity} ×` : "", fields.item_size, fields.unit].filter(Boolean).join(" ") || "Not provided";
-    const unitPriceLabel = Number.isFinite(Number(fields.unit_price)) ? `$${Number(fields.unit_price).toFixed(2)}${fields.unit ? ` / ${fields.unit}` : ""}` : "—";
+    const unitPrice = positiveImporterPrice(fields.unit_price);
+    const unitPriceLabel = unitPrice === null ? "—" : `$${unitPrice.toFixed(2)}${fields.unit ? ` / ${fields.unit}` : ""}`;
     const relevance = product.category_relevance || "medium";
     return `<article class="importer-product-row ${selected ? "is-selected" : ""}" data-category-product="${index}">
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
-        <div class="importer-thumb">${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback" aria-hidden="true">Image<br>unavailable</span>` : '<span class="importer-image-fallback is-visible" aria-hidden="true">No image</span>'}</div>
+        <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
         <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
         <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong>${fields.raw_price_text && fields.raw_price_text !== String(fields.price ?? "") ? `<span>${escapeHtml(fields.raw_price_text)}</span>` : ""}</div>
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong><span>${Number(fields.quantity) > 1 ? `${escapeHtml(fields.quantity)} items` : "Package size"}</span></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
         <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong><span class="importer-location-badge location-${escapeHtml(locationValue)}">${escapeHtml(titleCase(locationValue))}</span></div>
-        <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
+        <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
         <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
-        <div class="importer-source-status"><span>${fields.image_url ? "Image ready" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
+        <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
         <div class="importer-row-actions">${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
       </div>
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
@@ -4065,8 +4105,8 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-edit-grid">
           ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}
           ${importerField("brand", "Brand", fields.brand, product.confidence?.brand, { maxlength: 80 })}
-          ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0, step: "0.01" })}
-          ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0, step: "0.01" })}
+          ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0.01, step: "0.01" })}
+          ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0.01, step: "0.01" })}
           ${importerField("quantity", "Quantity", fields.quantity, product.confidence?.quantity, { type: "number", min: 0, step: "0.01" })}
           ${importerField("item_size", "Item size", fields.item_size, product.confidence?.item_size, { type: "number", min: 0, step: "0.01" })}
           ${importerField("unit", "Unit", fields.unit, product.confidence?.unit, { maxlength: 30 })}
@@ -4109,15 +4149,15 @@ function renderCategoryUrlPreview(data) {
   preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => input.addEventListener("change", updateSummary));
   preview.querySelectorAll("[data-toggle-import-details]").forEach((button) => button.addEventListener("click", () => { const panel = preview.querySelector(`#import-details-${button.dataset.toggleImportDetails}`); const expanded = panel.hidden; panel.hidden = !expanded; button.setAttribute("aria-expanded", String(expanded)); button.closest("[data-category-product]")?.classList.toggle("is-expanded", expanded); }));
   preview.querySelectorAll("[data-view-match]").forEach((button) => button.addEventListener("click", () => openAdminTab("productToolsTab", { productId: button.dataset.viewMatch })));
-  preview.querySelectorAll("[data-import-image]").forEach((image) => image.addEventListener("error", () => { image.hidden = true; image.nextElementSibling?.classList.add("is-visible"); }));
+  bindImporterPreviewImages(preview);
   preview.querySelectorAll("[data-category-product]").forEach((card) => {
     const refreshDisplay = () => {
       const values = Object.fromEntries(new FormData(card).entries());
       const set = (name, value) => card.querySelectorAll(`[data-display="${name}"]`).forEach((node) => { node.textContent = value; node.hidden = !value; });
       set("name", values.name || "Unnamed product");
       set("brand", values.brand || "");
-      set("price", Number.isFinite(Number(values.price)) && values.price !== "" ? `$${Number(values.price).toFixed(2)}` : "Price unavailable");
-      set("regular_price", Number.isFinite(Number(values.regular_price)) && values.regular_price !== "" ? `$${Number(values.regular_price).toFixed(2)}` : "—");
+      set("price", importerPriceLabel(values.price));
+      set("regular_price", importerPriceLabel(values.regular_price, "—"));
       set("package", values.size_text || [Number(values.quantity) > 1 ? `${values.quantity} ×` : "", values.item_size, values.unit].filter(Boolean).join(" ") || "Not provided");
     };
     card.querySelectorAll(".importer-edit-panel input,.importer-edit-panel select").forEach((input) => input.addEventListener("input", refreshDisplay));

@@ -414,6 +414,18 @@ async function main() {
     assert.equal(ownerLogin.body.user.is_admin, true);
     assert.equal(ownerLogin.body.user.is_super_admin, true);
 
+    const adminProductsPage = await ownerClient.get("/admin/products");
+    assert.equal(adminProductsPage.response.status, 200);
+    assert.match(adminProductsPage.response.headers.get("cache-control") || "", /no-store/);
+    const adminScriptVersion = adminProductsPage.body.match(/src="\/admin\.js\?v=([a-f0-9.-]+)"/)?.[1];
+    const adminStyleVersion = adminProductsPage.body.match(/href="\/style\.css\?v=([a-f0-9.-]+)"/)?.[1];
+    assert.ok(adminScriptVersion, "Admin JavaScript must use a deployment-specific cache-busting URL.");
+    assert.equal(adminStyleVersion, adminScriptVersion, "Admin JavaScript and CSS must use the same content version.");
+    const versionedAdminScript = await ownerClient.get(`/admin.js?v=${adminScriptVersion}`);
+    assert.equal(versionedAdminScript.response.status, 200);
+    assert.match(versionedAdminScript.body, /function renderCategoryUrlPreview\(/);
+    assert.match(versionedAdminScript.body, /class="importer-product-row/);
+
     const ownerMatches = await usersByEmail(app.dataDir, OWNER_EMAIL);
     assert.equal(ownerMatches.length, 1);
     assert.equal(ownerMatches[0].username, OWNER_USERNAME);

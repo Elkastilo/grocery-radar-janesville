@@ -10,8 +10,8 @@ const session = require("express-session");
 const multer = require("multer");
 const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
-const { getSanitizedPreview, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
-const { findDuplicateCandidates } = require("./src/productImporter");
+const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
+const { findDuplicateCandidates, parsePrice } = require("./src/productImporter");
 const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CategoryImportError, categoryUrlHint, analyzePage } = require("./src/categoryImporter");
 let tesseract = null;
 let sharp = null;
@@ -171,6 +171,19 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const CLIENT_DIST_DIR = process.env.CLIENT_DIST_DIR
   ? path.resolve(process.env.CLIENT_DIST_DIR)
   : path.join(__dirname, "public-tailwind-dist");
+function contentVersionForAdminAssets() {
+  const hash = crypto.createHash("sha256");
+  try {
+    for (const filename of ["admin.js", "style.css"]) {
+      hash.update(filename);
+      hash.update(fs.readFileSync(path.join(PUBLIC_DIR, filename)));
+    }
+    return hash.digest("hex").slice(0, 12);
+  } catch {
+    return APP_VERSION.replace(/[^a-z0-9.-]/gi, "-");
+  }
+}
+const ADMIN_ASSET_VERSION = contentVersionForAdminAssets();
 const UPLOAD_DIR = process.env.UPLOADS_DIR
   ? path.resolve(process.env.UPLOADS_DIR)
   : path.join(__dirname, "uploads");
@@ -7703,7 +7716,13 @@ async function sendAdminApp(request, response) {
     return;
   }
 
-  response.sendFile(path.join(PUBLIC_DIR, "admin.html"));
+  const adminHtml = await fs.promises.readFile(path.join(PUBLIC_DIR, "admin.html"), "utf8");
+  const versionedHtml = adminHtml
+    .replace('href="/style.css"', `href="/style.css?v=${ADMIN_ASSET_VERSION}"`)
+    .replace('src="/admin.js"', `src="/admin.js?v=${ADMIN_ASSET_VERSION}"`);
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("Vary", "Cookie");
+  response.type("html").send(versionedHtml);
 }
 
 app.get("/admin.html", asyncRoute(sendAdminApp));
@@ -17760,22 +17779,7 @@ app.post("/api/admin/suggestions/:id/status", requireAdminAccess, requireLoggedI
   response.json({ message: `Suggestion marked ${status}.` });
 }));
 
-app.get("/api/admin/product-url-imports/image-preview", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductImagePreviews, asyncRoute(async (request, response) => {
-  try {
-    const image = await getSanitizedPreview(cleanText(request.query.url, 2000));
-    response.setHeader("Content-Type", image.mimeType);
-    response.setHeader("Cache-Control", "private, max-age=300");
-    response.setHeader("Content-Disposition", "inline");
-    response.setHeader("X-Content-Type-Options", "nosniff");
-    response.send(image.buffer);
-  } catch (error) {
-    if (error instanceof SafeFetchError || error instanceof RemoteImageError) {
-      response.status(error.statusCode || 422).json({ error: error.message, code: error.code });
-      return;
-    }
-    throw error;
-  }
-}));
+app.get("/api/admin/product-url-imports/image-preview", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductImagePreviews, asyncRoute(createProductImagePreviewHandler()));
 
 app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitUrlImportAnalysis, asyncRoute(async (request, response) => {
   const requestedUrl = cleanText(request.body.url, 2000);
@@ -17854,13 +17858,17 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   for (const [itemIndex, input] of items.entries()) {
     let currentBatchId = null;
     try {
-      const inferredSale = Number.isFinite(Number(input.price)) && Number.isFinite(Number(input.regular_price)) && Number(input.regular_price) > Number(input.price);
-      const draft = cleanImportRowDraft({ ...input, sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: store?.id || "", proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: input.overall_confidence || "low", status: "ready_for_review" });
+      const currentPrice = parsePrice(input.price);
+      const regularPrice = parsePrice(input.regular_price);
+      const inferredSale = currentPrice !== null && regularPrice !== null && regularPrice > currentPrice;
+      const normalizedOverallConfidence = currentPrice === null && input.overall_confidence === "high" ? "medium" : input.overall_confidence || "low";
+      const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: store?.id || "", proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
       if (!draft.item_name) throw Object.assign(new Error("Every selected product needs a name."), { statusCode: 400 });
       let itemSourceUrl;
       try { itemSourceUrl = validateRemoteUrl(draft.source_url).toString(); }
       catch { throw Object.assign(new Error(`Product source URL is invalid for ${draft.item_name}.`), { statusCode: 400 }); }
-      const confidences = input.field_confidences && typeof input.field_confidences === "object" && !Array.isArray(input.field_confidences) ? input.field_confidences : {};
+      const confidences = input.field_confidences && typeof input.field_confidences === "object" && !Array.isArray(input.field_confidences) ? { ...input.field_confidences } : {};
+      if (currentPrice === null) confidences.price = "unknown";
       const methods = Array.isArray(input.extraction_methods) ? input.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
       const warnings = Array.isArray(input.warnings) ? input.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
       const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, store?.id || null);
@@ -17889,14 +17897,19 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
 }));
 
 app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const currentPrice = parsePrice(request.body.price);
+  const regularPrice = parsePrice(request.body.regular_price);
+  const normalizedOverallConfidence = currentPrice === null && request.body.overall_confidence === "high" ? "medium" : request.body.overall_confidence || "low";
   const draft = cleanImportRowDraft({
     ...request.body,
+    price: currentPrice ?? "",
+    regular_price: regularPrice ?? "",
     item_name: request.body.name || request.body.item_name,
     proof_type: "no_photo",
     source_url: request.body.source_url,
     source_title: request.body.name || request.body.item_name,
     source_checked_at: request.body.source_timestamp || new Date().toISOString(),
-    extraction_confidence: request.body.overall_confidence || "low",
+    extraction_confidence: normalizedOverallConfidence,
     status: "ready_for_review"
   });
   if (!draft.item_name) {
@@ -17937,7 +17950,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
     try { retainedImageSource = validateRemoteUrl(request.body.image_source_url).toString(); }
     catch { warnings.push("Invalid image source URL was not retained."); }
   }
-  const confidences = request.body.field_confidences && typeof request.body.field_confidences === "object" && !Array.isArray(request.body.field_confidences) ? request.body.field_confidences : {};
+  const confidences = request.body.field_confidences && typeof request.body.field_confidences === "object" && !Array.isArray(request.body.field_confidences) ? { ...request.body.field_confidences } : {};
+  if (currentPrice === null) confidences.price = "unknown";
   const extractionMethods = Array.isArray(request.body.extraction_methods) ? request.body.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
   const duplicateWarning = duplicateCandidates.length ? duplicateCandidates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500) : "";
 
