@@ -172,7 +172,10 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
 const EXCLUDED_MODULE_PATTERN = /sponsor|recommend|also.bought|recent|carousel|related|inspired|popular.near|buy.with|similar|ad.module/i;
 
 function walmartShape(value) {
-  return value && typeof value === "object" && (value.usItemId || value.itemId) && (value.name || value.title || value.productName) && (value.priceInfo || value.price !== undefined);
+  if (!value || typeof value !== "object" || !(value.usItemId || value.itemId) || !(value.name || value.title || value.productName)) return false;
+  const hasPriceData = Boolean(value.priceInfo) || value.price !== undefined || value.currentPrice !== undefined || value.linePrice !== undefined || value.itemPrice !== undefined;
+  const hasProductEvidence = Boolean(value.canonicalUrl || value.productUrl || value.productPageUrl || value.url) && Boolean(value.imageInfo || value.imageUrl || value.image);
+  return hasPriceData || hasProductEvidence;
 }
 
 function excludedListingItem(item) {

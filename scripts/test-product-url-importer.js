@@ -66,6 +66,29 @@ async function main() {
 
   assert.equal(categoryUrlHint("https://www.walmart.com/browse/food/fresh-fruits/123"), "category");
   assert.equal(categoryUrlHint("https://www.walmart.com/ip/bananas/1001"), "product");
+  const walmartPageTwoUrl = "https://www.walmart.com/browse/food/fresh-fruits/976759_976793_9756351?povid=976759_HubSpoke_976793_Shoptoppicks_Allfruits_Rweb_Jan_07&seo=fresh-fruits&seo=976759_976793_9756351&page=2&affinityOverride=default";
+  const validatedPageTwoUrl = validateRemoteUrl(walmartPageTwoUrl);
+  assert.equal(categoryUrlHint(validatedPageTwoUrl.toString()), "category", "Walmart browse URLs remain category URLs when page=2 is present.");
+  assert.deepEqual(validatedPageTwoUrl.searchParams.getAll("seo"), ["fresh-fruits", "976759_976793_9756351"], "Repeated Walmart seo parameters must remain ordered and intact.");
+  assert.equal(validatedPageTwoUrl.searchParams.get("page"), "2");
+  assert.equal(validatedPageTwoUrl.searchParams.get("affinityOverride"), "default");
+  let requestedPageTwoUrl = "";
+  const fetchedPageTwo = await safeCategoryRemoteFetch(walmartPageTwoUrl, {
+    resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
+    requestOnce: async (url) => {
+      requestedPageTwoUrl = url.toString();
+      return { statusCode: 200, headers: { "content-type": "text/html" }, body: fixture("walmart-category-page-2.html") };
+    }
+  });
+  assert.equal(requestedPageTwoUrl, walmartPageTwoUrl, "The safe category fetch must not collapse repeated query parameters or remove pagination context.");
+  const walmartPageTwo = analyzePage(fetchedPageTwo.body, fetchedPageTwo.url, stores, { maxProducts: 10 });
+  assert.equal(walmartPageTwo.url_type, "category");
+  assert.equal(walmartPageTwo.adapter, "walmart");
+  assert.equal(walmartPageTwo.products.length, 4);
+  assert.deepEqual(walmartPageTwo.products.slice(0, 3).map((product) => product.fields.price), [5.97, 9.76, 3.97]);
+  assert.equal(walmartPageTwo.products[3].fields.sku, "309762096");
+  assert.equal(walmartPageTwo.products[3].fields.price, null, "A legitimate price-less page-2 listing item must remain discoverable for store-aware enrichment.");
+  assert.equal(walmartPageTwo.products[3].confidence.price, "unknown");
   const walmartCategory = extractCategory(fixture("walmart-category.html"), "https://www.walmart.com/browse/food/fresh-fruits/123", stores, 25);
   assert.equal(walmartCategory.url_type, "category");
   assert.equal(walmartCategory.adapter, "walmart");
@@ -350,6 +373,8 @@ async function main() {
   assert.match(reportMappingSource, /unit:\s*row\.unit[,\n]/, "Importer approval must preserve the reviewed package unit.");
   assert.match(serverSource, /SELECT price_reports\.price[\s\S]{0,500}\) AS best_price,/, "Public product aggregation must expose the persisted item price as best_price.");
   assert.match(serverSource, /best_price_label:\s*hasCurrentPrice \? `\$\$\{Number\(row\.best_price\)\.toFixed\(2\)\}`/, "Public product headlines must format the item price without a comparison-unit suffix.");
+  assert.match(serverSource, /Walmart returned the category page, but no supported product listing data was available\./, "Recognized Walmart browse responses without listings need a retailer-specific retry message.");
+  assert.match(serverSource, /WALMART_LISTING_UNAVAILABLE/, "Recognized Walmart browse failures must remain distinct from unsupported-site errors.");
   assert.equal((adminScript.match(/function renderCategoryUrlPreview\(/g) || []).length, 1, "Category imports must have one renderer.");
   assert.match(adminScript, /class="importer-product-row/);
   assert.match(adminScript, /class="importer-edit-panel"[^>]*hidden/);

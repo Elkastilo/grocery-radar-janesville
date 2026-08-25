@@ -17902,7 +17902,15 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       return;
     }
     if (analysis.url_type === "unsupported") {
-      response.status(422).json({ error: "The page was not recognized as an individual product or product listing.", code: "UNSUPPORTED_PAGE", warnings: analysis.warnings || [] });
+      const fetchedHost = (() => { try { return new URL(fetched.url).hostname.toLowerCase(); } catch { return ""; } })();
+      const walmartListingUnavailable = hint === "category" && (fetchedHost === "walmart.com" || fetchedHost.endsWith(".walmart.com"));
+      response.status(422).json({
+        error: walmartListingUnavailable
+          ? "Walmart returned the category page, but no supported product listing data was available. Try the first category page or retry later."
+          : "The page was not recognized as an individual product or product listing.",
+        code: walmartListingUnavailable ? "WALMART_LISTING_UNAVAILABLE" : "UNSUPPORTED_PAGE",
+        warnings: analysis.warnings || []
+      });
       return;
     }
     const extraction = analysis.extraction;
