@@ -4206,7 +4206,7 @@ function renderCategoryUrlPreview(data) {
   bindImporterPreviewImages(preview);
   preview.querySelectorAll("[data-category-product]").forEach((card) => {
     const refreshDisplay = () => {
-      const values = Object.fromEntries(new FormData(card).entries());
+      const values = collectImporterRowData(card);
       const set = (name, value) => card.querySelectorAll(`[data-display="${name}"]`).forEach((node) => { node.textContent = value; node.hidden = !value; });
       set("name", values.name || "Unnamed product");
       set("brand", values.brand || "");
@@ -4246,17 +4246,42 @@ async function analyzeProductUrl(event) {
   finally { button.disabled = false; button.classList.remove("is-loading"); if (buttonLabel) buttonLabel.textContent = "Analyze URL"; }
 }
 
+function collectImporterRowData(row) {
+  if (!row || typeof row.querySelectorAll !== "function") throw new TypeError("An importer product row is required.");
+  const values = {};
+  row.querySelectorAll("[name]").forEach((control) => {
+    const name = String(control.name || "");
+    if (!name) return;
+    if (control.type === "checkbox") {
+      values[name] = Boolean(control.checked);
+      return;
+    }
+    if (control.type === "radio" && !control.checked) return;
+    values[name] = control.value;
+  });
+  values.duplicate_decision = row.dataset?.duplicateDecision || "";
+  values.existing_product_id = row.dataset?.existingProductId || "";
+  values.location_confirmation = row.dataset?.locationConfirmation || "";
+  return values;
+}
+
+function importerApprovalErrorMessage(error) {
+  if (error?.handled || error?.data?.error) return String(error.message || error.data.error);
+  console.error("Product importer approval preparation failed.", error);
+  return "Could not prepare this product for approval. Please try again.";
+}
+
 function categoryImportPayload(card) {
   const category = productUrlAnalysis?.category || {};
   const source = category.products?.[Number(card.dataset.categoryProduct)] || {};
   const fields = source.fields || {};
-  const values = Object.fromEntries(new FormData(card).entries());
+  const values = collectImporterRowData(card);
   return {
     ...values,
     idempotency_key: card.dataset.importKey,
     product_url: values.product_url || fields.product_url || category.source_url,
     image_source_url: fields.image_url || "",
-    use_image_source: Boolean(card.querySelector('input[name="use_image_source"]')?.checked),
+    use_image_source: values.use_image_source === true,
     sku: values.sku || fields.sku || "",
     gtin: values.gtin || fields.gtin || "",
     raw_price_text: fields.raw_price_text || "",
@@ -4322,24 +4347,30 @@ async function approveCategoryImportCard(card, options = {}) {
   const message = productToolsContent.querySelector("[data-product-url-message]");
   const price = positiveImporterPrice(card.querySelector('[name="price"]')?.value);
   if (price === null) { setMessage(message, "Price unavailable — edit this row before approval.", "warning"); card.querySelector("[data-toggle-import-details]")?.click(); return false; }
-  const storeId = card.querySelector('[name="store_id"]')?.value || new FormData(form).get("store_id");
+  const storeId = card.querySelector('[name="store_id"]')?.value || form?.querySelector('.importer-location-controls [name="store_id"]')?.value || "";
   if (!storeId) { setMessage(message, "Choose the exact Grocery Radar store before approval.", "warning"); return false; }
   card.classList.add("is-approving");
   const approveButton = card.querySelector("[data-approve-import]");
   if (approveButton) { approveButton.disabled = true; approveButton.textContent = "Approving…"; }
   try {
     if (!card.dataset.importId) {
-      const pending = await fetchJson("/api/admin/product-url-imports/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [categoryImportPayload(card)], category_source_url: category.source_url, source_timestamp: category.extracted_at, retailer_name: category.retailer?.retailer_name || "", store_id: storeId, price_location_confidence: new FormData(form).get("price_location_confidence"), location_evidence_text: category.location?.evidence || "" }) });
-      if (!pending.imports?.[0]?.import_id) throw new Error(pending.failures?.[0]?.error || "The reviewed import could not be prepared.");
+      const locationConfidence = form?.querySelector('.importer-location-controls [name="price_location_confidence"]')?.value || "unknown";
+      const pending = await fetchJson("/api/admin/product-url-imports/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [categoryImportPayload(card)], category_source_url: category.source_url, source_timestamp: category.extracted_at, retailer_name: category.retailer?.retailer_name || "", store_id: storeId, price_location_confidence: locationConfidence, location_evidence_text: category.location?.evidence || "" }) });
+      if (!pending.imports?.[0]?.import_id) throw Object.assign(new Error(pending.failures?.[0]?.error || "The reviewed import could not be prepared."), { handled: true });
       card.dataset.importId = String(pending.imports[0].import_id);
     }
-    const approve = async (confirmLocation) => fetchJson(`/api/admin/product-url-imports/${card.dataset.importId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm_location: confirmLocation, duplicate_decision: card.dataset.duplicateDecision || "", existing_product_id: card.dataset.existingProductId || "" }) });
+    if (options.confirmLocation === true) card.dataset.locationConfirmation = "admin_confirmed";
+    const approve = async (confirmLocation) => {
+      const values = collectImporterRowData(card);
+      return fetchJson(`/api/admin/product-url-imports/${card.dataset.importId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm_location: confirmLocation, duplicate_decision: values.duplicate_decision, existing_product_id: values.existing_product_id }) });
+    };
     let data;
     try { data = await approve(options.confirmLocation === true); }
     catch (error) {
       if (error.data?.code === "LOCATION_CONFIRMATION_REQUIRED" && !options.bulk) {
         const confirmed = window.confirm(`${error.message}\n\nThis records your confirmation as the administrator; it does not claim the retailer proved the location.`);
         if (!confirmed) throw error;
+        card.dataset.locationConfirmation = "admin_confirmed";
         data = await approve(true);
       } else if (error.data?.code === "DUPLICATE_DECISION_REQUIRED" || error.data?.code === "DUPLICATE_SELECTION_REQUIRED") {
         renderImporterDuplicateDecision(card, error.data.duplicate_candidates || []);
@@ -4350,9 +4381,10 @@ async function approveCategoryImportCard(card, options = {}) {
     setMessage(message, data.message, data.image?.status === "approved" ? "success" : "warning");
     return true;
   } catch (error) {
+    const displayError = importerApprovalErrorMessage(error);
     const result = card.querySelector("[data-import-result]");
-    if (result) { result.hidden = false; result.className = "importer-row-result is-error"; result.textContent = error.message; }
-    if (!error.handled) setMessage(message, error.message, "error");
+    if (result) { result.hidden = false; result.className = "importer-row-result is-error"; result.textContent = displayError; }
+    if (!error.handled) setMessage(message, displayError, "error");
     return false;
   } finally {
     card.classList.remove("is-approving");

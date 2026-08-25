@@ -15,6 +15,21 @@ const stores = [
   { id: 3, name: "Woodman's Food Market", city: "Janesville", state: "WI" }
 ];
 
+function loadNamedFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `${name} must exist.`);
+  const bodyStart = source.indexOf("{", start);
+  let depth = 0;
+  let end = -1;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) { end = index + 1; break; }
+  }
+  assert.ok(end > bodyStart, `${name} must have a complete function body.`);
+  return Function(`"use strict"; ${source.slice(start, end)}; return ${name};`)();
+}
+
 async function expectCode(promise, code) {
   await assert.rejects(promise, (error) => error instanceof SafeFetchError && error.code === code);
 }
@@ -227,6 +242,61 @@ async function main() {
   assert.match(adminScript, /data-approve-import/);
   assert.match(adminScript, /Approve selected/);
   assert.match(adminScript, /product-url-imports\/\$\{card\.dataset\.importId\}\/approve/);
+  assert.doesNotMatch(adminScript, /new FormData\(card\)/, "Importer product articles must never be passed to FormData.");
+  assert.doesNotMatch(adminScript, /new FormData\((?:preview|result|container)\)/, "Bulk importer containers must never be passed to FormData.");
+  assert.match(adminScript, /function collectImporterRowData\(/);
+  assert.match(adminScript, /approveCategoryImportCard\(card, \{ confirmLocation: true, bulk: true \}\)/, "Bulk approval must reuse per-row approval logic.");
+  const approvalFlowSource = adminScript.slice(adminScript.indexOf("async function approveCategoryImportCard("), adminScript.indexOf("async function saveCategoryUrlImports("));
+  assert.doesNotMatch(approvalFlowSource, /new FormData\(/, "Per-row approval must serialize canonical row state, not a DOM container.");
+  const bulkFlowSource = adminScript.slice(adminScript.indexOf("async function saveCategoryUrlImports("), adminScript.indexOf("async function saveProductUrlImport("));
+  assert.match(bulkFlowSource, /for \(const card of readyCards\)[\s\S]*await approveCategoryImportCard\(/, "Bulk approval must process rows through the shared approval function.");
+  assert.match(bulkFlowSource, /if \(result\) approved \+= 1; else failed \+= 1;/, "A failed row must not abort remaining bulk approvals.");
+  assert.match(adminScript, /Could not prepare this product for approval\. Please try again\./);
+  const collectImporterRowData = loadNamedFunction(adminScript, "collectImporterRowData");
+  const controls = [
+    { name: "selected", type: "checkbox", checked: true, value: "on" },
+    { name: "name", type: "text", value: "Fresh Strawberries — edited" },
+    { name: "brand", type: "text", value: "Farm Brand" },
+    { name: "price", type: "number", value: "2.46" },
+    { name: "regular_price", type: "number", value: "2.98" },
+    { name: "size_text", type: "text", value: "1 lb Container" },
+    { name: "quantity", type: "number", value: "1" },
+    { name: "item_size", type: "number", value: "1" },
+    { name: "unit", type: "text", value: "lb" },
+    { name: "store_id", type: "select-one", value: "17" },
+    { name: "use_image_source", type: "checkbox", checked: false, value: "on" }
+  ];
+  const collected = collectImporterRowData({
+    dataset: { duplicateDecision: "use_existing", existingProductId: "91", locationConfirmation: "admin_confirmed" },
+    querySelectorAll(selector) { assert.equal(selector, "[name]"); return controls; }
+  });
+  assert.deepEqual(collected, {
+    selected: true,
+    name: "Fresh Strawberries — edited",
+    brand: "Farm Brand",
+    price: "2.46",
+    regular_price: "2.98",
+    size_text: "1 lb Container",
+    quantity: "1",
+    item_size: "1",
+    unit: "lb",
+    store_id: "17",
+    use_image_source: false,
+    duplicate_decision: "use_existing",
+    existing_product_id: "91",
+    location_confirmation: "admin_confirmed"
+  }, "Canonical importer state must retain edited price, package, store, duplicate, and location values.");
+  const importerApprovalErrorMessage = loadNamedFunction(adminScript, "importerApprovalErrorMessage");
+  const originalConsoleError = console.error;
+  const loggedApprovalErrors = [];
+  console.error = (...args) => loggedApprovalErrors.push(args);
+  try {
+    assert.equal(importerApprovalErrorMessage(new TypeError("FormData constructor: invalid row")), "Could not prepare this product for approval. Please try again.");
+    assert.equal(importerApprovalErrorMessage(Object.assign(new Error("Possible duplicate — choose a match."), { handled: true })), "Possible duplicate — choose a match.");
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(loggedApprovalErrors.length, 1, "Unexpected approval implementation errors should be logged once without reaching the UI.");
   assert.doesNotMatch(adminScript, /fields\.(?:description|retailer_description)\s*\|\|\s*fields\.raw_size_text/);
   const adminStyle = fs.readFileSync(path.join(__dirname, "..", "public", "style.css"), "utf8");
   assert.match(adminStyle, /\.importer-package strong[^}]*-webkit-line-clamp:\s*2/);
