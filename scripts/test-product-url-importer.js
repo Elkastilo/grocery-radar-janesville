@@ -7,6 +7,7 @@ const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, pac
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
 const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
+const { STATUS, retailerDefinition, classifyUrl, resolveAdapter, supportMatrix } = require("../src/importers/registry");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("../src/retailerStores");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
 
@@ -63,6 +64,35 @@ async function main() {
   assert.equal(woodmans.fields.price, 2.99);
   assert.equal(woodmans.retailer.store_id, 3);
   assert.equal(analyzePage(fixture("walmart-jsonld.html"), "https://www.walmart.com/ip/123", stores).url_type, "product");
+
+  assert.equal(retailerDefinition("https://www.target.com/p/-/A-123").id, "target");
+  assert.equal(classifyUrl("https://www.target.com/s/milk?page=2"), "search");
+  assert.equal(classifyUrl("https://www.walmart.com/store/1305-janesville-wi/produce-market"), "store_category");
+  assert.equal(resolveAdapter("https://festivalfoods.net/specials/search/?page=2").adapter, "festival");
+  const matrix = supportMatrix();
+  assert.equal(matrix.find((entry) => entry.retailer === "walmart").store_price, STATUS.SUPPORTED);
+  assert.equal(matrix.find((entry) => entry.retailer === "target").category, STATUS.UNAVAILABLE);
+  assert.equal(matrix.find((entry) => entry.retailer === "santamaria").product, STATUS.UNTESTED);
+
+  const hyvee = extractProduct(fixture("hyvee-product.html"), "https://www.hy-vee.com/aisles-online/p/23935/hy-vee-1-lowfat-milk-half-gallon", [...stores, { id: 4, name: "Hy-Vee Janesville", city: "Janesville", state: "WI" }]);
+  assert.equal(hyvee.fields.name, "Hy-Vee 1% Lowfat Milk Half Gallon");
+  assert.equal(hyvee.fields.price, 2.79);
+  assert.equal(hyvee.fields.gtin, "0075450097010");
+  assert.equal(hyvee.retailer.retailer, "hyvee");
+
+  const festival = analyzePage(fixture("festival-listing.html"), "https://cart.festivalfoods.net/dept/?page=2", [...stores, { id: 5, name: "Festival Foods Janesville", city: "Janesville", state: "WI" }], { maxProducts: 10 });
+  assert.equal(festival.url_type, "category");
+  assert.equal(festival.adapter, "festival");
+  assert.equal(festival.page_type, "category");
+  assert.equal(festival.products.length, 2);
+  assert.equal(festival.products[0].fields.sku, "64575");
+  assert.equal(festival.products[0].fields.price, 4.49);
+  assert.equal(festival.products[0].fields.sell_unit, "each");
+  assert.equal(festival.products[1].fields.raw_size_text, "16 oz");
+
+  const itemList = analyzePage(fixture("generic-item-list.html"), "https://grocer.example.test/category/pantry?page=3", stores, { maxProducts: 10 });
+  assert.equal(itemList.products.length, 1, "Generic fallback must accept explicit Schema.org Product entries and ignore unrelated ItemList things.");
+  assert.equal(itemList.products[0].fields.price, 1.29);
 
   assert.equal(categoryUrlHint("https://www.walmart.com/browse/food/fresh-fruits/123"), "category");
   assert.equal(categoryUrlHint("https://www.walmart.com/ip/bananas/1001"), "product");

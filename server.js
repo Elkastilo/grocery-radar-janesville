@@ -15,8 +15,18 @@ const { findDuplicateCandidates, parsePrice, normalizeRetailerText } = require("
 const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, analyzePage, mergeWalmartStoreAnalysis } = require("./src/categoryImporter");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("./src/retailerStores");
 const { parseWalmartStoreUrl } = require("./src/importers/walmart");
+const { resolveAdapter, supportMatrix } = require("./src/importers/registry");
 let tesseract = null;
 let sharp = null;
+
+function logImporterDiagnostic(analysis, fetched, status, errorCode = "") {
+  if (process.env.IMPORTER_DIAGNOSTICS !== "1" && status === "ok") return;
+  let finalUrl;
+  try { finalUrl = new URL(fetched?.url || analysis?.source_url || ""); } catch { finalUrl = null; }
+  const payload = { retailer: analysis?.retailer?.retailer || resolveAdapter(fetched?.url).retailer?.id || "unknown", adapter: analysis?.adapter || resolveAdapter(fetched?.url).adapter, page_type: analysis?.page_type || analysis?.url_type || "unsupported", status, final_host: finalUrl?.hostname || "", final_path: finalUrl?.pathname || "", response_bytes: Buffer.byteLength(fetched?.body || ""), collection_selected: analysis?.products?.[0]?.methods_used?.[0] || "", products_discovered: Number(analysis?.detected_count || analysis?.products?.length || 0), priced_count: Number(analysis?.priced_count || 0), error_code: errorCode };
+  const method = status === "ok" ? "info" : "warn";
+  console[method]("product_importer_analysis", JSON.stringify(payload));
+}
 
 try {
   tesseract = require("tesseract.js");
@@ -17834,6 +17844,10 @@ app.post("/api/admin/suggestions/:id/status", requireAdminAccess, requireLoggedI
 
 app.get("/api/admin/product-url-imports/image-preview", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductImagePreviews, asyncRoute(createProductImagePreviewHandler()));
 
+app.get("/api/admin/product-url-imports/support", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), (request, response) => {
+  response.json({ retailers: supportMatrix(), statuses: ["SUPPORTED", "PARTIAL", "UNAVAILABLE", "UNTESTED"] });
+});
+
 app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitUrlImportAnalysis, asyncRoute(async (request, response) => {
   const requestedUrl = cleanText(request.body.url, 2000);
   if (!requestedUrl) {
@@ -17847,6 +17861,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     const hint = categoryUrlHint(requestedUrl);
     const fetched = hint === "category" ? await safeCategoryRemoteFetch(requestedUrl) : await safeRemoteFetch(requestedUrl);
     const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts });
+    const adapterResolution = resolveAdapter(fetched.url);
     if (analysis.url_type === "category") {
       const selectedStore = stores.find((store) => Number(store.id) === Number(analysis.retailer?.store_id));
       const retailerStore = groceryStoreRetailerMetadata(selectedStore);
@@ -17899,16 +17914,23 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
         limits: { allowed_product_counts: CATEGORY_PRODUCT_CHOICES, maximum_products: MAX_CATEGORY_PRODUCTS, response_bytes: CATEGORY_DEFAULTS.maxBytes, automatic_enrichment_requests: CATEGORY_ENRICHMENT_MAX_REQUESTS, enrichment_concurrency: CATEGORY_ENRICHMENT_CONCURRENCY },
         image_policy: "Retailer images are fetched through a bounded SSRF-safe sanitizer for same-origin previews. Only selected images are stored as private pending assets."
       });
+      logImporterDiagnostic(analysis, fetched, "ok");
       return;
     }
     if (analysis.url_type === "unsupported") {
-      const fetchedHost = (() => { try { return new URL(fetched.url).hostname.toLowerCase(); } catch { return ""; } })();
-      const walmartListingUnavailable = hint === "category" && (fetchedHost === "walmart.com" || fetchedHost.endsWith(".walmart.com"));
+      const recognizedListing = hint === "category" && adapterResolution.retailer;
+      const capability = adapterResolution.retailer?.capabilities?.[adapterResolution.page_type === "store_category" ? "category" : adapterResolution.page_type];
+      const errorCode = recognizedListing
+        ? adapterResolution.retailer.id === "walmart" ? "WALMART_LISTING_UNAVAILABLE" : capability === "UNAVAILABLE" ? "RETAILER_DYNAMIC_CONTENT_UNAVAILABLE" : `${adapterResolution.retailer.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_LISTING_UNAVAILABLE`
+        : "UNSUPPORTED_PAGE";
+      logImporterDiagnostic(analysis, fetched, "unavailable", errorCode);
       response.status(422).json({
-        error: walmartListingUnavailable
-          ? "Walmart returned the category page, but no supported product listing data was available. Try the first category page or retry later."
+        error: recognizedListing
+          ? adapterResolution.retailer.id === "walmart"
+            ? "Walmart returned the category page, but no supported product listing data was available. Try the first category page or retry later."
+            : `${adapterResolution.retailer.label} returned the page, but no supported product listing data was available. You can retry later or create the product manually.`
           : "The page was not recognized as an individual product or product listing.",
-        code: walmartListingUnavailable ? "WALMART_LISTING_UNAVAILABLE" : "UNSUPPORTED_PAGE",
+        code: errorCode,
         warnings: analysis.warnings || []
       });
       return;

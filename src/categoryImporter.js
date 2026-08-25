@@ -2,6 +2,9 @@
 
 const { parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct } = require("./productImporter");
 const { extractWalmartCategory, parseWalmartStoreUrl, mergeWalmartStorePrices } = require("./importers/walmart");
+const { resolveAdapter } = require("./importers/registry");
+const { extractGenericListing } = require("./importers/generic");
+const { extractFestivalListing } = require("./importers/festival");
 
 const MAX_CATEGORY_PRODUCTS = 50;
 const CATEGORY_PRODUCT_CHOICES = Object.freeze([10, 25, 50]);
@@ -140,12 +143,10 @@ async function enrichCategoryAnalysis(analysis, options = {}) {
 }
 
 function categoryUrlHint(input) {
-  let url;
-  try { url = new URL(String(input || "")); } catch { return "unsupported"; }
-  const path = url.pathname.toLowerCase();
-  if (/\/(?:ip|product|p)\//.test(path) || /\/dp\//.test(path)) return "product";
-  if (/^\/store\/\d+-[a-z0-9-]+\/[a-z0-9-]+\/?$/i.test(path) || /\/(?:browse|category|categories|search|collections?|aisle)(?:\/|$)/.test(path) || url.searchParams.has("q") || url.searchParams.has("query")) return "category";
-  return "unknown";
+  const pageType = resolveAdapter(input).page_type;
+  if (pageType === "product") return "product";
+  if (["category", "search", "department", "store_category", "listing"].includes(pageType)) return "category";
+  return pageType === "unsupported" ? "unknown" : pageType;
 }
 
 function scriptJson(html, warnings, deadline) {
@@ -159,90 +160,6 @@ function scriptJson(html, warnings, deadline) {
     try { values.push(JSON.parse(match[2].trim())); } catch { warnings.push("One serialized-data script was malformed and ignored."); }
   }
   return values;
-}
-
-function safeUrl(value, baseUrl) {
-  if (!String(value || "").trim()) return "";
-  try {
-    const url = new URL(String(value || ""), baseUrl);
-    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : "";
-  } catch { return ""; }
-}
-
-function genericProduct(value, pageUrl, method = "generic_serialized_data") {
-  const name = clean(value.name || value.productName || value.title, 200);
-  if (!name) return null;
-  const offer = Array.isArray(value.offers) ? value.offers[0] || {} : value.offers || {};
-  const price = parsePrice(offer.price ?? offer.lowPrice ?? value.currentPrice ?? value.price?.value ?? value.price);
-  const regular = parsePrice(offer.regularPrice ?? offer.originalPrice ?? value.regularPrice ?? value.originalPrice);
-  const sizeText = normalizeRetailerText(value.size || value.packageSize || value.weight, 120);
-  const pkg = normalizePackage(sizeText);
-  const imageValue = Array.isArray(value.image) ? value.image[0] : value.image;
-  const imageUrl = safeUrl(typeof imageValue === "string" ? imageValue : imageValue?.url || imageValue?.contentUrl || value.imageUrl, pageUrl);
-  const productUrl = safeUrl(offer.url || value.url || value.productUrl || value.canonicalUrl, pageUrl);
-  return {
-    fields: {
-      name, brand: clean(typeof value.brand === "string" ? value.brand : value.brand?.name || value.brandName, 100),
-      price, regular_price: regular !== null && price !== null && regular > price ? regular : null,
-      quantity: pkg.quantity, item_size: pkg.item_size, unit: pkg.unit, package_type: pkg.package_type, raw_size_text: pkg.raw_text,
-      raw_price_text: clean(offer.price ?? offer.lowPrice ?? value.currentPrice ?? value.price, 120),
-      unit_price: parsePrice(value.unitPrice || offer.unitPrice), image_url: imageUrl, product_url: productUrl,
-      sku: clean(value.sku || value.itemId || value.productId, 100), gtin: clean(value.gtin14 || value.gtin13 || value.gtin12 || value.gtin || value.upc, 40),
-      availability: clean(offer.availability || value.availability, 120).split("/").pop(), retailer_description: clean(value.shortDescription || value.description, 500)
-    },
-    confidence: {
-      name: "high", price: price === null ? "unknown" : "high", brand: value.brand || value.brandName ? "medium" : "unknown",
-      raw_size_text: sizeText ? "medium" : "unknown", quantity: sizeText ? "medium" : "unknown", item_size: sizeText ? "medium" : "unknown", unit: sizeText ? "medium" : "unknown", package_type: pkg.package_type ? "medium" : "unknown",
-      image_url: imageUrl ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: value.sku || value.itemId || value.productId ? "medium" : "unknown",
-      gtin: value.gtin || value.gtin12 || value.gtin13 || value.gtin14 || value.upc ? "high" : "unknown", unit_price: value.unitPrice || offer.unitPrice ? "medium" : "unknown",
-      availability: offer.availability || value.availability ? "medium" : "unknown"
-    },
-    methods_used: [method], overall_confidence: price === null ? "medium" : "high", category_relevance: method === "html_product_card" ? "low" : "medium", selected_by_default: method !== "html_product_card",
-    warnings: [price === null ? "Price was not present for this listing item." : "", imageUrl ? "" : "Image source was not present."].filter(Boolean)
-  };
-}
-
-function genericStructuredProducts(jsonValues, context) {
-  const output = [];
-  const seen = new Set();
-  let visited = 0;
-  const walk = (value, depth = 0) => {
-    if (output.length >= context.maxProducts || depth > 35 || value === null || typeof value !== "object") return;
-    visited += 1;
-    if ((visited & 255) === 0 && Date.now() > context.deadline) throw context.timeoutError();
-    if (!Array.isArray(value)) {
-      const types = (Array.isArray(value["@type"]) ? value["@type"] : [value["@type"]]).filter(Boolean).map((entry) => String(entry).toLowerCase());
-      const looksLikeProduct = types.includes("product") || ((value.name || value.productName || value.title) && (value.offers || value.price !== undefined || value.currentPrice !== undefined) && (value.url || value.productUrl || value.sku || value.itemId || value.image || value.imageUrl));
-      if (looksLikeProduct) {
-        const item = genericProduct(value, context.pageUrl, types.includes("product") ? "json_ld" : "generic_serialized_data");
-        const key = item && (item.fields.gtin || item.fields.sku || item.fields.product_url || `${item.fields.name}|${item.fields.price}`);
-        if (item && !seen.has(key)) { seen.add(key); output.push(item); }
-      }
-    }
-    if (output.length >= context.maxProducts) return;
-    if (Array.isArray(value)) value.forEach((entry) => walk(entry, depth + 1));
-    else Object.values(value).forEach((entry) => walk(entry, depth + 1));
-  };
-  jsonValues.forEach((value) => walk(value));
-  return output;
-}
-
-function htmlCardProducts(html, context, existingKeys) {
-  const output = [];
-  const cards = html.match(/<(?:article|li)\b[^>]*(?:data-item-id|data-product-id|class=["'][^"']*product)[^>]*>[\s\S]*?<\/(?:article|li)>/gi) || [];
-  for (const card of cards) {
-    if (output.length >= context.maxProducts || Date.now() > context.deadline) break;
-    const title = card.match(/(?:aria-label|title)=["']([^"']{2,200})["']/i)?.[1] || card.match(/<h[2-4]\b[^>]*>([\s\S]*?)<\/h[2-4]>/i)?.[1]?.replace(/<[^>]+>/g, " ");
-    const priceText = card.match(/\$\s*\d+(?:\.\d{1,2})?/)?.[0];
-    if (!title) continue;
-    const href = card.match(/<a\b[^>]*href=["']([^"']+)["']/i)?.[1];
-    const image = card.match(/<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i)?.[1];
-    const size = clean(card.replace(/<[^>]+>/g, " "), 500).match(/\b\d+(?:\.\d+)?\s*(?:fl\s*oz|oz|lb|kg|g|ml|l|gal|gallon|ct|count)\b/i)?.[0] || "";
-    const item = genericProduct({ name: clean(title, 200), price: priceText, url: href, image, size }, context.pageUrl, "html_product_card");
-    const key = item.fields.product_url || `${item.fields.name}|${item.fields.price}`;
-    if (!existingKeys.has(key)) { existingKeys.add(key); item.overall_confidence = "low"; Object.keys(item.confidence).forEach((field) => { if (item.confidence[field] !== "unknown") item.confidence[field] = "low"; }); output.push(item); }
-  }
-  return output;
 }
 
 function pageTitle(html) {
@@ -264,23 +181,18 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   const warnings = [];
   const context = { pageUrl, maxProducts, deadline, timeoutError: () => new CategoryImportError("CATEGORY_PARSE_TIMEOUT", "Category page parsing exceeded the safety time limit.") };
   const values = scriptJson(html, warnings, deadline);
-  const hostname = new URL(pageUrl).hostname.toLowerCase();
-  let adapter = "generic";
+  const resolution = resolveAdapter(pageUrl);
+  const adapter = resolution.adapter;
   let products = [];
-  if (hostname === "walmart.com" || hostname.endsWith(".walmart.com")) {
-    adapter = "walmart";
+  if (adapter === "walmart") {
     products = extractWalmartCategory(values, context);
+  } else if (adapter === "festival") {
+    products = extractFestivalListing(html, context);
+  } else {
+    products = extractGenericListing(values, context);
   }
-  // A recognized Walmart listing collection is authoritative for the supplied browse page.
-  // Do not top it up by recursively harvesting recommendation/navigation state.
-  if (adapter !== "walmart" || !products.length) {
-    const existing = new Set(products.map((item) => item.fields.gtin || item.fields.sku || item.fields.product_url || `${item.fields.name}|${item.fields.price}`));
-    for (const item of genericStructuredProducts(values, context)) {
-      const key = item.fields.gtin || item.fields.sku || item.fields.product_url || `${item.fields.name}|${item.fields.price}`;
-      if (!existing.has(key) && products.length < maxProducts) { existing.add(key); products.push(item); }
-    }
-    if (products.length < maxProducts) products.push(...htmlCardProducts(html, { ...context, maxProducts: maxProducts - products.length }, existing));
-  }
+  // Retailer adapters and schema.org ItemList/Product collections are authoritative.
+  // Never recursively harvest arbitrary application state or recommendation modules.
   if (Date.now() > deadline) throw context.timeoutError();
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
@@ -295,7 +207,8 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");
   if (products.length >= maxProducts) warnings.push(`Detection stopped at the selected ${maxProducts}-product limit.`);
   if (!products.length) warnings.push("No safely parseable product listing items were detected.");
-  return { url_type: products.length ? "category" : "unsupported", source_type: walmartStore ? "walmart_store_category" : "category", walmart_store: walmartStore, source_url: pageUrl, extracted_at: new Date().toISOString(), category_title: pageTitle(html), adapter, retailer, location, products: products.slice(0, maxProducts), detected_count: Math.min(products.length, maxProducts), max_products: maxProducts, pagination_likely: paginationLikely, warnings };
+  const pricedCount = products.filter((item) => parsePrice(item.fields?.price) !== null).length;
+  return { url_type: products.length ? "category" : "unsupported", page_type: resolution.page_type, source_type: walmartStore ? "walmart_store_category" : resolution.page_type === "search" ? "search" : "category", walmart_store: walmartStore, source_url: pageUrl, extracted_at: new Date().toISOString(), category_title: pageTitle(html), adapter, adapter_label: resolution.retailer?.label || "Generic structured data", capabilities: resolution.retailer?.capabilities || null, retailer, location, products: products.slice(0, maxProducts), detected_count: Math.min(products.length, maxProducts), priced_count: Math.min(pricedCount, maxProducts), max_products: maxProducts, pagination_likely: paginationLikely, warnings };
 }
 
 function mergeWalmartStoreAnalysis(discovery, storeAnalysis, expectedStore) {

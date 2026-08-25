@@ -1,14 +1,6 @@
 const CONFIDENCE = Object.freeze({ unknown: 0, low: 1, medium: 2, high: 3 });
-const DOMAIN_RETAILERS = Object.freeze([
-  { domains: ["walmart.com"], names: ["walmart"] },
-  { domains: ["aldi.us"], names: ["aldi"] },
-  { domains: ["woodmans-food.com", "shopwoodmans.com"], names: ["woodman's", "woodmans"] },
-  { domains: ["picknsave.com"], names: ["pick 'n save", "pick n save", "picknsave"] },
-  { domains: ["hy-vee.com"], names: ["hy-vee", "hy vee"] },
-  { domains: ["festivalfoods.net"], names: ["festival foods"] },
-  { domains: ["target.com"], names: ["target"] },
-  { domains: ["meijer.com"], names: ["meijer"] }
-]);
+const { RETAILERS, retailerDefinition } = require("./importers/registry");
+const DOMAIN_RETAILERS = Object.freeze(RETAILERS.filter((entry) => entry.domains.length).map((entry) => ({ domains: entry.domains, names: [entry.label.toLowerCase(), entry.id] })));
 
 function text(value, limit = 500) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit);
@@ -200,13 +192,14 @@ function applyField(result, name, value, confidence, method) {
 
 function detectRetailer(urlInput, structuredName, stores = []) {
   const hostname = new URL(urlInput).hostname.toLowerCase().replace(/^www\./, "");
+  const definition = retailerDefinition(urlInput);
   const mapping = DOMAIN_RETAILERS.find((entry) => entry.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`)));
   const names = [...(mapping?.names || []), text(structuredName, 120).toLowerCase()].filter(Boolean);
   const store = stores.find((candidate) => names.some((name) => {
     const storeName = text(candidate.name, 120).toLowerCase().replace(/[’]/g, "'");
     return storeName.includes(name) || name.includes(storeName);
   })) || null;
-  return { hostname, recognized: Boolean(mapping || store), retailer_name: store?.name || (mapping ? mapping.names[0].replace(/\b\w/g, (letter) => letter.toUpperCase()) : text(structuredName, 120)), store_id: store?.id || null };
+  return { hostname, recognized: Boolean(definition || store), retailer: definition?.id || "", retailer_name: store?.name || definition?.label || text(structuredName, 120), store_id: store?.id || null, adapter: definition?.adapter || "generic", capabilities: definition?.capabilities || null };
 }
 
 function locationAssessment(html, store) {
