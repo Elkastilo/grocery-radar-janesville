@@ -10,6 +10,10 @@ export const productSize = (product, report) => product?.default_size_text || re
 
 export const isRenderableProduct = (product) => Boolean(product && typeof product === 'object' && product.id && product.display_name)
 
+export const shopperProductImageUrl = (item = {}) => item?.image_url || item?.product_image_url || item?.photo_url || ''
+
+export const shopperProductImageAlt = (item = {}, label = 'Product') => item?.image_alt_text || item?.product_image_alt_text || item?.image_alt || `${label} product image`
+
 export const productCardViewModel = (product, bestReport) => {
   const safeProduct = product && typeof product === 'object' ? product : {}
   const hasCurrentPrice = numericPrice(safeProduct.best_price) !== null && Boolean(
@@ -23,6 +27,6 @@ export const productCardViewModel = (product, bestReport) => {
     category: safeProduct.category || 'other',
     size: productSize(safeProduct, bestReport),
     hasCurrentPrice,
-    imageUrl: safeProduct.image_url || safeProduct.product_image_url || safeProduct.photo_url || ''
+    imageUrl: shopperProductImageUrl(safeProduct)
   }
 }

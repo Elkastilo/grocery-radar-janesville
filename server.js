@@ -521,6 +521,10 @@ function calculateConfidence(proofType, verificationCount, disputeCount) {
 }
 
 function formatReport(row) {
+  const shopperImage = shopperProductImage(row, {
+    idField: "product_image_id",
+    altField: "product_image_alt_text"
+  });
   return {
     id: row.id,
     user_id: row.user_id,
@@ -533,6 +537,9 @@ function formatReport(row) {
     product_display_name: row.product_display_name || "",
     product_status: row.product_status || "",
     product_default_size_text: row.product_default_size_text || "",
+    product_image_id: shopperImage.id,
+    product_image_url: shopperImage.url,
+    product_image_alt_text: shopperImage.altText,
     username: row.username,
     category: row.category,
     price: Number(row.price),
@@ -1794,6 +1801,10 @@ async function ensureSubmissionOutcome(batchId, reviewerId, options = {}) {
 }
 
 function formatProduct(row) {
+  const shopperImage = shopperProductImage(row, {
+    idField: "image_id",
+    altField: "image_alt_text"
+  });
   const hasCurrentPrice = row.best_price !== null && row.best_price !== undefined;
   return {
     id: row.id,
@@ -1841,13 +1852,39 @@ function formatProduct(row) {
     best_price_freshness: hasCurrentPrice ? publicFreshnessLabel({ source_date: row.best_source_date, submitted_at: row.best_reported_at, proof_type: row.best_proof_type, expires_at: row.best_expires_at }) : "",
     best_store_location: hasCurrentPrice ? publicStoreProductLocation(row.best_store_location) : null,
     other_store_price_count: Number(row.other_store_price_count || 0),
-    image_id: row.image_id || null,
-    image_url: row.image_id ? `/api/product-images/${row.image_id}/file` : "",
-    image_alt_text: row.image_alt_text || "",
+    image_id: shopperImage.id,
+    image_url: shopperImage.url,
+    image_alt_text: shopperImage.altText,
     last_reported_at: row.last_reported_at || "",
     created_at: row.created_at,
     updated_at: row.updated_at
   };
+}
+
+function shopperProductImage(row, options = {}) {
+  const imageId = Number(row?.[options.idField || "image_id"]);
+  return {
+    id: Number.isInteger(imageId) && imageId > 0 ? imageId : null,
+    url: Number.isInteger(imageId) && imageId > 0 ? `/api/product-images/${imageId}/file` : "",
+    altText: cleanText(row?.[options.altField || "image_alt_text"], 240)
+  };
+}
+
+function approvedShopperImageSelect(productIdExpression, options = {}) {
+  const idAlias = options.idAlias || "image_id";
+  const altAlias = options.altAlias || "image_alt_text";
+  const approvedOrder = "product_images.is_primary DESC, product_images.id ASC";
+  return `
+    (
+      SELECT product_images.id FROM product_images
+      WHERE product_images.product_id = ${productIdExpression} AND product_images.status = 'approved'
+      ORDER BY ${approvedOrder} LIMIT 1
+    ) AS ${idAlias},
+    (
+      SELECT product_images.alt_text FROM product_images
+      WHERE product_images.product_id = ${productIdExpression} AND product_images.status = 'approved'
+      ORDER BY ${approvedOrder} LIMIT 1
+    ) AS ${altAlias}`;
 }
 
 async function enrichProductsWithBestStoreLocations(rows = []) {
@@ -1884,16 +1921,7 @@ function productSelectColumns(alias = "products") {
   const order = `COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price) ASC, price_reports.submitted_at DESC`;
   return `
     ${alias}.*,
-    (
-      SELECT product_images.id FROM product_images
-      WHERE product_images.product_id = ${alias}.id AND product_images.status = 'approved'
-      ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
-    ) AS image_id,
-    (
-      SELECT product_images.alt_text FROM product_images
-      WHERE product_images.product_id = ${alias}.id AND product_images.status = 'approved'
-      ORDER BY product_images.is_primary DESC, product_images.id ASC LIMIT 1
-    ) AS image_alt_text,
+    ${approvedShopperImageSelect(`${alias}.id`)},
     (
       SELECT COUNT(DISTINCT price_reports.store_id)
       FROM price_reports
@@ -2275,7 +2303,8 @@ function reportSelectWithProduct() {
       products.default_size_text AS product_default_size_text,
       products.default_unit AS product_default_unit,
       products.generic_product_type AS generic_product_type,
-      products.product_attributes_json AS product_attributes_json
+      products.product_attributes_json AS product_attributes_json,
+      ${approvedShopperImageSelect("products.id", { idAlias: "product_image_id", altAlias: "product_image_alt_text" })}
     FROM price_reports pr
     JOIN stores ON stores.id = pr.store_id
     JOIN users ON users.id = pr.user_id

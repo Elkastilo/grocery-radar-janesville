@@ -4,11 +4,22 @@
 
 @layer base {
   :root {
+    --gr-background: #f4f7f5;
+    --gr-surface: #ffffff;
+    --gr-surface-muted: #f8faf9;
+    --gr-border: #dfe7e2;
+    --gr-text: #0f1f17;
+    --gr-muted: #5c6f64;
+    --gr-brand: #047857;
+    --gr-brand-hover: #065f46;
+    --gr-success: #047857;
+    --gr-warning: #b45309;
+    --gr-danger: #be123c;
     font-family:
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
-    color: #0f172a;
-    background: #f8fafc;
+    color: var(--gr-text);
+    background: var(--gr-background);
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -24,7 +35,7 @@
     min-height: 100svh;
     margin: 0;
     overflow-x: hidden;
-    background: #f8fafc;
+    background: var(--gr-background);
     line-height: 1.5;
   }
 
@@ -64,7 +75,7 @@
 
 @layer components {
   .safe-bottom {
-    padding-bottom: calc(7.5rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(8.5rem + env(safe-area-inset-bottom));
   }
 
   .scrollbar-none {
@@ -81,6 +92,132 @@
 
   .surface-card {
     @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 28px rgb(15 23 42 / 0.035);
+  }
+
+  .product-card {
+    @apply transition duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-md;
+  }
+
+  .season-fall {
+    --season-accent: #c75b1c;
+    --season-accent-soft: #ffedd5;
+    --season-surface: #fffaf0;
+    --season-warm: #d99a28;
+    --season-decoration: #8a4b22;
+    --season-cream: #fbf7ef;
+  }
+
+  .shopper-shell {
+    background: linear-gradient(180deg, var(--season-cream) 0, var(--gr-background) 30rem);
+  }
+
+  .product-image-frame {
+    background: var(--season-surface);
+  }
+
+  .seasonal-hero {
+    background: linear-gradient(115deg, #065f46 0%, #047857 68%, #7c3f1d 140%);
+  }
+
+  .seasonal-badge {
+    color: #fff7ed;
+    background: rgb(124 63 29 / 0.42);
+  }
+
+  .seasonal-cta {
+    color: #422006;
+    background: #fde68a;
+    box-shadow: 0 8px 24px rgb(66 32 6 / 0.16);
+  }
+
+  .seasonal-cta:hover {
+    background: #fcd34d;
+  }
+
+  .seasonal-leaf {
+    position: absolute;
+    color: #fbbf24;
+    opacity: 0.16;
+    pointer-events: none;
+  }
+
+  .seasonal-leaf-one {
+    right: 4%;
+    top: 8%;
+    width: 9rem;
+    height: 9rem;
+    transform: rotate(22deg);
+  }
+
+  .seasonal-leaf-two {
+    right: 18%;
+    bottom: -3rem;
+    width: 7rem;
+    height: 7rem;
+    color: #fb923c;
+    transform: rotate(-28deg);
+  }
+
+  .seasonal-discovery,
+  .seasonal-savings-intro,
+  .savings-snapshot {
+    border: 1px solid #fed7aa;
+    background: var(--season-surface);
+    box-shadow: 0 12px 34px rgb(120 53 15 / 0.06);
+  }
+
+  .season-icon {
+    color: #92400e;
+    background: var(--season-accent-soft);
+    box-shadow: inset 0 0 0 1px #fed7aa;
+  }
+
+  .seasonal-empty {
+    background: linear-gradient(145deg, #fff 0%, var(--season-surface) 100%);
+  }
+
+  .local-stores-section {
+    border: 1px solid #e7ded0;
+    background: rgb(255 250 240 / 0.82);
+  }
+
+  .local-store-card {
+    border-color: #e8e1d6;
+  }
+
+  .season-location {
+    color: #475569;
+    background: #fff7ed;
+    box-shadow: inset 0 0 0 1px #fed7aa;
+  }
+
+  .seasonal-plan {
+    background: linear-gradient(120deg, #064e3b 0%, #047857 76%, #78350f 145%);
+  }
+
+  .seasonal-plan-leaf {
+    position: absolute;
+    right: 1.5rem;
+    bottom: -2rem;
+    width: 9rem;
+    height: 9rem;
+    color: #fbbf24;
+    opacity: 0.11;
+    transform: rotate(-18deg);
+    pointer-events: none;
+  }
+
+  .seasonal-destination {
+    border: 1px solid #e7ded0;
+    background: #fff;
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .seasonal-destination:hover {
+    border-color: #fdba74;
+    box-shadow: 0 12px 30px rgb(120 53 15 / 0.08);
+    transform: translateY(-2px);
   }
 
   .btn-primary {
@@ -105,6 +242,49 @@
 
   .list-item-controls {
     @apply flex shrink-0 items-center justify-end gap-2;
+  }
+
+  .header-action {
+    @apply relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200;
+  }
+
+  .segmented-control {
+    @apply flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm;
+    scrollbar-width: none;
+  }
+
+  .segmented-control::-webkit-scrollbar {
+    display: none;
+  }
+
+  .segmented-control button {
+    @apply min-h-11 shrink-0 rounded-xl px-4 text-sm font-bold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200;
+  }
+
+  .segmented-control button.is-selected {
+    @apply bg-emerald-700 text-white shadow-sm hover:bg-emerald-800 hover:text-white;
+  }
+
+  .shopping-plan-row {
+    @apply flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200/80 bg-white p-3 shadow-sm sm:gap-4 sm:p-4;
+  }
+
+  .quantity-button {
+    @apply h-11 w-11 rounded-full bg-white font-black ring-1 ring-slate-200 transition hover:bg-emerald-50 hover:ring-emerald-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200;
+  }
+
+  @media (max-width: 639px) {
+    .seasonal-leaf-one {
+      right: -2.5rem;
+      top: 1rem;
+      width: 6.5rem;
+      height: 6.5rem;
+    }
+
+    .seasonal-leaf-two,
+    .seasonal-plan-leaf {
+      display: none;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -9,6 +9,7 @@ import {
   Clock3,
   ExternalLink,
   FileCheck2,
+  Leaf,
   Loader2,
   LogIn,
   LogOut,
@@ -28,7 +29,7 @@ import {
   X,
 } from 'lucide-react'
 import { apiFetch, getJson, postJson, putJson } from './api'
-import { isRenderableProduct, productCardViewModel, reportSize } from './productDisplay'
+import { isRenderableProduct, productCardViewModel, reportSize, shopperProductImageAlt, shopperProductImageUrl } from './productDisplay'
 import { legacyReplacement, parsePublicRoute, publicPathFor, savingsControlsFromParams, savingsUrl } from './routes'
 
 const categories = [
@@ -47,6 +48,21 @@ const categories = [
   { label: 'Pet', value: 'pet' },
   { label: 'Other', value: 'other' },
 ]
+
+const seasonalTheme = Object.freeze({
+  id: 'fall',
+  label: 'Fall',
+  heroTitle: 'Fresh finds for fall',
+  heroCopy: 'Seasonal picks. Local prices. A smarter way to plan your Janesville grocery trip.',
+  discoveryTitle: 'Fall favorites near you',
+  discoveryCopy: 'Current local prices for seasonal grocery staples already in the Grocery Radar catalog.',
+  productTerms: ['apple', 'pear', 'pumpkin', 'squash', 'sweet potato', 'cranberry', 'cranberries', 'cider'],
+})
+
+const matchesSeasonalProduct = (product = {}) => {
+  const searchable = `${product.display_name || ''} ${product.preferred_brand || ''} ${product.category || ''}`.toLowerCase()
+  return seasonalTheme.productTerms.some((term) => searchable.includes(term))
+}
 
 const filters = ['cheapest', 'verified', 'deals', 'food', 'household']
 
@@ -173,7 +189,6 @@ const bestReportForProduct = (product, reports = []) => {
     .filter((report) => String(report.product_id || '') === String(product.id) && hasNumericApprovedReportPrice(report))
     .sort((a, b) => reportSortPrice(a) - reportSortPrice(b))[0] || null
 }
-const productImageUrl = (item = {}) => item?.image_url || item?.product_image_url || item?.photo_url || ''
 const productBrand = (item = {}, report = null) => item?.preferred_brand || item?.brand || report?.brand || ''
 
 function initialsFor(name = '') {
@@ -278,30 +293,30 @@ function StoreLogo({ store, size = 'md' }) {
   )
 }
 
-function ProductVisual({ item, label = 'Product', compact = false }) {
-  const imageUrl = productImageUrl(item)
-  const size = compact ? 'h-16 w-16' : 'h-20 w-20'
+function ProductImage({ item, label = 'Product', size = 'md', className = '' }) {
+  const imageUrl = shopperProductImageUrl(item)
+  const sizeClass = {
+    sm: 'h-14 w-14 rounded-xl',
+    md: 'h-20 w-20 rounded-2xl',
+    lg: 'h-24 w-24 rounded-2xl',
+    tile: 'aspect-square w-full rounded-2xl',
+  }[size] || 'h-20 w-20 rounded-2xl'
   const [imageFailed, setImageFailed] = useState(false)
 
   useEffect(() => setImageFailed(false), [imageUrl])
 
   if (imageUrl && !imageFailed) {
     return (
-      <img
-        src={imageUrl}
-        alt={item.image_alt_text || item.image_alt || `${label} product image`}
-        className={`${size} shrink-0 rounded-2xl bg-slate-100 object-cover ring-1 ring-slate-100`}
-        loading="lazy"
-        onError={() => setImageFailed(true)}
-      />
+      <span className={`${sizeClass} ${className} product-image-frame flex shrink-0 items-center justify-center overflow-hidden p-1.5 ring-1 ring-slate-200/80`}>
+        <img src={imageUrl} alt={shopperProductImageAlt(item, label)} className="h-full w-full object-contain" loading="lazy" onError={() => setImageFailed(true)} />
+      </span>
     )
   }
 
   return (
-    <div className={`${size} flex shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100`}>
-      <PackageCheck className="h-7 w-7" />
-      <span className="sr-only">{label}</span>
-    </div>
+    <span className={`${sizeClass} ${className} product-image-frame flex shrink-0 items-center justify-center text-emerald-700 ring-1 ring-emerald-100`} role="img" aria-label={`No image available for ${label}`}>
+      <PackageCheck className={size === 'tile' ? 'h-12 w-12' : 'h-7 w-7'} aria-hidden="true" />
+    </span>
   )
 }
 
@@ -365,8 +380,8 @@ function ScreenTitle({ eyebrow, title, subtitle }) {
 
 function EmptyState({ title, body, icon: Icon = AlertTriangle }) {
   return (
-    <div className="surface-card px-5 py-8 text-center">
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100">
+    <div className="surface-card seasonal-empty px-5 py-8 text-center">
+      <div className="season-icon mx-auto flex h-12 w-12 items-center justify-center rounded-2xl text-emerald-800">
         <Icon className="h-6 w-6" />
       </div>
       <p className="mt-4 text-lg font-extrabold text-slate-950">{title}</p>
@@ -407,19 +422,19 @@ function ApiError({ message, onRetry }) {
 
 function StoreCard({ store, onOpen }) {
   return (
-    <button type="button" onClick={() => onOpen?.(store.id)} className="surface-card min-w-0 overflow-hidden p-4 text-left transition hover:border-emerald-200 hover:shadow-md focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
+    <button type="button" onClick={() => onOpen?.(store.id)} className="surface-card local-store-card product-card min-w-0 overflow-hidden p-4 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-5">
       <div className="flex items-center gap-3">
         <StoreLogo store={store} />
         <div className="min-w-0">
-          <p className="truncate text-base font-black text-slate-950">{store.name}</p>
-          <p className="truncate text-sm font-semibold text-slate-500">{titleCase(store.store_type || 'grocery')}</p>
+          <p className="truncate text-lg font-extrabold text-slate-950">{store.name}</p>
+          <p className="truncate text-sm font-medium text-slate-500">{titleCase(store.store_type || 'grocery')} store</p>
         </div>
       </div>
       <div className="mt-3 flex items-start gap-1 text-sm font-bold text-emerald-700">
         <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
         <span className="min-w-0 break-words">{store.address || `${store.city || 'Janesville'}, ${store.state || 'WI'}`}</span>
       </div>
-      {store.current_price_count != null ? <p className="mt-2 text-sm font-black text-slate-600">{Number(store.current_price_count)} current prices</p> : null}
+      {store.current_price_count != null ? <p className="mt-3 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{Number(store.current_price_count)} current prices</p> : null}
     </button>
   )
 }
@@ -433,27 +448,27 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
   const brand = productBrand(safeProduct, bestReport)
 
   return (
-    <article className="surface-card p-4 text-left transition hover:border-emerald-200 hover:shadow-md">
+    <article className="surface-card product-card p-4 text-left sm:p-5">
       <button type="button" onClick={() => onOpen(safeProduct.id)} className="w-full rounded-xl text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
-        <div className="flex items-start gap-3">
-          <ProductVisual item={safeProduct} label={card.displayName} />
+        <div className="flex items-start gap-4">
+          <ProductImage item={safeProduct} label={card.displayName} size="lg" />
           <div className="min-w-0 flex-1">
-            <p className="text-lg font-extrabold leading-snug text-slate-950">{displayText(card.displayName)}</p>
-            {brand ? <p className="mt-0.5 text-sm font-bold text-emerald-700">{displayText(brand)}</p> : null}
-            <p className="mt-1 text-sm font-medium text-slate-600">
+            <p className="text-lg font-extrabold leading-snug text-slate-950 sm:text-xl">{displayText(card.displayName)}</p>
+            {brand ? <p className="mt-1 text-sm font-semibold text-emerald-700">{displayText(brand)}</p> : null}
+            <p className="mt-1 text-sm font-medium text-slate-500">
               {[card.size, titleCase(card.category)].filter(Boolean).join(' · ')}
             </p>
           </div>
         </div>
-        <div className="mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-3">
+        <div className="mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-4">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{hasPrice ? 'Lowest current price' : 'Community price'}</p>
-            <p className={`mt-0.5 font-extrabold ${hasPrice ? 'text-2xl text-emerald-700' : 'text-base text-slate-600'}`}>
+            <p className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500">{hasPrice ? 'Current package price' : 'Community price'}</p>
+            <p className={`mt-0.5 font-extrabold tracking-tight ${hasPrice ? 'text-3xl text-emerald-700' : 'text-base text-slate-600'}`}>
               {hasPrice ? productPrice(safeProduct) : 'Price needed'}
             </p>
           </div>
           <div className="min-w-0 text-right">
-            <p className="truncate text-sm font-extrabold text-slate-900">{storeName || 'Store pending'}</p>
+            <p className="truncate text-sm font-bold text-slate-900">{storeName || 'Store pending'}</p>
             <p className="mt-0.5 text-xs font-medium text-slate-500">{safeProduct.last_reported_at ? checkedDateLabel(safeProduct.last_reported_at) : 'Awaiting verification'}</p>
           </div>
         </div>
@@ -471,27 +486,10 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
         </div>
         <StoreProductLocation report={bestReport || { store_product_location: safeProduct.best_store_location }} />
       </button>
-      {bestReport?.source_url ? (
-        <a
-          href={bestReport.source_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-3 inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-800 ring-1 ring-emerald-100"
-        >
-          View source
-          <ExternalLink className="h-4 w-4" />
-        </a>
-      ) : null}
-      {onAddToCart ? (
-        <button
-          type="button"
-          onClick={() => onAddToCart(safeProduct)}
-          className="btn-secondary mt-4 w-full"
-        >
-          <Plus className="h-5 w-5 text-emerald-700" />
-          Add to My List
-        </button>
-      ) : null}
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
+        {bestReport?.source_url ? <a href={bestReport.source_url} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">View source <ExternalLink className="h-4 w-4" /></a> : null}
+        {onAddToCart ? <button type="button" onClick={() => onAddToCart(safeProduct)} className="btn-primary ml-auto min-h-11 px-4 py-2 text-sm"><Plus className="h-4 w-4" />Add to My List</button> : null}
+      </div>
     </article>
   )
 }
@@ -573,7 +571,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
         disabled={!canOpen}
       >
         <div className="flex items-start gap-3">
-          <ProductVisual item={report} label={reportTitle(report)} compact={compact} />
+          <ProductImage item={report} label={reportTitle(report)} size={compact ? 'sm' : 'md'} />
           <div className="min-w-0 flex-1">
             <p className="text-lg font-extrabold leading-snug text-slate-950">{reportTitle(report)}</p>
             <p className="mt-1 text-sm font-medium text-slate-600">
@@ -639,15 +637,15 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
 
 function SummaryCard({ icon: Icon, label, value, note }) {
   return (
-    <article className="surface-card min-w-0 p-4">
+    <article className="surface-card min-w-0 p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <div className="rounded-2xl bg-emerald-100 p-3 text-emerald-800">
           <Icon className="h-6 w-6" />
         </div>
       </div>
-      <p className="mt-4 text-sm font-extrabold text-slate-500">{label}</p>
-      <p className="mt-1 break-words text-2xl font-extrabold leading-tight text-slate-950">{value}</p>
-      <p className="mt-1 text-sm font-medium text-slate-600">{note}</p>
+      <p className="mt-4 text-xs font-extrabold uppercase tracking-[0.08em] text-slate-500">{label}</p>
+      <p className="mt-1 break-words text-2xl font-extrabold leading-tight tracking-tight text-slate-950">{value}</p>
+      <p className="mt-2 text-sm font-medium leading-snug text-slate-600">{note}</p>
     </article>
   )
 }
@@ -1032,21 +1030,16 @@ function LegacyHomeScreen({
 function CatalogTile({ product, reports, openProduct }) {
   const report = bestReportForProduct(product, reports)
   const storeName = report?.store_name || product.best_store_name || ''
-  const imageUrl = productImageUrl(product)
-  const [imageFailed, setImageFailed] = useState(false)
-
-  useEffect(() => setImageFailed(false), [imageUrl])
 
   return (
-    <button type="button" onClick={() => openProduct(product.id)} className="surface-card min-w-0 p-3 text-left transition hover:border-emerald-200 hover:shadow-md focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
-      <div className="aspect-square w-full overflow-hidden rounded-2xl bg-emerald-50">
-        {imageUrl && !imageFailed ? <img src={imageUrl} alt={product.image_alt_text || `${product.display_name} product image`} className="h-full w-full object-cover" loading="lazy" onError={() => setImageFailed(true)} /> : <div className="flex h-full w-full items-center justify-center text-emerald-700"><PackageCheck className="h-12 w-12" aria-hidden="true" /><span className="sr-only">Category placeholder for {product.display_name}</span></div>}
-      </div>
-      <h3 className="mt-3 line-clamp-2 text-base font-black text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
-      <p className="mt-1 text-2xl font-black text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
-      <p className="mt-1 line-clamp-2 text-sm font-bold text-slate-600">{storeName || titleCase(product.category)}</p>
+    <button type="button" onClick={() => openProduct(product.id)} className="surface-card product-card min-w-0 p-3 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
+      <ProductImage item={product} label={product.display_name} size="tile" />
+      <h3 className="mt-3 line-clamp-2 text-base font-extrabold leading-snug text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
+      {product.default_size_text ? <p className="mt-1 truncate text-sm font-medium text-slate-500">{product.default_size_text}</p> : null}
+      <p className="mt-2 text-2xl font-extrabold tracking-tight text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
+      <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-700">{storeName || titleCase(product.category)}</p>
       {product.best_store_location?.label ? <p className="mt-1 line-clamp-2 text-xs font-black text-slate-600">{product.best_store_location.label}</p> : null}
-      {hasApprovedProductPrice(product) ? <p className="mt-1 text-sm font-bold text-emerald-700">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-1 text-sm font-bold text-amber-800">Submit Price</p>}
+      {hasApprovedProductPrice(product) ? <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-2 text-sm font-bold text-amber-800">Submit price</p>}
       {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
     </button>
   )
@@ -1057,20 +1050,23 @@ function HomeScreen(props) {
   const products = (browse.products || []).filter(isRenderableProduct)
   const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
   const visibleCategories = categories.map((category) => ({ ...category, products: products.filter((product) => product.category === category.value).slice(0, 4) })).filter((category) => category.products.length)
+  const seasonalProducts = products.filter(matchesSeasonalProduct).slice(0, 4)
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-      <section className="overflow-hidden rounded-3xl bg-emerald-800 px-5 py-7 text-white shadow-md sm:px-8 sm:py-10">
-        <div className="max-w-4xl">
-          <p className="inline-flex items-center gap-2 rounded-full bg-emerald-900/40 px-3 py-1.5 text-sm font-bold text-emerald-50 ring-1 ring-white/15">
-            <MapPin className="h-4 w-4" />
-            Community prices in Janesville
+      <section className="seasonal-hero relative overflow-hidden rounded-3xl px-5 py-7 text-white shadow-md sm:px-8 sm:py-10">
+        <Leaf className="seasonal-leaf seasonal-leaf-one" aria-hidden="true" />
+        <Leaf className="seasonal-leaf seasonal-leaf-two" aria-hidden="true" />
+        <div className="relative z-10 max-w-4xl">
+          <p className="seasonal-badge inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ring-1 ring-white/20">
+            <Leaf className="h-4 w-4" />
+            {seasonalTheme.label} in Janesville
           </p>
           <h1 data-route-heading tabIndex="-1" className="mt-4 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight outline-none sm:text-5xl">
-            Compare grocery prices before you shop.
+            {seasonalTheme.heroTitle}
           </h1>
           <p className="mt-3 max-w-2xl text-base font-medium leading-relaxed text-emerald-50 sm:text-xl">
-            Search verified local prices, compare stores, and help neighbors by submitting a receipt, shelf tag, or store link.
+            {seasonalTheme.heroCopy}
           </p>
         </div>
         <div className="mt-6 max-w-3xl"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
@@ -1078,6 +1074,7 @@ function HomeScreen(props) {
           <button type="button" onClick={() => openScreen('search')} className="btn-primary bg-white text-emerald-900 hover:bg-emerald-50">
             <Search className="h-5 w-5" /> Search prices
           </button>
+          {seasonalProducts.length ? <a href="#fall-favorites" className="seasonal-cta inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-5 py-3 font-extrabold focus-visible:ring-4 focus-visible:ring-white/30"><Leaf className="h-5 w-5" />Explore fall favorites</a> : null}
           <button type="button" onClick={() => openScreen('submit')} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-white/25 bg-emerald-900/30 px-5 py-3 font-extrabold text-white transition hover:bg-emerald-900/50 focus-visible:ring-4 focus-visible:ring-white/30">
             <Upload className="h-5 w-5" /> Submit proof
           </button>
@@ -1097,6 +1094,8 @@ function HomeScreen(props) {
 
       {!loading && !error && !products.length ? <div className="mt-6"><EmptyState title="Products are being prepared" body="Search still includes approved prices, and community proof can be submitted now." icon={PackageCheck} /></div> : null}
 
+      {seasonalProducts.length ? <section id="fall-favorites" className="seasonal-discovery mt-8 scroll-mt-24 rounded-3xl p-4 sm:p-6" aria-labelledby="fall-favorites-heading"><div className="mb-5 flex items-start gap-3"><span className="season-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl"><Leaf className="h-6 w-6" aria-hidden="true" /></span><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-800">Seasonal discovery</p><h2 id="fall-favorites-heading" className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950 sm:text-3xl">{seasonalTheme.discoveryTitle}</h2><p className="mt-1 max-w-2xl font-medium text-slate-600">{seasonalTheme.discoveryCopy}</p></div></div><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{seasonalProducts.map((product) => <CatalogTile key={`seasonal-${product.id}`} product={product} reports={reports} openProduct={openProduct} />)}</div></section> : null}
+
       {visibleCategories.map((category) => (
         <section key={category.value} className="mt-8" aria-labelledby={`home-category-${category.value.replaceAll(' ', '-')}`}>
           <SectionHeader title={category.label} action="View all" onAction={() => openScreen('search', { category: category.value })} />
@@ -1104,8 +1103,8 @@ function HomeScreen(props) {
         </section>
       ))}
 
-      <section className="mt-9 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100">
-        <SectionHeader title="Janesville Stores" />
+      <section className="local-stores-section mt-9 rounded-[2rem] p-5 shadow-soft sm:p-6">
+        <div className="mb-4 flex items-center gap-2"><Leaf className="h-5 w-5 text-amber-700" aria-hidden="true" /><h2 className="text-xl font-extrabold tracking-tight text-slate-950 sm:text-2xl">Janesville Stores</h2></div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
         <button type="button" onClick={() => openScreen('stores')} className="mt-4 min-h-12 rounded-2xl bg-emerald-50 px-5 font-black text-emerald-800">View all stores</button>
       </section>
@@ -1291,7 +1290,7 @@ function ProductDetailScreen({ detail, loading, error, openScreen, onBack, addTo
         <>
           <section className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
             <div className="flex items-start gap-4">
-              <ProductVisual item={product} label={product.display_name} />
+              <ProductImage item={product} label={product.display_name} size="lg" />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-black uppercase text-emerald-700">{titleCase(product.category)}</p>
                 <h1 className="mt-2 text-3xl font-black text-slate-950">{displayText(product.display_name)}</h1>
@@ -1493,7 +1492,7 @@ function DealsScreen({ arena, loading, error, openProduct, reload, onControlsCha
   const routeTitle = { home: 'Savings across every store', drops: 'Price Drops', showdown: 'Janesville Store Showdown', categories: "Who's cheaper by category?" }[section] || 'Savings across every store'
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
     <ScreenTitle eyebrow="Janesville price arena" title={routeTitle} subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
-    {section === 'home' ? <section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className="min-h-40 rounded-2xl bg-white p-5 text-left shadow-soft ring-1 ring-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-black">{title}</p><p className="mt-2 font-semibold text-slate-600">{body}</p><span className="mt-4 block font-black text-emerald-700">Open page →</span></a>)}</section> : null}
+    {section === 'home' ? <><section className="seasonal-savings-intro mb-5 flex items-center gap-4 rounded-3xl p-5 sm:p-6"><span className="season-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl"><Leaf className="h-6 w-6" aria-hidden="true" /></span><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-900">Plan smarter. Spend less.</p><h2 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">Fresh savings for the season</h2><p className="mt-1 font-medium text-slate-600">Explore only current, verified Grocery Radar price comparisons.</p></div></section><section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className="seasonal-destination min-h-40 rounded-2xl p-5 text-left shadow-soft focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-extrabold">{title}</p><p className="mt-2 font-medium text-slate-600">{body}</p><span className="mt-4 block font-extrabold text-emerald-700">Open page →</span></a>)}</section></> : null}
     {section !== 'home' ? <>
     <section className="mb-5 grid gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100 sm:grid-cols-2 lg:grid-cols-5">
       <label className="font-black text-slate-700">Time window<select className="field mt-1" value={controls.window} onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
@@ -1505,7 +1504,7 @@ function DealsScreen({ arena, loading, error, openProduct, reload, onControlsCha
     <nav className="mb-5 flex flex-wrap gap-2" aria-label="Savings pages">{[['home','Savings Home'],['drops','Price Drops'],['showdown','Store Showdown'],['categories','By Category']].map(([id,label]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} aria-current={section === id ? 'page' : undefined} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className={`flex min-h-12 items-center rounded-full px-5 font-black ${section === id ? 'bg-emerald-700 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}`}>{label}</a>)}</nav>
     {loading ? <LoadingCard label="Calculating current verified comparisons..." /> : null}
     {error ? <ApiError message={error} onRetry={reload} /> : null}
-    {!loading && section === 'drops' ? <section><SectionHeader title="What got cheaper around Janesville?" />{drops.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drops.map((drop) => <article key={`${drop.type}-${drop.report.id}`} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="text-xs font-black uppercase text-emerald-700">{drop.label}</p><h2 className="mt-2 text-xl font-black">{drop.report.product_name}</h2><p className="font-bold text-slate-500">{drop.report.store_name}</p><p className="mt-3 text-sm font-bold text-slate-500">Was {money(drop.previous_price)}</p><p className="text-3xl font-black text-emerald-700">Now {money(drop.current_price)}</p><p className="mt-1 font-black">↓ {money(drop.dollar_drop)} / {drop.percent_drop}%</p><PromotionDetails report={drop.report} /><button type="button" onClick={() => openProduct(drop.report.product_id)} className="mt-4 min-h-11 w-full rounded-xl bg-slate-100 font-black">Compare stores</button></article>)}</div> : <EmptyState title="No verified price drops yet" body="A drop appears only after Grocery Radar has a legitimate comparable previous price." icon={Tag} />}</section> : null}
+    {!loading && section === 'drops' ? <section><SectionHeader title="What got cheaper around Janesville?" />{drops.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{drops.map((drop) => <article key={`${drop.type}-${drop.report.id}`} className="surface-card product-card p-4"><div className="flex gap-3"><ProductImage item={drop.report} label={drop.report.product_name} size="sm" /><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-wide text-emerald-700">{drop.label}</p><h2 className="mt-1 line-clamp-2 text-lg font-extrabold">{drop.report.product_name}</h2><p className="text-sm font-semibold text-slate-500">{drop.report.store_name}</p></div></div><div className="mt-4 flex items-end justify-between border-t border-slate-100 pt-3"><div><p className="text-sm font-semibold text-slate-500">Was {money(drop.previous_price)}</p><p className="text-3xl font-extrabold tracking-tight text-emerald-700">{money(drop.current_price)}</p></div><p className="rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-extrabold text-emerald-800">Save {money(drop.dollar_drop)}</p></div><PromotionDetails report={drop.report} /><button type="button" onClick={() => openProduct(drop.report.product_id)} className="btn-secondary mt-4 w-full">Compare stores</button></article>)}</div> : <EmptyState title="No verified price drops yet" body="A drop appears only after Grocery Radar has a legitimate comparable previous price." icon={Tag} />}</section> : null}
     {!loading && section === 'showdown' ? <section className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100"><SectionHeader title="Janesville Store Showdown" /><p className="font-bold text-slate-500">{arena?.window?.label} · {leaderboard.comparable_product_count || 0} comparable products</p><div className="mt-4 space-y-2">{(leaderboard.rankings || []).map((row,index) => <div key={row.store_id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3"><div><p className="font-black">#{index + 1} {row.store_name}</p><p className="text-sm font-bold text-slate-500">{row.current_price_count} current prices · {row.tied_lowest_count} ties</p></div><p className="text-right font-black text-emerald-800">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{leaderboard.status_message} Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></section> : null}
     {!loading && section === 'categories' ? <section><SectionHeader title="Who's cheaper by category?" /><div className="grid gap-4 sm:grid-cols-2">{(arena?.categories || []).map((category) => <article key={category.category} className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><h2 className="text-xl font-black">{titleCase(category.category)}</h2><p className="text-sm font-bold text-slate-500">{category.comparable_product_count} comparable products</p><div className="mt-3 space-y-2">{category.rankings.slice(0,5).map((row) => <div key={row.store_id} className="flex justify-between gap-3"><span className="font-bold">{row.store_name}</span><span className="font-black">Lowest on {row.lowest_count}</span></div>)}</div></article>)}</div>{!arena?.categories?.length ? <EmptyState title="Limited category data" body="Category comparisons appear as comparable verified prices grow." icon={Store} /> : null}</section> : null}
     <p className="mt-5 text-sm font-bold text-slate-500">{arena?.disclaimer || 'Missing store prices are never treated as higher prices.'}</p>
@@ -1625,17 +1624,19 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
   const one = comparison?.best_one_store
   const two = comparison?.best_two_stores
   const savings = one && selected && one.matched_count === selected.matched_count ? Math.max(0, one.estimated_total - selected.estimated_total) : 0
-  return <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
-    <ScreenTitle eyebrow="My List · no shopper account required" title="Cheapest Basket" subtitle="Compare one-store, two-store, or all-store plans. Anonymous lists stay on this device; legacy signed-in lists remain supported." />
-    <div className="mb-5 flex flex-wrap gap-2" role="group" aria-label="Maximum stores">{[['1','One store'],['2','Two stores'],['any','Any stores']].map(([value,label]) => <button key={value} type="button" onClick={() => setCartMode(value)} className={`min-h-12 rounded-full px-5 font-black ${cartMode === value ? 'bg-emerald-700 text-white' : 'bg-white ring-1 ring-slate-200'}`}>{label}</button>)}<button type="button" onClick={() => setOfferMode(offerMode === 'all' ? 'unconditional' : 'all')} className="min-h-12 rounded-full bg-white px-5 font-black ring-1 ring-slate-200">{offerMode === 'all' ? 'Including conditional offers' : 'No special requirements'}</button></div>
+  const reportByProduct = new Map(selectedMatches.map((match) => [Number(match.item.product_id), match.report]))
+  return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
+    <ScreenTitle eyebrow="My List · saved on this device" title="Plan your grocery trip" subtitle="Compare current package prices across Janesville stores and choose the plan that fits your trip." />
+    <div className="segmented-control mb-5" role="group" aria-label="Maximum stores">{[['1','One store'],['2','Two stores'],['any','Any stores']].map(([value,label]) => <button key={value} type="button" onClick={() => setCartMode(value)} aria-pressed={cartMode === value} className={cartMode === value ? 'is-selected' : ''}>{label}</button>)}<button type="button" onClick={() => setOfferMode(offerMode === 'all' ? 'unconditional' : 'all')} aria-pressed={offerMode === 'all'} className={offerMode === 'all' ? 'is-selected' : ''}>{offerMode === 'all' ? 'Including conditional offers' : 'No special requirements'}</button></div>
     {loading ? <LoadingCard label="Optimizing current verified prices..." /> : null}{error ? <ApiError message={error} onRetry={reload} /> : null}
     <section className="grid gap-3 sm:grid-cols-3"><SummaryCard icon={Store} label="Best one-store" value={one?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={one ? `${one.matched_count}/${one.requested_count} matched · ${money(one.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={Store} label="Best two-store" value={two?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={two ? `${two.matched_count}/${two.requested_count} matched · ${money(two.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={CircleDollarSign} label="Selected plan" value={selected ? money(selected.estimated_total) : '$0.00'} note={savings > 0 ? `${money(savings)} below best one-store plan` : 'Approved current prices only'} /></section>
-    {selected ? <section className="mt-5 rounded-3xl bg-emerald-800 p-5 text-white shadow-md sm:p-6"><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-emerald-100">Recommended {cartMode === '1' ? 'one-store' : cartMode === '2' ? 'two-store' : 'all-store'} plan</p><h2 className="mt-2 text-2xl font-extrabold leading-tight sm:text-3xl">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-3 text-4xl font-extrabold tracking-tight">{money(selected.estimated_total)}</p><p className="mt-2 font-semibold text-emerald-50">{selected.matched_count} of {selected.requested_count} products matched</p></section> : null}
+    {selected ? <section className="seasonal-plan relative mt-5 overflow-hidden rounded-3xl p-5 text-white shadow-lg shadow-emerald-950/10 sm:p-6"><Leaf className="seasonal-plan-leaf" aria-hidden="true" /><div className="relative z-10 flex flex-wrap items-start justify-between gap-5"><div><p className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-[0.12em] text-emerald-100"><span className="h-2 w-2 rounded-full bg-amber-300" />Recommended {cartMode === '1' ? 'one-store' : cartMode === '2' ? 'two-store' : 'all-store'} plan</p><h2 className="mt-2 text-2xl font-extrabold leading-tight sm:text-3xl">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 font-semibold text-emerald-50">{selected.matched_count} of {selected.requested_count} products matched</p></div><div className="rounded-2xl bg-white/10 px-5 py-4 text-right ring-1 ring-amber-200/30"><p className="text-xs font-bold uppercase tracking-wide text-amber-100">Estimated basket</p><p className="mt-1 text-4xl font-extrabold tracking-tight text-amber-50">{money(selected.estimated_total)}</p></div></div></section> : null}
+    {savings > 0 ? <section className="savings-snapshot mt-4 flex flex-wrap items-center justify-between gap-4 rounded-2xl p-4 sm:px-5"><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-900">Savings snapshot</p><p className="mt-1 font-semibold text-slate-700">With your selected store plan</p></div><div className="text-right"><p className="text-sm font-bold text-slate-600">You could save</p><p className="text-3xl font-extrabold tracking-tight text-emerald-800">{money(savings)}</p></div></section> : null}
     {comparison?.coverage_warning ? <p className="mt-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900"><AlertTriangle className="mr-2 inline h-5 w-5" />{comparison.coverage_warning}</p> : null}
-    {shoppingMatches.length ? <section className="mt-5 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="min-h-11 rounded-xl bg-white px-4 font-black ring-1 ring-slate-200">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div><h3 className="font-black">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="text-sm font-bold text-slate-500">{match.report.store_name} · {match.report.promotion_conditions || 'No special requirement shown'}</p><StoreProductLocation report={match.report} /></div><p className="text-xl font-black text-emerald-700">{money(match.line_total)}</p></article>)}</section> : null}
+    {shoppingMatches.length ? <section className="mt-7 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="btn-secondary min-h-11 px-4 py-2 text-sm">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="shopping-plan-row"><ProductImage item={match.report} label={match.item.item_name || match.report.product_name} size="sm" /><div className="min-w-0 flex-1"><h3 className="font-extrabold leading-snug text-slate-950">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="mt-0.5 text-sm font-medium text-slate-500">{match.report.product_size_text || match.report.size_text || 'Package size varies'}</p><p className="mt-1 text-sm font-bold text-slate-700">{match.report.store_name}{Number(match.item.quantity || 1) > 1 ? ` · Qty ${match.item.quantity}` : ''}</p>{match.report.promotion_conditions ? <p className="mt-1 text-xs font-semibold text-amber-800">{match.report.promotion_conditions}</p> : null}<StoreProductLocation report={match.report} /></div><div className="shrink-0 text-right"><p className="text-2xl font-extrabold tracking-tight text-emerald-700">{money(match.line_total)}</p>{Number(match.item.quantity || 1) > 1 ? <p className="text-xs font-semibold text-slate-500">{money(match.item_price)} each</p> : null}</div></article>)}</section> : null}
     {comparison?.comparable_subset ? <p className="mt-4 text-sm font-bold text-slate-500">Comparable subset across every participating store: {comparison.comparable_subset.product_count} products. Partial store totals are never ranked as complete totals.</p> : null}
-    <section className="mt-5 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-black">Save with substitutes</h2><p className="font-bold text-slate-500">Different products are always labeled, and your list changes only when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="min-h-12 rounded-xl bg-emerald-700 px-5 font-black text-white">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-3 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-xl bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><p className="mt-2 font-bold text-slate-500">Instead of {original.product_display_name || original.item_name}</p><h3 className="text-xl font-black">{candidate.product_name}</h3><p className="font-bold">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p><p className="mt-1 font-black text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-2 text-sm font-bold text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="min-h-11 rounded-xl bg-emerald-700 px-4 font-black text-white">Use Substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="min-h-11 rounded-xl bg-white px-4 font-black">Keep Original</button><button type="button" onClick={() => ignore(original.product_id)} className="min-h-11 rounded-xl bg-white px-4 font-black">Don’t Suggest Again</button></div></article>)}</div></section>
-    <section className="surface-card mt-5 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-extrabold">My List Items</h2><button type="button" onClick={clearCart} className="btn-ghost text-slate-700"><Trash2 className="h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="list-item-row rounded-xl bg-slate-50 p-3"><div className="min-w-0"><p className="truncate font-extrabold">{item.product_display_name || item.item_name}</p><p className="text-sm font-medium text-slate-600">{item.size_preference || 'Catalog product'}</p></div><div className="list-item-controls"><button type="button" className="h-11 w-11 rounded-full bg-white font-black ring-1 ring-slate-200" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong className="min-w-6 text-center">{item.quantity_needed || 1}</strong><button type="button" className="h-11 w-11 rounded-full bg-white font-black text-emerald-700 ring-1 ring-emerald-200" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="h-11 w-11 rounded-full bg-white text-slate-600 ring-1 ring-slate-200" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add products to compare every active Janesville store." icon={ShoppingCart} /> : null}</div></section>
+    <section className="surface-card mt-7 p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-extrabold">Save with substitutes</h2><p className="mt-1 font-medium text-slate-500">Different products are clearly labeled and only replace an item when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="btn-primary">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-4 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-100"><div className="flex gap-3"><ProductImage item={candidate.cheapest || candidate} label={candidate.product_name} size="sm" /><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-wide text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><h3 className="mt-1 text-lg font-extrabold">{candidate.product_name}</h3><p className="text-sm font-semibold text-slate-600">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p></div></div><p className="mt-3 font-bold text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-1 text-sm font-medium text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="btn-primary min-h-11 px-4 py-2 text-sm">Use substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="btn-secondary min-h-11 px-4 py-2 text-sm">Keep original</button><button type="button" onClick={() => ignore(original.product_id)} className="btn-ghost text-sm">Don’t suggest again</button></div></article>)}</div></section>
+    <section className="surface-card mt-5 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-extrabold">My List Items</h2><button type="button" onClick={clearCart} className="btn-ghost text-slate-700"><Trash2 className="h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="list-item-row rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100"><div className="flex min-w-0 items-center gap-3"><ProductImage item={reportByProduct.get(Number(item.product_id)) || item} label={item.product_display_name || item.item_name} size="sm" /><div className="min-w-0"><p className="truncate font-extrabold">{item.product_display_name || item.item_name}</p><p className="text-sm font-medium text-slate-600">{item.size_preference || reportByProduct.get(Number(item.product_id))?.product_size_text || 'Catalog product'}</p></div></div><div className="list-item-controls" aria-label={`Quantity for ${item.item_name}`}><button type="button" className="quantity-button" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong className="min-w-6 text-center" aria-live="polite">{item.quantity_needed || 1}</strong><button type="button" className="quantity-button text-emerald-700" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="quantity-button text-slate-600" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add a product to start comparing current Janesville prices." icon={ShoppingCart} /> : null}</div></section>
     <button type="button" onClick={() => openScreen('search')} className="mt-5 min-h-14 w-full rounded-2xl bg-emerald-700 px-5 text-lg font-black text-white">Add another item</button>
   </div>
 }
@@ -2781,22 +2782,20 @@ function UpdatesScreen({ releases, version, markRead }) {
 
 function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false }) {
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+    <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 shadow-[0_1px_12px_rgba(15,23,42,0.04)] backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
-        <button type="button" onClick={() => openScreen('home')} className="min-w-0 rounded-xl px-1 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
-          <span className="block truncate text-sm font-extrabold tracking-tight text-slate-950 min-[380px]:text-base">Grocery Radar</span>
-          <span className="mt-0.5 flex items-center gap-1 text-[11px] font-bold text-emerald-700 sm:text-xs">
-            <MapPin className="h-3.5 w-3.5" />
-            Janesville prices
-          </span>
+        <button type="button" onClick={() => openScreen('home')} className="flex min-w-0 items-center gap-2.5 rounded-xl pr-2 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-700 text-white shadow-sm"><Search className="h-5 w-5" aria-hidden="true" /></span>
+          <span className="min-w-0"><span className="block truncate text-sm font-extrabold tracking-tight text-slate-950 min-[380px]:text-base">Grocery Radar</span>
+          <span className="season-location mt-0.5 hidden w-fit items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold min-[430px]:flex sm:text-xs"><MapPin className="h-3.5 w-3.5 text-emerald-700" />Janesville, WI <Leaf className="h-3 w-3 text-amber-700" aria-hidden="true" /></span></span>
         </button>
         <div className="flex shrink-0 gap-1.5 sm:gap-2">
-          <button type="button" onClick={openUpdates} className="relative flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-emerald-800 shadow-sm sm:w-auto sm:px-3" aria-label="What's new"><FileCheck2 className="h-5 w-5" /><span className="ml-2 hidden text-sm font-extrabold sm:inline">What's new</span>{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-white" aria-label="New update available" /> : null}</button>
+          <button type="button" onClick={openUpdates} className="header-action sm:w-auto sm:px-3" aria-label="What's new"><FileCheck2 className="h-5 w-5" /><span className="ml-2 hidden text-sm font-bold sm:inline">What's new</span>{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-white" aria-label="New update available" /> : null}</button>
           <button type="button" onClick={() => openScreen('profile')} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open account and notifications">
             <BellRing className="h-5 w-5" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
           </button>
-          <button type="button" onClick={() => openScreen('submissions')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-slate-700 ring-1 ring-slate-200" aria-label="Open My Submissions"><ReceiptText className="h-5 w-5" /></button>
+          <button type="button" onClick={() => openScreen('submissions')} className="header-action" aria-label="Open My Submissions"><ReceiptText className="h-5 w-5" /></button>
         </div>
       </div>
     </header>
@@ -2813,7 +2812,7 @@ function BottomNav({ active, openScreen }) {
   ]
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_25px_rgba(15,23,42,0.08)] backdrop-blur sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(48rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-2xl sm:border sm:pb-0">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/[0.92] pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_32px_rgba(15,23,42,0.10)] backdrop-blur-xl sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(46rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-3xl sm:border sm:pb-0" aria-label="Primary navigation">
       <div className="mx-auto grid max-w-4xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-1 sm:p-2">
         {navItems.map((item) => {
           const Icon = item.icon
@@ -2828,8 +2827,8 @@ function BottomNav({ active, openScreen }) {
                 event.preventDefault()
                 openScreen(item.id)
               }}
-              className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-center text-[11px] font-extrabold leading-tight transition sm:min-h-16 sm:text-xs ${
-                selected ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+              className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl px-0.5 text-center text-[11px] font-bold leading-tight transition sm:min-h-16 sm:text-xs ${
+                selected ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-500 hover:bg-emerald-50 hover:text-emerald-800'
               }`}
             >
               <span className="relative">
@@ -3336,7 +3335,7 @@ function App() {
   const selectedProduct = productDetail?.product
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-950">
+    <div className={`shopper-shell season-${seasonalTheme.id} min-h-screen text-slate-950`} data-season={seasonalTheme.id}>
       <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} />
       {toast ? (
         <button

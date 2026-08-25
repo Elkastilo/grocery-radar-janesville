@@ -102,6 +102,10 @@ async function integrationTests() {
     }
     const blackberries = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('fresh blackberries 6 oz container','Fresh Blackberries, 6 oz Container','6 oz Container','oz','produce','active',?,?)", [now, now]);
     const blueberries = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('fresh blueberries 18 oz container','Fresh Blueberries, 18 oz Container','18 oz Container','oz','produce','active',?,?)", [now, now]);
+    const fallbackImage = await run(db, "INSERT INTO product_images (product_id,image_path,alt_text,status,is_primary,created_at,updated_at) VALUES (?,?,?,'approved',0,?,?)", [blackberries.lastID, "products/fallback.webp", "Blackberries fallback image", now, now]);
+    const pendingImage = await run(db, "INSERT INTO product_images (product_id,image_path,alt_text,status,is_primary,created_at,updated_at) VALUES (?,?,?,'draft',1,?,?)", [blackberries.lastID, "products/pending.webp", "Private pending image", now, now]);
+    const rejectedImage = await run(db, "INSERT INTO product_images (product_id,image_path,alt_text,status,is_primary,created_at,updated_at) VALUES (?,?,?,'rejected',1,?,?)", [blackberries.lastID, "products/rejected.webp", "Rejected image", now, now]);
+    const primaryImage = await run(db, "INSERT INTO product_images (product_id,image_path,alt_text,status,is_primary,created_at,updated_at) VALUES (?,?,?,'approved',1,?,?)", [blackberries.lastID, "products/primary.webp", "Fresh blackberries package", now, now]);
     await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,comparison_price,comparison_unit,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,'Fresh Blackberries, 6 oz Container','produce',3.17,1,'oz',0.528,0.528,'oz','6 oz Container','shelf_tag_photo','high','approved','regular',?,?,?,?, 'not_required')", [owner.id, storeIds[0], blackberries.lastID, today, now, now, farFuture]);
     await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,comparison_price,comparison_unit,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,'Fresh Blueberries, 18 oz Container','produce',6.73,1,'oz',0.374,0.374,'oz','18 oz Container','shelf_tag_photo','high','approved','regular',?,?,?,?, 'not_required')", [owner.id, storeIds[0], blueberries.lastID, today, now, now, farFuture]);
     const source = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,product_attributes_json,status,created_at,updated_at) VALUES ('arena zero cola','Arena Zero Cola','12 pack','pack','drinks','{\"zero_sugar\":true}','active',?,?)", [now, now]);
@@ -133,8 +137,20 @@ async function integrationTests() {
     const blueberryMatch = produceBasket.selected.matches.find((match) => Number(match.item.product_id) === Number(blueberries.lastID));
     assert.deepEqual({ item_price: blackberryMatch.item_price, comparison_price: blackberryMatch.comparison_price, comparison_unit: blackberryMatch.comparison_unit, line_total: blackberryMatch.line_total }, { item_price: 3.17, comparison_price: 0.528, comparison_unit: "oz", line_total: 3.17 });
     assert.deepEqual({ report_price: blackberryMatch.report.price, report_comparison_price: blackberryMatch.report.comparison_price, report_comparison_unit: blackberryMatch.report.comparison_unit }, { report_price: 3.17, report_comparison_price: 0.528, report_comparison_unit: "oz" });
+    assert.deepEqual({ image_id: blackberryMatch.report.product_image_id, image_url: blackberryMatch.report.product_image_url, image_alt_text: blackberryMatch.report.product_image_alt_text }, { image_id: primaryImage.lastID, image_url: `/api/product-images/${primaryImage.lastID}/file`, image_alt_text: "Fresh blackberries package" }, "Shopping Plan reports must use the same approved primary image as shopper product cards.");
+    assert.notEqual(blackberryMatch.report.product_image_id, pendingImage.lastID, "Pending product images must never enter Shopping Plan responses.");
+    assert.notEqual(blackberryMatch.report.product_image_id, rejectedImage.lastID, "Rejected product images must never enter Shopping Plan responses.");
     assert.deepEqual({ item_price: blueberryMatch.item_price, comparison_price: blueberryMatch.comparison_price, comparison_unit: blueberryMatch.comparison_unit, line_total: blueberryMatch.line_total }, { item_price: 6.73, comparison_price: 0.374, comparison_unit: "oz", line_total: 6.73 });
     assert.equal(produceBasket.selected.estimated_total, 9.90);
+    const browse = await fetch(`${app.baseUrl}/api/browse?category=produce`).then((response) => response.json());
+    const browseBlackberries = browse.products.find((product) => Number(product.id) === Number(blackberries.lastID));
+    const browseBlueberries = browse.products.find((product) => Number(product.id) === Number(blueberries.lastID));
+    assert.deepEqual({ image_id: browseBlackberries.image_id, image_url: browseBlackberries.image_url }, { image_id: primaryImage.lastID, image_url: `/api/product-images/${primaryImage.lastID}/file` }, "Homepage browse cards must resolve the approved primary image.");
+    assert.equal(browseBlueberries.image_id, null); assert.equal(browseBlueberries.image_url, "", "Products without approved images must receive a safe empty image state.");
+    const productSearch = await fetch(`${app.baseUrl}/api/products?q=blackberries`).then((response) => response.json());
+    assert.equal(productSearch.products[0].image_id, primaryImage.lastID, "Products search must use the same approved primary image as Homepage.");
+    assert.equal(productSearch.products[0].image_url, `/api/product-images/${primaryImage.lastID}/file`);
+    assert.ok(fallbackImage.lastID < primaryImage.lastID, "The fixture must prove primary status wins over an earlier approved fallback.");
     const categoryBasket = await fetch(`${app.baseUrl}/api/savings/categories/pantry/basket`).then((response) => response.json()); assert.ok(categoryBasket.product_count > 0); assert.ok(categoryBasket.store_coverage.every((plan) => Number.isInteger(plan.matched_count)));
     const substitutes = await fetch(`${app.baseUrl}/api/savings/products/${sourceProduct}/substitutes`).then((response) => response.json());
     assert.equal(substitutes.substitutes.length, 1); assert.equal(substitutes.substitutes[0].same_product, false); assert.ok(substitutes.substitutes[0].potential_savings > 0);
@@ -160,8 +176,9 @@ async function integrationTests() {
     const withSeventh = await fetch(`${app.baseUrl}/api/savings/products/${productIds[1]}/comparison`).then((response) => response.json());
     assert.ok(withSeventh.comparison.stores.some((row) => row.store_name === "Arena Store 7"), "A newly added active Janesville store must participate without a code change.");
     const productPage = await fetch(`${app.baseUrl}/api/products/${productIds[1]}`).then((response) => response.json()); assert.equal(productPage.store_comparison.stores.length, 7);
-    const clientSource = fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8"); assert.match(clientSource, /Savings across every store/); assert.match(clientSource, /no shopper account required/); assert.match(clientSource, /Substitutes are different products/);
+    const clientSource = fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8"); assert.match(clientSource, /Savings across every store/); assert.match(clientSource, /saved on this device/); assert.match(clientSource, /Different products are clearly labeled/);
     assert.match(clientSource, /money\(match\.line_total\)/, "The Shopping plan must render the server-calculated shopper line total.");
+    assert.match(clientSource, /<ProductImage item=\{match\.report\}/, "Shopping Plan rows must render the canonical shopper product image component.");
   } finally { await stopServer(app); }
 }
 
