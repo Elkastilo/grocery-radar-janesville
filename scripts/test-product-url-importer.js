@@ -343,6 +343,13 @@ async function main() {
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 
   const adminScript = fs.readFileSync(path.join(__dirname, "..", "public", "admin.js"), "utf8");
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const reportMappingSource = namedFunctionSource(serverSource, "importRowToReportBody");
+  assert.match(reportMappingSource, /price:\s*row\.price[,\n]/, "Importer approval must publish the reviewed item/package price.");
+  assert.doesNotMatch(reportMappingSource, /price:\s*row\.comparison_price/, "Importer approval must not promote comparison pricing into the primary price.");
+  assert.match(reportMappingSource, /unit:\s*row\.unit[,\n]/, "Importer approval must preserve the reviewed package unit.");
+  assert.match(serverSource, /SELECT price_reports\.price[\s\S]{0,500}\) AS best_price,/, "Public product aggregation must expose the persisted item price as best_price.");
+  assert.match(serverSource, /best_price_label:\s*hasCurrentPrice \? `\$\$\{Number\(row\.best_price\)\.toFixed\(2\)\}`/, "Public product headlines must format the item price without a comparison-unit suffix.");
   assert.equal((adminScript.match(/function renderCategoryUrlPreview\(/g) || []).length, 1, "Category imports must have one renderer.");
   assert.match(adminScript, /class="importer-product-row/);
   assert.match(adminScript, /class="importer-edit-panel"[^>]*hidden/);

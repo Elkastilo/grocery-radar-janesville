@@ -979,7 +979,7 @@ async function main() {
     const publicProducts = await normal.get(`/api/products?q=${encodeURIComponent(productDetail.body.product.display_name)}`);
     const pricedProduct = publicProducts.body.products.find((item) => item.id === approvedResult.product_id);
     assert.equal(pricedProduct.best_price, 0.55, "Expired prices must not become best current prices.");
-    assert.equal(pricedProduct.best_price_label, provenance.unit === "each" ? "$0.55 each" : `$0.55/${provenance.unit}`);
+    assert.equal(pricedProduct.best_price_label, "$0.55", "Public product headlines must use the shopper-paid item price, not comparison-unit formatting.");
     const publicStore = await normal.get(`/api/stores/${provenance.store_id}`);
     assert.equal(publicStore.response.status, 200);
     assert.ok(publicStore.body.products.some((item) => item.id === approvedResult.product_id && item.best_price_label !== "Price needed"));

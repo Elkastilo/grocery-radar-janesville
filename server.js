@@ -548,7 +548,7 @@ function formatReport(row) {
     price_basis: row.price_basis || priceBasisForUnit(row.comparison_unit || row.unit),
     comparison_price: row.comparison_price === null || row.comparison_price === undefined ? Number(row.unit_price || row.price) : Number(row.comparison_price),
     comparison_unit: normalizePriceUnit(row.comparison_unit || row.unit),
-    primary_price_label: row.display_offer_text || primaryPriceLabel(row.comparison_price ?? row.unit_price ?? row.price, row.comparison_unit || row.unit, row.size_text),
+    primary_price_label: row.display_offer_text || `$${Number(row.price).toFixed(2)}`,
     estimated_item_price: row.estimated_item_price === null || row.estimated_item_price === undefined ? null : Number(row.estimated_item_price),
     estimated_item_price_label: row.estimated_item_price === null || row.estimated_item_price === undefined ? "" : `${primaryPriceLabel(row.estimated_item_price, "each")} estimated`,
     approximate_item_weight: row.approximate_item_weight === null || row.approximate_item_weight === undefined ? null : Number(row.approximate_item_weight),
@@ -1214,12 +1214,12 @@ function importRowToReportBody(row) {
     item_name: row.item_name,
     brand: row.brand || "",
     category: row.category,
-    price: row.comparison_price ?? row.price,
+    price: row.price,
     regular_price: row.regular_price === null || row.regular_price === undefined ? "" : row.regular_price,
     sale_price: row.sale_price ? "on" : "",
     size_text: row.size_text || "",
     quantity: row.quantity,
-    unit: row.comparison_unit || row.unit,
+    unit: row.unit,
     proof_type: row.proof_type,
     notes: composeImportReportNotes(row),
     expires_at: dateInputValue(row.valid_end_at)
@@ -1834,7 +1834,7 @@ function formatProduct(row) {
     best_price: hasCurrentPrice ? Number(row.best_price) : null,
     best_price_unit: hasCurrentPrice ? normalizePriceUnit(row.best_price_unit || "") : null,
     best_price_size_text: hasCurrentPrice ? (row.best_price_size_text || "") : null,
-    best_price_label: hasCurrentPrice ? primaryPriceLabel(row.best_price, row.best_price_unit, row.best_price_size_text) : "Price needed",
+    best_price_label: hasCurrentPrice ? `$${Number(row.best_price).toFixed(2)}` : "Price needed",
     best_store_name: hasCurrentPrice ? (row.best_store_name || "") : null,
     best_store_id: hasCurrentPrice ? (row.best_store_id || null) : null,
     best_report_id: hasCurrentPrice ? (row.best_report_id || null) : null,
@@ -1878,8 +1878,8 @@ function formatPublicProduct(row) {
 
 function productSelectColumns(alias = "products") {
   const eligible = `${publicPriceEligibilitySql("price_reports")}
-    AND (NULLIF(${alias}.default_unit, '') IS NULL OR lower(COALESCE(NULLIF(price_reports.comparison_unit, ''), price_reports.unit)) = lower(${alias}.default_unit))
-    AND (lower(COALESCE(NULLIF(price_reports.comparison_unit, ''), price_reports.unit)) NOT IN ('each', 'package') OR NULLIF(${alias}.default_size_text, '') IS NULL OR NULLIF(price_reports.size_text, '') IS NULL OR lower(price_reports.size_text) = lower(${alias}.default_size_text))`;
+    AND (NULLIF(${alias}.default_unit, '') IS NULL OR lower(price_reports.unit) = lower(${alias}.default_unit))
+    AND (lower(price_reports.unit) NOT IN ('each', 'package') OR NULLIF(${alias}.default_size_text, '') IS NULL OR NULLIF(price_reports.size_text, '') IS NULL OR lower(price_reports.size_text) = lower(${alias}.default_size_text))`;
   const activeUser = "COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')";
   const order = `COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price) ASC, price_reports.submitted_at DESC`;
   return `
@@ -1915,7 +1915,7 @@ function productSelectColumns(alias = "products") {
         AND lower(price_reports.item_name) = ${alias}.canonical_name
     ) AS unlinked_report_count,
     (
-      SELECT COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price)
+      SELECT price_reports.price
       FROM price_reports
       JOIN users ON users.id = price_reports.user_id
       WHERE price_reports.product_id = ${alias}.id
@@ -7772,7 +7772,7 @@ app.get("/api/stores/:id", asyncRoute(async (request, response) => {
   const products = rows.map((row) => {
     const product = formatPublicProduct(row);
     const bestHere = publicReports.filter((report) => Number(report.product_id) === Number(product.id)).sort((left, right) => Number(left.comparison_price ?? left.unit_price ?? left.price) - Number(right.comparison_price ?? right.unit_price ?? right.price))[0];
-    return bestHere ? { ...product, best_price: bestHere.comparison_price ?? bestHere.unit_price ?? bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.primary_price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label, best_store_location: bestHere.store_product_location || null } : product;
+    return bestHere ? { ...product, best_price: bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label, best_store_location: bestHere.store_product_location || null } : product;
   });
   const week = arenaDateWindow("week");
   const [competitionRows, drops] = await Promise.all([arenaCurrentRows({ window: week }), arenaPriceDrops({ window: week, storeId })]);
@@ -17972,7 +17972,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
         && configuredRetailerStore.retailer_store_slug === priceSourceStore.retailer_store_slug;
       const inferredSale = currentPrice !== null && regularPrice !== null && regularPrice > currentPrice;
       const normalizedOverallConfidence = currentPrice === null && input.overall_confidence === "high" ? "medium" : input.overall_confidence || "low";
-      const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: itemStore.id, proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
+      const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, comparison_price: input.comparison_price ?? input.unit_price ?? currentPrice ?? "", comparison_unit: input.comparison_unit || input.unit_price_unit || input.unit, item_name: input.name || input.item_name, store_id: itemStore.id, proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
       if (!draft.item_name) throw Object.assign(new Error("Every selected product needs a name."), { statusCode: 400 });
       let itemSourceUrl;
       try { itemSourceUrl = validateRemoteUrl(draft.source_url).toString(); }
@@ -18125,6 +18125,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
     ...request.body,
     price: currentPrice ?? "",
     regular_price: regularPrice ?? "",
+    comparison_price: request.body.comparison_price ?? request.body.unit_price ?? currentPrice ?? "",
+    comparison_unit: request.body.comparison_unit || request.body.unit_price_unit || request.body.unit,
     item_name: request.body.name || request.body.item_name,
     proof_type: "no_photo",
     source_url: request.body.source_url,

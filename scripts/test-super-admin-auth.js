@@ -638,6 +638,80 @@ async function main() {
     assert.equal(wrongStoreApproval.response.status, 409);
     assert.equal(wrongStoreApproval.body.code, "LOCATION_CONFIRMATION_REQUIRED");
 
+    const itemPriceCases = [
+      { key: "banana-item-price-regression", name: "Fresh Banana Item Price Regression Fixture, Each", price: 0.20, comparisonPrice: 0.50, comparisonUnit: "each", quantity: 1, unit: "each", size: "Each", sku: "ITEM-PRICE-8001" },
+      { key: "strawberry-item-price-regression", name: "Fresh Strawberries Item Price Regression Fixture, 1 lb Container", price: 2.46, comparisonPrice: 0.154, comparisonUnit: "oz", quantity: 1, unit: "lb", size: "1 lb Container", sku: "ITEM-PRICE-8002" },
+      { key: "grapefruit-item-price-regression", name: "Del Monte Grapefruit Item Price Regression Fixture, 52 oz Jar", price: 9.76, comparisonPrice: 0.188, comparisonUnit: "oz", quantity: 52, unit: "oz", size: "52 oz Jar", sku: "ITEM-PRICE-8003" },
+      { key: "crunch-pak-item-price-regression", name: "Crunch Pak Item Price Regression Fixture, 12 oz", price: 3.87, comparisonPrice: 0.323, comparisonUnit: "oz", quantity: 12, unit: "oz", size: "12 oz", sku: "ITEM-PRICE-8004" }
+    ];
+    const itemPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/item-price-regression",
+      retailer_name: "Walmart",
+      store_id: walmartJanesvilleStore.id,
+      price_location_confidence: "unknown",
+      items: itemPriceCases.map((item, index) => ({
+        idempotency_key: item.key,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        unit: item.unit,
+        size_text: item.size,
+        unit_price: item.comparisonPrice,
+        unit_price_unit: item.comparisonUnit,
+        product_url: `https://www.walmart.com/ip/item-price-regression/${8001 + index}`,
+        sku: item.sku,
+        overall_confidence: "high"
+      }))
+    });
+    assert.equal(itemPriceSave.response.status, 201, JSON.stringify(itemPriceSave.body));
+    assert.equal(itemPriceSave.body.imports.length, itemPriceCases.length);
+    const itemPriceApprovals = [];
+    for (const importedItem of itemPriceSave.body.imports) {
+      const approval = await ownerClient.post(`/api/admin/product-url-imports/${importedItem.import_id}/approve`, { confirm_location: true });
+      assert.equal(approval.response.status, 200, JSON.stringify(approval.body));
+      itemPriceApprovals.push(approval.body);
+    }
+    const persistedItemPrices = await withDb(app.dataDir, (database) => dbAll(database, `
+      SELECT imports.id AS import_id, rows.price AS approved_payload_price,
+        rows.comparison_price AS approved_payload_comparison_price,
+        rows.comparison_unit AS approved_payload_comparison_unit,
+        reports.price AS persisted_price, reports.unit_price AS persisted_unit_price,
+        reports.comparison_price AS persisted_comparison_price,
+        reports.comparison_unit AS persisted_comparison_unit,
+        reports.verification_source
+      FROM product_url_imports imports
+      JOIN price_import_rows rows ON rows.id = imports.row_id
+      JOIN price_reports reports ON reports.id = imports.approved_price_report_id
+      WHERE imports.id IN (${itemPriceSave.body.imports.map(() => "?").join(",")})
+      ORDER BY imports.id
+    `, itemPriceSave.body.imports.map((item) => item.import_id)));
+    assert.equal(persistedItemPrices.length, itemPriceCases.length);
+    persistedItemPrices.forEach((trace, index) => {
+      const expected = itemPriceCases[index];
+      assert.equal(trace.approved_payload_price, expected.price, `${expected.name}: approval payload must retain the shopper-paid item price.`);
+      assert.equal(trace.approved_payload_comparison_price, expected.comparisonPrice, `${expected.name}: comparison price must remain supplemental.`);
+      assert.equal(trace.approved_payload_comparison_unit, expected.comparisonUnit);
+      assert.equal(trace.persisted_price, expected.price, `${expected.name}: price_reports.price must retain the item/package price.`);
+      assert.equal(trace.persisted_comparison_price, expected.comparisonPrice, `${expected.name}: price_reports.comparison_price must remain distinct.`);
+      assert.equal(trace.persisted_comparison_unit, expected.comparisonUnit);
+      assert.equal(trace.verification_source, "admin_import");
+    });
+    const itemPriceBrowse = await ownerClient.get("/api/browse");
+    assert.equal(itemPriceBrowse.response.status, 200);
+    itemPriceApprovals.forEach((approval, index) => {
+      const expected = itemPriceCases[index];
+      const product = itemPriceBrowse.body.products.find((candidate) => Number(candidate.id) === Number(approval.product_id));
+      assert.ok(product, `${expected.name}: approved product must be returned by /api/browse.`);
+      assert.equal(product.best_price, expected.price, `${expected.name}: /api/browse best_price must be the item/package price.`);
+      assert.equal(product.best_price_label, `$${expected.price.toFixed(2)}`, `${expected.name}: public card headline must not use comparison pricing.`);
+      const publicReport = itemPriceBrowse.body.recently_approved_reports.find((candidate) => Number(candidate.id) === Number(approval.report_id));
+      assert.ok(publicReport, `${expected.name}: approved report must be returned by /api/browse.`);
+      assert.equal(publicReport.price, expected.price);
+      assert.equal(publicReport.comparison_price, expected.comparisonPrice);
+      assert.equal(publicReport.comparison_unit, expected.comparisonUnit);
+      assert.equal(publicReport.primary_price_label, `$${expected.price.toFixed(2)}`);
+    });
+
     const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",
       items: [{ idempotency_key: "missing-price-approval-fixture", name: "Missing Price Approval Fixture", price: "", quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/missing-price-fixture", overall_confidence: "low" }]
