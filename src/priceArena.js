@@ -10,10 +10,17 @@ function parseObject(value) {
   try { const parsed = JSON.parse(value || "{}"); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; }
 }
 
-function priceValue(row) {
+function comparisonPriceValue(row) {
   const value = Number(row.comparison_price ?? row.unit_price ?? row.price);
   return Number.isFinite(value) && value > 0 ? value : null;
 }
+
+function itemPriceValue(row) {
+  const value = Number(row.price);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+const priceValue = comparisonPriceValue;
 
 function comparisonUnit(row) {
   return normalizeUnit(row.comparison_unit || row.unit || "");
@@ -118,14 +125,25 @@ function basketPlanForStores(items, rows, storeIds) {
       if (required > 1) {
         const totalOffer = Number(row.multibuy_total_price);
         if (quantity % required !== 0 || !Number.isFinite(totalOffer) || totalOffer <= 0) return null;
-        return { row, lineTotal: totalOffer * (quantity / required) };
+        return { row, lineTotal: totalOffer * (quantity / required), comparisonTotal: comparisonPriceValue(row) * quantity };
       }
-      return { row, lineTotal: priceValue(row) * quantity };
-    }).filter(Boolean).sort((left, right) => left.lineTotal - right.lineTotal || String(left.row.store_name).localeCompare(String(right.row.store_name)));
+      const itemPrice = itemPriceValue(row);
+      const comparisonPrice = comparisonPriceValue(row);
+      if (itemPrice === null || comparisonPrice === null) return null;
+      return { row, lineTotal: itemPrice * quantity, comparisonTotal: comparisonPrice * quantity };
+    }).filter(Boolean).sort((left, right) => left.comparisonTotal - right.comparisonTotal || left.lineTotal - right.lineTotal || String(left.row.store_name).localeCompare(String(right.row.store_name)));
     const selected = candidates[0];
     if (!selected) { missing.push(item); continue; }
     const row = selected.row; const lineTotal = selected.lineTotal; total += lineTotal;
-    matches.push({ item, report: row, quantity, line_total: Number(lineTotal.toFixed(2)) });
+    matches.push({
+      item,
+      report: row,
+      quantity,
+      item_price: itemPriceValue(row),
+      comparison_price: comparisonPriceValue(row),
+      comparison_unit: comparisonUnit(row),
+      line_total: Number(lineTotal.toFixed(2))
+    });
   }
   return { store_ids: [...new Set(matches.map((match) => Number(match.report.store_id)))], eligible_store_ids: [...allowed], matched_count: matches.length, requested_count: items.length, coverage_percent: items.length ? Math.round(matches.length / items.length * 1000) / 10 : 0, estimated_total: Number(total.toFixed(2)), matches, missing_items: missing };
 }
@@ -161,4 +179,4 @@ function sizeCompatible(source, target) {
   return true;
 }
 
-module.exports = { CONDITIONAL_TYPES, DIETARY_KEYS, parseObject, priceValue, comparisonUnit, isConditionalOffer, comparableRows, bestRowsByProductStore, productComparison, storeLeaderboard, categoryLeaderboards, optimizeBasket, dietaryConflicts, sizeCompatible };
+module.exports = { CONDITIONAL_TYPES, DIETARY_KEYS, parseObject, priceValue, comparisonPriceValue, itemPriceValue, comparisonUnit, isConditionalOffer, comparableRows, bestRowsByProductStore, productComparison, storeLeaderboard, categoryLeaderboards, optimizeBasket, dietaryConflicts, sizeCompatible };

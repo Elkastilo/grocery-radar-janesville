@@ -46,6 +46,38 @@ function unitTests() {
   const basketRows = [{ product_id: 1, store_id: 1, store_name: "Store 1", price: 1 }, { product_id: 1, store_id: 2, store_name: "Store 2", price: 5 }, { product_id: 2, store_id: 1, store_name: "Store 1", price: 5 }, { product_id: 2, store_id: 2, store_name: "Store 2", price: 1 }];
   const basket = optimizeBasket([{ product_id: 1, quantity: 1 }, { product_id: 2, quantity: 2 }], basketRows, stores, 2);
   assert.equal(basket.selected.store_ids.length, 2); assert.equal(basket.selected.matched_count, 2); assert.equal(basket.selected.estimated_total, 3);
+  const blackberry = optimizeBasket([{ product_id: 20, quantity: 1 }], [{ id: 20, product_id: 20, store_id: 1, store_name: "Store 1", price: 3.17, comparison_price: 0.528, comparison_unit: "oz", unit_price: 0.528, unit: "oz", size_text: "6 oz Container" }], stores, 1).selected;
+  assert.equal(blackberry.matches[0].item_price, 3.17);
+  assert.equal(blackberry.matches[0].comparison_price, 0.528);
+  assert.equal(blackberry.matches[0].comparison_unit, "oz");
+  assert.equal(blackberry.matches[0].line_total, 3.17, "Shopping-plan rows must use the package price, not the normalized comparison price.");
+  assert.equal(blackberry.estimated_total, 3.17);
+  const blackberryQuantity = optimizeBasket([{ product_id: 20, quantity: 3 }], [{ id: 20, product_id: 20, store_id: 1, store_name: "Store 1", price: 3.17, comparison_price: 0.528, comparison_unit: "oz", unit_price: 0.528, unit: "oz", size_text: "6 oz Container" }], stores, 1).selected;
+  assert.equal(blackberryQuantity.matches[0].line_total, 9.51);
+  assert.equal(blackberryQuantity.estimated_total, 9.51);
+  const blueberries = optimizeBasket([{ product_id: 21, quantity: 1 }], [{ id: 21, product_id: 21, store_id: 1, store_name: "Store 1", price: 6.73, comparison_price: 0.374, comparison_unit: "oz", unit_price: 0.374, unit: "oz", size_text: "18 oz Container" }], stores, 1).selected;
+  assert.equal(blueberries.matches[0].line_total, 6.73);
+  const productionShape = optimizeBasket([{ product_id: 25, quantity: 1 }, { product_id: 26, quantity: 1 }], [
+    { id: 25, product_id: 25, store_id: 1, store_name: "Store 1", price: 3.17, comparison_price: 52.8, comparison_unit: "oz", unit: "oz", size_text: "6 oz Container" },
+    { id: 26, product_id: 26, store_id: 1, store_name: "Store 1", price: 6.73, comparison_price: 37.4, comparison_unit: "oz", unit: "oz", size_text: "18 oz Container" }
+  ], stores, 1).selected;
+  assert.deepEqual(productionShape.matches.map((match) => match.line_total), [3.17, 6.73], "Even legacy scaled comparison values must never become shopper line prices.");
+  assert.equal(productionShape.estimated_total, 9.90);
+  const crossStore = optimizeBasket([{ product_id: 22, quantity: 1 }], [
+    { id: 22, product_id: 22, store_id: 1, store_name: "Store 1", price: 4.80, comparison_price: 0.40, comparison_unit: "oz", unit: "oz", size_text: "12 oz" },
+    { id: 23, product_id: 22, store_id: 2, store_name: "Store 2", price: 6.30, comparison_price: 0.35, comparison_unit: "oz", unit: "oz", size_text: "18 oz" }
+  ], stores, "any").selected;
+  assert.equal(crossStore.matches[0].report.store_id, 2, "Normalized comparison pricing should still select the better comparable offer.");
+  assert.equal(crossStore.matches[0].comparison_price, 0.35);
+  assert.equal(crossStore.matches[0].item_price, 6.30);
+  assert.equal(crossStore.matches[0].line_total, 6.30, "The selected offer must display its shopper-paid package price.");
+  const basketTotal = optimizeBasket([{ product_id: 23, quantity: 2 }, { product_id: 24, quantity: 1 }], [
+    { product_id: 23, store_id: 1, store_name: "Store 1", price: 0.20, comparison_price: 0.50, comparison_unit: "each", unit: "each" },
+    { product_id: 24, store_id: 1, store_name: "Store 1", price: 2.46, comparison_price: 0.154, comparison_unit: "oz", unit: "lb" }
+  ], stores, 1).selected;
+  assert.equal(basketTotal.matches[0].line_total, 0.40);
+  assert.equal(basketTotal.matches[1].line_total, 2.46);
+  assert.equal(basketTotal.estimated_total, 2.86, "Basket totals must sum package-price line totals.");
   assert.deepEqual(dietaryConflicts({ lactose_free: true }, { lactose_free: false }), ["lactose free compatibility is not verified"]);
   assert.equal(sizeCompatible({ default_unit: "pack", default_size_text: "12 pack" }, { default_unit: "pack", default_size_text: "24 pack" }), false);
   assert.equal(sizeCompatible({ default_unit: "oz", default_size_text: "12 oz" }, { default_unit: "oz", default_size_text: "24 oz" }), false);
@@ -68,6 +100,10 @@ async function integrationTests() {
       productIds.push(result.lastID);
       for (let store = 0; store < storeIds.length; store += 1) await run(db, `INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,?,?,?,1,'each',?,'shelf_tag_photo','high','approved','regular',?,?,?,?, 'not_required')`, [owner.id, storeIds[store], result.lastID, `Arena Product ${product}`, category, Number((1 + store * .25 + product / 100).toFixed(2)), Number((1 + store * .25 + product / 100).toFixed(2)), today, now, now, farFuture]);
     }
+    const blackberries = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('fresh blackberries 6 oz container','Fresh Blackberries, 6 oz Container','6 oz Container','oz','produce','active',?,?)", [now, now]);
+    const blueberries = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,status,created_at,updated_at) VALUES ('fresh blueberries 18 oz container','Fresh Blueberries, 18 oz Container','18 oz Container','oz','produce','active',?,?)", [now, now]);
+    await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,comparison_price,comparison_unit,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,'Fresh Blackberries, 6 oz Container','produce',3.17,1,'oz',0.528,0.528,'oz','6 oz Container','shelf_tag_photo','high','approved','regular',?,?,?,?, 'not_required')", [owner.id, storeIds[0], blackberries.lastID, today, now, now, farFuture]);
+    await run(db, "INSERT INTO price_reports (user_id,store_id,product_id,item_name,category,price,quantity,unit,unit_price,comparison_price,comparison_unit,size_text,proof_type,confidence,status,price_type,source_date,reviewed_at,submitted_at,expires_at,location_verification_status) VALUES (?,?,?,'Fresh Blueberries, 18 oz Container','produce',6.73,1,'oz',0.374,0.374,'oz','18 oz Container','shelf_tag_photo','high','approved','regular',?,?,?,?, 'not_required')", [owner.id, storeIds[0], blueberries.lastID, today, now, now, farFuture]);
     const source = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,product_attributes_json,status,created_at,updated_at) VALUES ('arena zero cola','Arena Zero Cola','12 pack','pack','drinks','{\"zero_sugar\":true}','active',?,?)", [now, now]);
     const sourceProduct = source.lastID;
     const substitute = await run(db, "INSERT INTO products (canonical_name,display_name,default_size_text,default_unit,category,product_attributes_json,status,created_at,updated_at) VALUES ('arena substitute','Arena Store Brand Substitute','12 pack','pack','drinks','{\"zero_sugar\":true}','active',?,?)", [now, now]);
@@ -90,6 +126,15 @@ async function integrationTests() {
     assert.doesNotMatch(JSON.stringify(comparison), /photo_path|reviewed_by|location_evidence_text|tracking_token|password_hash/i, "Public arena responses must not expose private proof, staff, or token fields.");
     const basketResponse = await fetch(`${app.baseUrl}/api/savings/basket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: productIds.slice(1, 11).map((product_id) => ({ product_id, quantity: 1 })), max_stores: 2 }) });
     assert.equal(basketResponse.status, 200); const basket = await basketResponse.json(); assert.equal(basket.selected.matched_count, 10); assert.ok(basket.selected.store_ids.length > 0 && basket.selected.store_ids.length <= 2);
+    const produceBasketResponse = await fetch(`${app.baseUrl}/api/savings/basket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: [{ product_id: blackberries.lastID, quantity: 1 }, { product_id: blueberries.lastID, quantity: 1 }], max_stores: 1 }) });
+    assert.equal(produceBasketResponse.status, 200);
+    const produceBasket = await produceBasketResponse.json();
+    const blackberryMatch = produceBasket.selected.matches.find((match) => Number(match.item.product_id) === Number(blackberries.lastID));
+    const blueberryMatch = produceBasket.selected.matches.find((match) => Number(match.item.product_id) === Number(blueberries.lastID));
+    assert.deepEqual({ item_price: blackberryMatch.item_price, comparison_price: blackberryMatch.comparison_price, comparison_unit: blackberryMatch.comparison_unit, line_total: blackberryMatch.line_total }, { item_price: 3.17, comparison_price: 0.528, comparison_unit: "oz", line_total: 3.17 });
+    assert.deepEqual({ report_price: blackberryMatch.report.price, report_comparison_price: blackberryMatch.report.comparison_price, report_comparison_unit: blackberryMatch.report.comparison_unit }, { report_price: 3.17, report_comparison_price: 0.528, report_comparison_unit: "oz" });
+    assert.deepEqual({ item_price: blueberryMatch.item_price, comparison_price: blueberryMatch.comparison_price, comparison_unit: blueberryMatch.comparison_unit, line_total: blueberryMatch.line_total }, { item_price: 6.73, comparison_price: 0.374, comparison_unit: "oz", line_total: 6.73 });
+    assert.equal(produceBasket.selected.estimated_total, 9.90);
     const categoryBasket = await fetch(`${app.baseUrl}/api/savings/categories/pantry/basket`).then((response) => response.json()); assert.ok(categoryBasket.product_count > 0); assert.ok(categoryBasket.store_coverage.every((plan) => Number.isInteger(plan.matched_count)));
     const substitutes = await fetch(`${app.baseUrl}/api/savings/products/${sourceProduct}/substitutes`).then((response) => response.json());
     assert.equal(substitutes.substitutes.length, 1); assert.equal(substitutes.substitutes[0].same_product, false); assert.ok(substitutes.substitutes[0].potential_savings > 0);
@@ -116,6 +161,7 @@ async function integrationTests() {
     assert.ok(withSeventh.comparison.stores.some((row) => row.store_name === "Arena Store 7"), "A newly added active Janesville store must participate without a code change.");
     const productPage = await fetch(`${app.baseUrl}/api/products/${productIds[1]}`).then((response) => response.json()); assert.equal(productPage.store_comparison.stores.length, 7);
     const clientSource = fs.readFileSync(path.join(ROOT, "client/src/App.jsx"), "utf8"); assert.match(clientSource, /Savings across every store/); assert.match(clientSource, /no shopper account required/); assert.match(clientSource, /Substitutes are different products/);
+    assert.match(clientSource, /money\(match\.line_total\)/, "The Shopping plan must render the server-calculated shopper line total.");
   } finally { await stopServer(app); }
 }
 
