@@ -1,7 +1,7 @@
 "use strict";
 
 const { parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct } = require("./productImporter");
-const { extractWalmartCategory } = require("./importers/walmart");
+const { extractWalmartCategory, parseWalmartStoreUrl, mergeWalmartStorePrices } = require("./importers/walmart");
 
 const MAX_CATEGORY_PRODUCTS = 50;
 const CATEGORY_PRODUCT_CHOICES = Object.freeze([10, 25, 50]);
@@ -41,6 +41,9 @@ function sourceForField(product, field, fallback = "category_listing") {
 }
 
 function mergeCategoryProductDetails(categoryProduct = {}, detail = {}) {
+  const categoryPrice = parsePrice(categoryProduct.fields?.price);
+  const categoryPriceConfidence = categoryProduct.confidence?.price || "unknown";
+  const categoryPriceOrigin = sourceForField(categoryProduct, "price");
   const merged = {
     ...categoryProduct,
     fields: { ...(categoryProduct.fields || {}) },
@@ -85,6 +88,13 @@ function mergeCategoryProductDetails(categoryProduct = {}, detail = {}) {
   }
 
   for (const field of Object.keys(merged.fields)) if (!merged.field_origins[field] && merged.fields[field] !== null && merged.fields[field] !== "") merged.field_origins[field] = sourceForField(categoryProduct, field);
+  // Detail enrichment is additive. A missing/invalid detail value must never
+  // erase a valid category-listing price or downgrade its confidence/source.
+  if (categoryPrice !== null && parsePrice(merged.fields.price) === null) {
+    merged.fields.price = categoryPrice;
+    merged.confidence.price = categoryPriceConfidence;
+    merged.field_origins.price = categoryPriceOrigin;
+  }
   if (parsePrice(merged.fields.price) !== null) merged.warnings = merged.warnings.filter((warning) => !/price was not present|no reliable current price/i.test(warning));
   merged.overall_confidence = merged.confidence.name === "high" && merged.confidence.price === "high" ? "high" : clean(merged.fields.name, 120) && parsePrice(merged.fields.price) !== null ? "medium" : "low";
   merged.enrichment = { status: "updated", fetched_at: detail.extracted_at || new Date().toISOString(), source_url: detail.source_url || merged.fields.product_url || "" };
@@ -134,7 +144,7 @@ function categoryUrlHint(input) {
   try { url = new URL(String(input || "")); } catch { return "unsupported"; }
   const path = url.pathname.toLowerCase();
   if (/\/(?:ip|product|p)\//.test(path) || /\/dp\//.test(path)) return "product";
-  if (/\/(?:browse|category|categories|search|collections?|aisle)(?:\/|$)/.test(path) || url.searchParams.has("q") || url.searchParams.has("query")) return "category";
+  if (/^\/store\/\d+-[a-z0-9-]+\/[a-z0-9-]+\/?$/i.test(path) || /\/(?:browse|category|categories|search|collections?|aisle)(?:\/|$)/.test(path) || url.searchParams.has("q") || url.searchParams.has("query")) return "category";
   return "unknown";
 }
 
@@ -274,13 +284,31 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   if (Date.now() > deadline) throw context.timeoutError();
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
-  const location = categoryLocation(html, matchedStore);
-  products = products.map((item) => ({ ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, readiness: productImportReadiness(item.fields, { storeId: retailer.store_id, locationConfirmable: Boolean(retailer.store_id) }) }));
+  const walmartStore = parseWalmartStoreUrl(pageUrl);
+  const location = walmartStore ? { confidence: "confirmed_store_source", evidence: `The retailer URL establishes Walmart store #${walmartStore.retailer_store_id}.` } : categoryLocation(html, matchedStore);
+  products = products.map((item) => {
+    const price = parsePrice(item.fields?.price);
+    const priceSource = walmartStore && price !== null ? { type: "retailer_store_page", url: pageUrl, retailer_store_id: walmartStore.retailer_store_id, retailer_store_slug: walmartStore.retailer_store_slug, retrieved_at: new Date().toISOString(), location_confirmation_method: "retailer_store_page" } : null;
+    return { ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, readiness: productImportReadiness(item.fields, { storeId: retailer.store_id, locationConfirmable: Boolean(retailer.store_id) }) };
+  });
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");
   if (products.length >= maxProducts) warnings.push(`Detection stopped at the selected ${maxProducts}-product limit.`);
   if (!products.length) warnings.push("No safely parseable product listing items were detected.");
-  return { url_type: products.length ? "category" : "unsupported", source_url: pageUrl, extracted_at: new Date().toISOString(), category_title: pageTitle(html), adapter, retailer, location, products: products.slice(0, maxProducts), detected_count: Math.min(products.length, maxProducts), max_products: maxProducts, pagination_likely: paginationLikely, warnings };
+  return { url_type: products.length ? "category" : "unsupported", source_type: walmartStore ? "walmart_store_category" : "category", walmart_store: walmartStore, source_url: pageUrl, extracted_at: new Date().toISOString(), category_title: pageTitle(html), adapter, retailer, location, products: products.slice(0, maxProducts), detected_count: Math.min(products.length, maxProducts), max_products: maxProducts, pagination_likely: paginationLikely, warnings };
+}
+
+function mergeWalmartStoreAnalysis(discovery, storeAnalysis, expectedStore) {
+  if (!discovery || !storeAnalysis || storeAnalysis.source_type !== "walmart_store_category") return discovery;
+  const actual = storeAnalysis.walmart_store;
+  if (!expectedStore || !actual || String(expectedStore.retailer_store_id) !== String(actual.retailer_store_id) || expectedStore.retailer_store_slug !== actual.retailer_store_slug) {
+    discovery.warnings = [...(discovery.warnings || []), `Walmart store source did not match the selected Grocery Radar store${actual?.retailer_store_id ? ` (received #${actual.retailer_store_id})` : ""}.`];
+    discovery.store_enrichment = { status: "store_mismatch", expected_store_id: String(expectedStore?.retailer_store_id || ""), actual_store_id: String(actual?.retailer_store_id || "") };
+    return discovery;
+  }
+  discovery.products = mergeWalmartStorePrices(discovery.products, storeAnalysis.products, { ...actual, source_url: storeAnalysis.source_url, retrieved_at: storeAnalysis.extracted_at });
+  discovery.store_enrichment = { status: "completed", retailer_store_id: actual.retailer_store_id, retailer_store_slug: actual.retailer_store_slug, source_url: storeAnalysis.source_url, matched: discovery.products.filter((product) => product.price_source?.type === "retailer_store_page").length };
+  return discovery;
 }
 
 function analyzePage(html, pageUrl, stores = [], options = {}) {
@@ -292,4 +320,4 @@ function analyzePage(html, pageUrl, stores = [], options = {}) {
   return category.products.length > 1 ? category : { url_type: "unsupported", source_url: pageUrl, warnings: [...(category.warnings || []), "The page was not recognized as an individual product or product listing."] };
 }
 
-module.exports = { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_PARSE_TIMEOUT_MS, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, needsCriticalProductDetails, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage };
+module.exports = { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_PARSE_TIMEOUT_MS, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, needsCriticalProductDetails, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis };

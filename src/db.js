@@ -873,6 +873,12 @@ async function initDb() {
   await addColumnIfMissing("product_url_imports", "location_confirmation_method", "TEXT");
   await addColumnIfMissing("product_url_imports", "location_confirmed_by", "INTEGER");
   await addColumnIfMissing("product_url_imports", "location_confirmed_at", "TEXT");
+  await addColumnIfMissing("product_url_imports", "retailer_store_id", "TEXT");
+  await addColumnIfMissing("product_url_imports", "retailer_store_slug", "TEXT");
+  await addColumnIfMissing("product_url_imports", "price_source_type", "TEXT");
+  await addColumnIfMissing("product_url_imports", "price_source_url", "TEXT");
+  await addColumnIfMissing("product_url_imports", "price_source_store_id", "TEXT");
+  await addColumnIfMissing("product_url_imports", "price_retrieved_at", "TEXT");
 
   await run(`
     CREATE TABLE IF NOT EXISTS product_url_import_images (

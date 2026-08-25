@@ -107,6 +107,7 @@
 .importer-field-confidence { color: #66756c; font-size: .66rem; font-weight: 750; }
 .importer-location-badge.location-likely_janesville { background: #edf7f0; color: #246c43; }
 .importer-location-badge.location-confirmed_janesville { background: #dff3e6; color: #145c35; }
+.importer-location-badge.location-confirmed_store_source { background: #dff3e6; color: #145c35; }
 .importer-confidence .badge { width: fit-content; }
 .importer-confidence .relevance-low { background: #fff1df; color: #7a531a; }
 .duplicate-clear { color: #26734a; font-size: .75rem; font-weight: 700; }

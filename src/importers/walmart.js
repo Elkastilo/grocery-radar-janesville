@@ -208,6 +208,7 @@ function listingCollections(searchResult) {
     const label = clean([stack?.title, stack?.name, stack?.type, stack?.displayName, stack?.moduleType].filter(Boolean).join(" "), 200);
     if (EXCLUDED_MODULE_PATTERN.test(label) || stack?.sponsored === true || stack?.isSponsored === true) continue;
     add(stack?.items, `searchResult.itemStacks[${index}].items`, "high");
+    add(stack?.itemsV2, `searchResult.itemStacks[${index}].itemsV2`, "high");
     add(stack?.products, `searchResult.itemStacks[${index}].products`, "high");
   }
   return collections;
@@ -232,4 +233,58 @@ function extractWalmartCategory(jsonValues, context) {
   return products;
 }
 
-module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, walmartPackageData, walmartSellingData, findSearchResults, listingCollections, excludedListingItem };
+function parseWalmartStoreUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!/(^|\.)walmart\.com$/i.test(url.hostname)) return null;
+    const match = url.pathname.match(/^\/store\/(\d+)-([a-z0-9-]+)\/([a-z0-9-]+)\/?$/i);
+    if (!match) return null;
+    return { retailer: "walmart", retailer_store_id: match[1], retailer_store_slug: `${match[1]}-${match[2].toLowerCase()}`, department: match[3].toLowerCase(), source_url: url.toString() };
+  } catch { return null; }
+}
+
+function walmartProductIdentity(fields = {}) {
+  const sku = clean(fields.sku, 100);
+  const gtin = clean(fields.gtin, 40);
+  let urlId = "";
+  try { urlId = new URL(String(fields.product_url || "")).pathname.match(/\/(?:ip\/[^/]+\/|ip\/)(\d+)(?:\/|$)/i)?.[1] || ""; } catch {}
+  return { sku, gtin, urlId };
+}
+
+function exactWalmartProductMatch(left = {}, right = {}) {
+  const a = walmartProductIdentity(left);
+  const b = walmartProductIdentity(right);
+  return Boolean((a.sku && b.sku && a.sku === b.sku) || (a.gtin && b.gtin && a.gtin === b.gtin) || (a.urlId && b.urlId && a.urlId === b.urlId));
+}
+
+function mergeWalmartStorePrices(discoveryProducts = [], storeProducts = [], storeContext = {}) {
+  const retrievedAt = storeContext.retrieved_at || new Date().toISOString();
+  return discoveryProducts.map((product) => {
+    const match = storeProducts.find((candidate) => exactWalmartProductMatch(product.fields, candidate.fields));
+    const storePrice = match ? parsePrice(match.fields?.price) : null;
+    if (!match || storePrice === null) return product;
+    const merged = { ...product, fields: { ...(product.fields || {}) }, confidence: { ...(product.confidence || {}) }, field_origins: { ...(product.field_origins || {}) }, warnings: [...(product.warnings || [])] };
+    for (const field of ["price", "regular_price", "unit_price", "unit_price_unit", "availability"]) {
+      const value = match.fields?.[field];
+      if (field.includes("price") && field !== "unit_price_unit" && parsePrice(value) === null) continue;
+      if (value === null || value === undefined || value === "") continue;
+      merged.fields[field] = value;
+      merged.confidence[field] = match.confidence?.[field] || "high";
+      merged.field_origins[field] = `walmart_store_page:${match.field_origins?.[field] || "structured_listing"}`;
+    }
+    merged.price_source = {
+      type: "retailer_store_page",
+      url: storeContext.source_url,
+      retailer_store_id: String(storeContext.retailer_store_id),
+      retailer_store_slug: storeContext.retailer_store_slug,
+      retrieved_at: retrievedAt,
+      location_confirmation_method: "retailer_store_page"
+    };
+    merged.location = { confidence: "confirmed_store_source", evidence: `Walmart store page established store #${storeContext.retailer_store_id}.` };
+    merged.overall_confidence = merged.confidence.name === "high" && merged.confidence.price === "high" ? "high" : "medium";
+    merged.warnings = merged.warnings.filter((warning) => !/price was not present|no reliable current price/i.test(warning));
+    return merged;
+  });
+}
+
+module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, walmartPackageData, walmartSellingData, findSearchResults, listingCollections, excludedListingItem, parseWalmartStoreUrl, walmartProductIdentity, exactWalmartProductMatch, mergeWalmartStorePrices };

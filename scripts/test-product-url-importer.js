@@ -5,7 +5,9 @@ const path = require("path");
 const sharp = require("sharp");
 const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
-const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage } = require("../src/categoryImporter");
+const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
+const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
+const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("../src/retailerStores");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "..", "test", "fixtures", "product-importer", name), "utf8");
@@ -111,6 +113,38 @@ async function main() {
   assert.equal(walmartPrices.products[2].confidence.price, "unknown");
   assert.ok(!walmartPrices.products.some((item) => /recommendation/i.test(item.fields.name)));
 
+  const walmartEmptyPriceFields = extractCategory(fixture("walmart-empty-price-fields.html"), "https://www.walmart.com/browse/food/fresh-fruits/976759_976793_9756351?povid=test", stores, 10);
+  assert.equal(walmartEmptyPriceFields.products.length, 1);
+  assert.equal(walmartEmptyPriceFields.products[0].fields.sku, "309762096");
+  assert.equal(walmartEmptyPriceFields.products[0].fields.price, null, "Empty Walmart linePrice/itemPrice and zero minPrice are missing data, not a retail price.");
+  assert.equal(walmartEmptyPriceFields.products[0].confidence.price, "unknown");
+  assert.deepEqual(productImportReadiness(walmartEmptyPriceFields.products[0].fields, { storeId: 1 }), { ready: false, reasons: ["price_required"], image_required: false });
+
+  const walmartMetadata = groceryStoreRetailerMetadata({ id: 1, name: "Walmart Janesville", address: "3800 Deerfield Dr", city: "Janesville", state: "WI" });
+  assert.equal(walmartMetadata.retailer_store_id, "1305");
+  assert.equal(walmartDepartmentForSource("https://www.walmart.com/browse/food/fresh-fruits/123"), "produce");
+  assert.equal(walmartStoreDepartmentUrl(walmartMetadata, "produce"), "https://www.walmart.com/store/1305-janesville-wi/produce-market");
+  assert.equal(categoryUrlHint("https://www.walmart.com/store/1305-janesville-wi/produce-market"), "category");
+  assert.deepEqual(parseWalmartStoreUrl("https://www.walmart.com/store/1305-janesville-wi/produce-market"), { retailer: "walmart", retailer_store_id: "1305", retailer_store_slug: "1305-janesville-wi", department: "produce-market", source_url: "https://www.walmart.com/store/1305-janesville-wi/produce-market" });
+  const genericProduce = extractCategory(fixture("walmart-store-aware-generic.html"), "https://www.walmart.com/browse/food/fresh-fruits/123", stores, 10);
+  const storeProduce = extractCategory(fixture("walmart-store-1305-produce.html"), "https://www.walmart.com/store/1305-janesville-wi/produce-market", stores, 10);
+  assert.equal(storeProduce.source_type, "walmart_store_category");
+  assert.equal(storeProduce.products.length, 3, "Sponsored/recommendation products must remain excluded.");
+  assert.equal(exactWalmartProductMatch(genericProduce.products[0].fields, storeProduce.products[0].fields), true);
+  mergeWalmartStoreAnalysis(genericProduce, storeProduce, walmartMetadata);
+  assert.deepEqual(genericProduce.products.map((product) => product.fields.price), [4.43, 1.98, 3.24]);
+  assert.equal(genericProduce.products[0].fields.regular_price, 5.33);
+  assert.equal(genericProduce.products[0].fields.unit_price, 1.97);
+  assert.equal(genericProduce.products[0].fields.unit_price_unit, "lb");
+  assert.equal(genericProduce.products[0].price_source.type, "retailer_store_page");
+  assert.equal(genericProduce.products[0].price_source.retailer_store_id, "1305");
+  assert.equal(genericProduce.products[0].location.confidence, "confirmed_store_source");
+  assert.equal(productImportReadiness(genericProduce.products[0].fields, { storeId: 1 }).ready, true);
+  const wrongStoreDiscovery = extractCategory(fixture("walmart-store-aware-generic.html"), "https://www.walmart.com/browse/food/fresh-fruits/123", stores, 10);
+  mergeWalmartStoreAnalysis(wrongStoreDiscovery, { ...storeProduce, walmart_store: { ...storeProduce.walmart_store, retailer_store_id: "9999", retailer_store_slug: "9999-other-wi" } }, walmartMetadata);
+  assert.equal(wrongStoreDiscovery.products[0].fields.price, null);
+  assert.equal(wrongStoreDiscovery.store_enrichment.status, "store_mismatch");
+
   const missingRockitCategory = extractCategory(fixture("walmart-rockit-category-missing-price.html"), "https://www.walmart.com/browse/food/fresh-apples/456", stores, 25);
   const missingRockit = missingRockitCategory.products[0];
   assert.equal(missingRockit.fields.name, "Fresh Rockit, Crisp Sweet Miniature Apples, 3lb Tub");
@@ -130,12 +164,35 @@ async function main() {
   const preservedCategoryPrice = mergeCategoryProductDetails({ fields: { name: "Strong listing", price: 4.25, product_url: "https://www.walmart.com/ip/strong/1" }, confidence: { name: "high", price: "high" }, field_origins: { price: "category_listing:currentPrice" } }, { fields: { price: 9.99 }, confidence: { price: "medium" }, field_methods: { price: "open_graph" } });
   assert.equal(preservedCategoryPrice.fields.price, 4.25, "Weaker product-page data must not replace a high-confidence listing price.");
 
+  const preservedStrawberryPrice = mergeCategoryProductDetails({
+    fields: { name: "Fresh Strawberries", price: 2.46, product_url: "https://www.walmart.com/ip/strawberries/1001" },
+    confidence: { name: "high", price: "high" },
+    field_origins: { price: "category_listing:priceInfo.linePrice" },
+    warnings: []
+  }, {
+    fields: { name: "Fresh Strawberries", price: null },
+    confidence: { name: "high", price: "unknown" },
+    field_methods: { name: "json_ld", price: "json_ld" },
+    methods_used: ["json_ld"]
+  });
+  assert.equal(preservedStrawberryPrice.fields.price, 2.46, "Missing detail-page price must not erase a valid category price.");
+  assert.equal(preservedStrawberryPrice.confidence.price, "high", "Unknown detail confidence must not downgrade high category confidence.");
+  assert.equal(preservedStrawberryPrice.field_origins.price, "category_listing:priceInfo.linePrice");
+
   const automatic = { url_type: "category", products: [missingRockit, walmartPrices.products[0]], retailer: { store_id: 1 } };
   let automaticFetches = 0;
   await enrichCategoryAnalysis(automatic, { stores, fetchProductPage: async (url) => { automaticFetches += 1; return { url, body: fixture("walmart-rockit-product.html") }; } });
   assert.equal(automaticFetches, 1, "Automatic enrichment must fetch only incomplete critical rows.");
   assert.equal(automatic.products[0].fields.price, 8.97);
+  assert.equal(automatic.products[0].confidence.price, "high", "Authoritative detail price must fill a missing category price.");
   assert.equal(automatic.products[1].fields.price, 4.97);
+
+  const pricedGrapes = { url_type: "category", products: [{ fields: { name: "Green Seedless Grapes", price: 4.43, product_url: "https://www.walmart.com/ip/grapes/3001" }, confidence: { name: "high", price: "high" }, field_origins: { price: "category_listing:priceInfo.linePrice" }, warnings: [] }] };
+  let pricedGrapeFetches = 0;
+  await enrichCategoryAnalysis(pricedGrapes, { stores, fetchProductPage: async () => { pricedGrapeFetches += 1; throw new SafeFetchError("RETAILER_BLOCKED", "Retailer blocked automated retrieval.", 422); } });
+  assert.equal(pricedGrapeFetches, 0, "A complete category row must not make a detail request that could damage valid data.");
+  assert.equal(pricedGrapes.products[0].fields.price, 4.43);
+  assert.equal(pricedGrapes.products[0].confidence.price, "high");
 
   const manyIncomplete = { url_type: "category", products: Array.from({ length: 12 }, (_, index) => ({ fields: { name: `Missing ${index}`, price: null, product_url: `https://www.walmart.com/ip/missing/${index}` }, confidence: { name: "high", price: "unknown" }, warnings: [] })) };
   let activeEnrichment = 0;
@@ -309,7 +366,9 @@ async function main() {
   assert.doesNotMatch(adminScript, /new FormData\(card\)/, "Importer product articles must never be passed to FormData.");
   assert.doesNotMatch(adminScript, /new FormData\((?:preview|result|container)\)/, "Bulk importer containers must never be passed to FormData.");
   assert.match(adminScript, /function collectImporterRowData\(/);
-  assert.match(adminScript, /approveCategoryImportCard\(card, \{ confirmLocation: true, bulk: true \}\)/, "Bulk approval must reuse per-row approval logic.");
+  assert.match(adminScript, /approveCategoryImportCard\(card, \{ confirmLocation: card\.dataset\.storeSourceConfirmed !== "true", bulk: true \}\)/, "Bulk approval must reuse per-row approval logic while respecting verified store sources.");
+  assert.match(adminScript, /data-store-source-confirmed/);
+  assert.match(adminScript, /Store source confirmed/);
   const approvalFlowSource = adminScript.slice(adminScript.indexOf("async function approveCategoryImportCard("), adminScript.indexOf("async function saveCategoryUrlImports("));
   assert.doesNotMatch(approvalFlowSource, /new FormData\(/, "Per-row approval must serialize canonical row state, not a DOM container.");
   const bulkFlowSource = adminScript.slice(adminScript.indexOf("async function saveCategoryUrlImports("), adminScript.indexOf("async function saveProductUrlImport("));

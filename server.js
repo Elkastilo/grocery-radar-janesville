@@ -12,7 +12,9 @@ const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
 const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
 const { findDuplicateCandidates, parsePrice, normalizeRetailerText } = require("./src/productImporter");
-const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, analyzePage } = require("./src/categoryImporter");
+const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, analyzePage, mergeWalmartStoreAnalysis } = require("./src/categoryImporter");
+const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("./src/retailerStores");
+const { parseWalmartStoreUrl } = require("./src/importers/walmart");
 let tesseract = null;
 let sharp = null;
 
@@ -17817,6 +17819,32 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     const fetched = hint === "category" ? await safeCategoryRemoteFetch(requestedUrl) : await safeRemoteFetch(requestedUrl);
     const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts });
     if (analysis.url_type === "category") {
+      const selectedStore = stores.find((store) => Number(store.id) === Number(analysis.retailer?.store_id));
+      const retailerStore = groceryStoreRetailerMetadata(selectedStore);
+      const department = walmartDepartmentForSource(analysis.source_url, analysis.category_title);
+      if (analysis.source_type === "walmart_store_category") {
+        const sourceStore = analysis.walmart_store;
+        const storeMatches = retailerStore && String(retailerStore.retailer_store_id) === String(sourceStore?.retailer_store_id) && retailerStore.retailer_store_slug === sourceStore?.retailer_store_slug;
+        if (!storeMatches) {
+          analysis.location = { confidence: "unknown", evidence: `Walmart store #${sourceStore?.retailer_store_id || "unknown"} does not match the selected Grocery Radar Walmart store.` };
+          analysis.store_enrichment = { status: "store_mismatch", expected_store_id: String(retailerStore?.retailer_store_id || ""), actual_store_id: String(sourceStore?.retailer_store_id || "") };
+          analysis.products.forEach((product) => { product.price_source = null; product.location = analysis.location; });
+          analysis.warnings.push("The Walmart store URL does not match the selected Grocery Radar store. Its prices require manual location confirmation.");
+        } else analysis.store_enrichment = { status: "store_source", retailer_store_id: sourceStore.retailer_store_id, retailer_store_slug: sourceStore.retailer_store_slug, source_url: analysis.source_url };
+      }
+      if (analysis.adapter === "walmart" && analysis.source_type !== "walmart_store_category" && retailerStore?.retailer === "walmart" && department && analysis.products.some((product) => parsePrice(product.fields?.price) === null)) {
+        const storeSourceUrl = walmartStoreDepartmentUrl(retailerStore, department);
+        if (storeSourceUrl) {
+          try {
+            const storeFetched = await safeCategoryRemoteFetch(storeSourceUrl);
+            const storeAnalysis = analyzePage(storeFetched.body, storeFetched.url, stores, { maxProducts: MAX_CATEGORY_PRODUCTS });
+            mergeWalmartStoreAnalysis(analysis, storeAnalysis, retailerStore);
+          } catch (error) {
+            analysis.store_enrichment = { status: error instanceof SafeFetchError ? "unavailable" : "failed", retailer_store_id: retailerStore.retailer_store_id };
+            analysis.warnings.push("Walmart Janesville store pricing was unavailable. Generic catalog products remain available for manual review.");
+          }
+        }
+      }
       await enrichCategoryAnalysis(analysis, {
         stores,
         maxRequests: CATEGORY_ENRICHMENT_MAX_REQUESTS,
@@ -17906,7 +17934,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   try { categorySourceUrl = validateRemoteUrl(request.body.category_source_url).toString(); }
   catch (error) { response.status(400).json({ error: error instanceof SafeFetchError ? error.message : "A valid HTTPS category URL is required." }); return; }
   const storeId = Number.parseInt(request.body.store_id, 10);
-  const store = Number.isInteger(storeId) && storeId > 0 ? await get("SELECT id, name, city, state FROM stores WHERE id = ? AND active = 1", [storeId]) : null;
+  const store = Number.isInteger(storeId) && storeId > 0 ? await get("SELECT id, name, address, city, state FROM stores WHERE id = ? AND active = 1", [storeId]) : null;
   if (Number.isInteger(storeId) && storeId > 0 && !store) { response.status(400).json({ error: "Choose an existing active store." }); return; }
   const locationConfidence = cleanText(request.body.price_location_confidence || "unknown", 40);
   if (!["confirmed_janesville", "likely_janesville", "unknown"].includes(locationConfidence)) { response.status(400).json({ error: "Price location confidence is not valid." }); return; }
@@ -17933,8 +17961,15 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const regularPrice = parsePrice(input.regular_price);
       const requestedItemStoreId = Number.parseInt(input.store_id, 10);
       let itemStore = store;
-      if (Number.isInteger(requestedItemStoreId) && requestedItemStoreId > 0 && Number(requestedItemStoreId) !== Number(store?.id)) itemStore = await get("SELECT id,name,city,state FROM stores WHERE id=? AND active=1", [requestedItemStoreId]);
+      if (Number.isInteger(requestedItemStoreId) && requestedItemStoreId > 0 && Number(requestedItemStoreId) !== Number(store?.id)) itemStore = await get("SELECT id,name,address,city,state FROM stores WHERE id=? AND active=1", [requestedItemStoreId]);
       if (!itemStore) throw Object.assign(new Error("Choose an existing active store for every selected product."), { statusCode: 400 });
+      const configuredRetailerStore = groceryStoreRetailerMetadata(itemStore);
+      let priceSourceUrl = "";
+      try { priceSourceUrl = input.price_source_url ? validateRemoteUrl(input.price_source_url).toString() : ""; } catch { priceSourceUrl = ""; }
+      const priceSourceStore = parseWalmartStoreUrl(priceSourceUrl);
+      const verifiedStoreSource = input.price_source_type === "retailer_store_page" && configuredRetailerStore && priceSourceStore
+        && String(configuredRetailerStore.retailer_store_id) === String(priceSourceStore.retailer_store_id)
+        && configuredRetailerStore.retailer_store_slug === priceSourceStore.retailer_store_slug;
       const inferredSale = currentPrice !== null && regularPrice !== null && regularPrice > currentPrice;
       const normalizedOverallConfidence = currentPrice === null && input.overall_confidence === "high" ? "medium" : input.overall_confidence || "low";
       const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: itemStore.id, proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
@@ -17950,7 +17985,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, itemStore.id);
       const duplicateWarning = duplicates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500);
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
-      const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,'legacy_unknown',NULL,?,'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, itemStore.id, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, cleanText(request.body.location_evidence_text, 500), now, now]);
+      const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?,'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, itemStore.id, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, verifiedStoreSource ? "verified_exact_store" : "legacy_unknown", verifiedStoreSource ? itemStore.id : null, verifiedStoreSource ? `Walmart store page established store #${priceSourceStore.retailer_store_id}.` : cleanText(request.body.location_evidence_text, 500), now, now]);
       currentBatchId = batch.lastID;
       const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, itemStore.id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
       let imageSource = "";
@@ -17962,6 +17997,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const sellQuantity = Number(input.sell_quantity);
       const unitPriceValue = parsePrice(input.unit_price);
       const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance,package_quantity,item_size,package_unit,package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20), Number.isFinite(packageQuantity) && packageQuantity > 0 ? packageQuantity : null, Number.isFinite(itemSize) && itemSize > 0 ? itemSize : null, cleanText(input.unit, 30), cleanText(input.package_type, 40), Number.isFinite(sellQuantity) && sellQuantity > 0 ? sellQuantity : null, cleanText(input.sell_unit, 30), unitPriceValue, cleanText(input.unit_price_unit, 30), retailerDescription, idempotencyKey || null]);
+      await run("UPDATE product_url_imports SET retailer_store_id=?,retailer_store_slug=?,price_source_type=?,price_source_url=?,price_source_store_id=?,price_retrieved_at=?,location_confirmation_method=? WHERE id=?", [verifiedStoreSource ? priceSourceStore.retailer_store_id : null, verifiedStoreSource ? priceSourceStore.retailer_store_slug : null, verifiedStoreSource ? "retailer_store_page" : cleanText(input.price_source_type || "generic_retailer_web", 40), priceSourceUrl || null, verifiedStoreSource ? priceSourceStore.retailer_store_id : null, cleanText(input.price_retrieved_at, 50) || null, verifiedStoreSource ? "retailer_store_page" : null, imported.lastID]);
       created.push({ input_index: itemIndex, name: draft.item_name, batch_id: batch.lastID, row_id: row.lastID, import_id: imported.lastID, duplicate_candidates: duplicates, requested_image_url: imageSource });
     } catch (error) {
       if (currentBatchId) await run("DELETE FROM price_import_batches WHERE id = ?", [currentBatchId]).catch(() => {});
@@ -18032,7 +18068,7 @@ app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requi
     } else forceNewProduct = true;
   }
 
-  const exactLocationAlreadyConfirmed = imported.location_verification_status === "verified_exact_store" && Number(imported.applicable_store_id) === Number(store.id) && imported.location_confirmation_method === "admin_confirmed" && Number(imported.location_confirmed_by) > 0;
+  const exactLocationAlreadyConfirmed = imported.location_verification_status === "verified_exact_store" && Number(imported.applicable_store_id) === Number(store.id) && ((imported.location_confirmation_method === "admin_confirmed" && Number(imported.location_confirmed_by) > 0) || imported.location_confirmation_method === "retailer_store_page");
   let locationConfirmedAt = imported.location_confirmed_at || null;
   if (!exactLocationAlreadyConfirmed) {
     if (request.body.confirm_location !== true) {

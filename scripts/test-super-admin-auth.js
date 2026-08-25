@@ -451,6 +451,8 @@ async function main() {
     assert.equal(storesForProof.response.status, 200);
     const proofStore = storesForProof.body.stores.find((store) => /woodman/i.test(store.name));
     assert.ok(proofStore);
+    const walmartJanesvilleStore = storesForProof.body.stores.find((store) => /walmart/i.test(store.name));
+    assert.ok(walmartJanesvilleStore);
 
     const proofForm = new FormData();
     proofForm.set("store_id", String(proofStore.id));
@@ -614,6 +616,27 @@ async function main() {
     assert.notEqual(explicitExistingApproval.body.image.status, "approved", "An unavailable image must not roll back the valid product/price approval.");
     const productCountAfterDuplicateDecision = await queryOne(app.dataDir, "SELECT COUNT(*) AS count FROM products WHERE id=?", [ownerImportApproval.body.product_id]);
     assert.equal(productCountAfterDuplicateDecision.count, 1);
+
+    const storeSourceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123", retailer_name: "Walmart", store_id: walmartJanesvilleStore.id, price_location_confidence: "unknown",
+      items: [{ idempotency_key: "store-1305-price-source-fixture", name: "Store Source Pineapple Fixture", price: 1.98, quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/store-source-pineapple/71001", sku: "STORE-71001", overall_confidence: "high", price_source_type: "retailer_store_page", price_source_url: "https://www.walmart.com/store/1305-janesville-wi/produce-market", price_source_store_id: "1305", retailer_store_slug: "1305-janesville-wi", price_retrieved_at: new Date().toISOString() }]
+    });
+    assert.equal(storeSourceSave.response.status, 201, JSON.stringify(storeSourceSave.body));
+    const storeSourceImportId = storeSourceSave.body.imports[0].import_id;
+    const storeSourceApproval = await ownerClient.post(`/api/admin/product-url-imports/${storeSourceImportId}/approve`, { confirm_location: false });
+    assert.equal(storeSourceApproval.response.status, 200, JSON.stringify(storeSourceApproval.body));
+    assert.equal(storeSourceApproval.body.location.confirmation_method, "retailer_store_page");
+    const storeSourcePersistence = await queryOne(app.dataDir, "SELECT retailer_store_id,retailer_store_slug,price_source_type,price_source_store_id,location_confirmation_method FROM product_url_imports WHERE id=?", [storeSourceImportId]);
+    assert.deepEqual(storeSourcePersistence, { retailer_store_id: "1305", retailer_store_slug: "1305-janesville-wi", price_source_type: "retailer_store_page", price_source_store_id: "1305", location_confirmation_method: "retailer_store_page" });
+
+    const wrongStoreSourceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123", retailer_name: "Walmart", store_id: walmartJanesvilleStore.id, price_location_confidence: "unknown",
+      items: [{ idempotency_key: "wrong-store-price-source-fixture", name: "Wrong Store Source Fixture", price: 2.49, quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/wrong-store-source/71002", sku: "STORE-71002", overall_confidence: "high", price_source_type: "retailer_store_page", price_source_url: "https://www.walmart.com/store/9999-other-wi/produce-market", price_source_store_id: "9999", retailer_store_slug: "9999-other-wi" }]
+    });
+    assert.equal(wrongStoreSourceSave.response.status, 201, JSON.stringify(wrongStoreSourceSave.body));
+    const wrongStoreApproval = await ownerClient.post(`/api/admin/product-url-imports/${wrongStoreSourceSave.body.imports[0].import_id}/approve`, { confirm_location: false });
+    assert.equal(wrongStoreApproval.response.status, 409);
+    assert.equal(wrongStoreApproval.body.code, "LOCATION_CONFIRMATION_REQUIRED");
 
     const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",

@@ -14,6 +14,11 @@ const run = childProcess.spawnSync(process.execPath, ["-e", code], { cwd: root, 
 assert.equal(run.status, 0, run.stderr || run.stdout);
 
 const database = new sqlite3.Database(path.join(dataDir, "grocery_radar.sqlite"));
+database.all("PRAGMA table_info(product_url_imports)", (importColumnError, importColumns) => {
+  if (importColumnError) throw importColumnError;
+  const importColumnNames = new Set(importColumns.map((column) => column.name));
+  for (const name of ["retailer_store_id", "retailer_store_slug", "price_source_type", "price_source_url", "price_source_store_id", "price_retrieved_at"]) assert.ok(importColumnNames.has(name), name);
+});
 database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows) => {
   if (error) throw error;
   const names = new Set(rows.map((row) => row.name));
