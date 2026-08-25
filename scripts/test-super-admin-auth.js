@@ -400,6 +400,8 @@ async function main() {
     assert.equal(anonymousUrlAnalyze.response.status, 403);
     const anonymousCategoryAnalyze = await anonymousClient.post("/api/admin/product-url-imports/analyze", { url: "https://www.walmart.com/browse/food/fresh-fruits/123", max_products: 50 });
     assert.equal(anonymousCategoryAnalyze.response.status, 403);
+    const anonymousImagePreview = await anonymousClient.get("/api/admin/product-url-imports/image-preview?url=https%3A%2F%2Fimages.example.invalid%2Fproduct.jpg");
+    assert.equal(anonymousImagePreview.response.status, 403);
 
     const ownerClient = new TestClient(app.baseUrl);
     const ownerLogin = await ownerClient.post("/api/auth/login", {
@@ -465,12 +467,16 @@ async function main() {
       name: "Unauthorized product", source_url: "https://www.walmart.com/ip/test"
     });
     assert.equal(blockedUrlSave.response.status, 403);
+    const blockedImagePreview = await normalClient.get("/api/admin/product-url-imports/image-preview?url=https%3A%2F%2Fimages.example.invalid%2Fproduct.jpg");
+    assert.equal(blockedImagePreview.response.status, 403);
     const blockedCategorySave = await normalClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
       items: [{ name: "Unauthorized category item", product_url: "https://www.walmart.com/ip/test" }]
     });
     assert.equal(blockedCategorySave.response.status, 403);
     const pinOnlyClient = new TestClient(app.baseUrl);
+    const pinOnlyImagePreview = await pinOnlyClient.get("/api/admin/product-url-imports/image-preview?pin=2468&url=https%3A%2F%2Fimages.example.invalid%2Fproduct.jpg");
+    assert.equal(pinOnlyImagePreview.response.status, 403);
     const pinOnlyCategorySave = await pinOnlyClient.post("/api/admin/product-url-imports/batch", {
       pin: "2468", category_source_url: "https://www.walmart.com/browse/food/fresh-fruits/123",
       items: [{ name: "PIN-only category item", product_url: "https://www.walmart.com/ip/test" }]
@@ -515,11 +521,14 @@ async function main() {
       location_evidence_text: "Fixture admin explicitly selected the Janesville store; approval is still required.",
       items: [
         { name: "Category Bananas Fixture", price: 0.27, quantity: 1, unit: "each", size_text: "1 each", product_url: "https://www.walmart.com/ip/category-bananas/1001", sku: "CAT-1001", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
-        { name: "Category Strawberries Fixture", price: 2.98, quantity: 1, item_size: 1, unit: "lb", size_text: "1 lb", product_url: "https://www.walmart.com/ip/category-strawberries/1002", sku: "CAT-1002", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] }
+        { name: "Category Strawberries Fixture", price: 2.98, quantity: 1, item_size: 1, unit: "lb", size_text: "1 lb", product_url: "https://www.walmart.com/ip/category-strawberries/1002", sku: "CAT-1002", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
+        { name: "", price: 4.25, product_url: "https://www.walmart.com/ip/invalid-edited-row/1003", overall_confidence: "low" }
       ]
     });
     assert.equal(ownerCategorySave.response.status, 201, JSON.stringify(ownerCategorySave.body));
     assert.equal(ownerCategorySave.body.imports.length, 2);
+    assert.equal(ownerCategorySave.body.failures.length, 1);
+    assert.equal(ownerCategorySave.body.summary.product_failed, 1);
     const categoryPersistence = await withDb(app.dataDir, async (database) => ({
       rows: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_rows WHERE item_name LIKE 'Category % Fixture' AND status = 'ready_for_review'"),
       batches: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_batches WHERE batch_title LIKE 'Category URL import:%' AND status = 'ready_for_review'"),

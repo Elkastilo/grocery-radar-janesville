@@ -71,7 +71,7 @@ function genericProduct(value, pageUrl, method = "generic_serialized_data") {
       gtin: value.gtin || value.gtin12 || value.gtin13 || value.gtin14 || value.upc ? "high" : "unknown", unit_price: value.unitPrice || offer.unitPrice ? "medium" : "unknown",
       availability: offer.availability || value.availability ? "medium" : "unknown"
     },
-    methods_used: [method], overall_confidence: price === null ? "medium" : "high",
+    methods_used: [method], overall_confidence: price === null ? "medium" : "high", category_relevance: method === "html_product_card" ? "low" : "medium", selected_by_default: method !== "html_product_card",
     warnings: [price === null ? "Price was not present for this listing item." : "", imageUrl ? "" : "Image source was not present."].filter(Boolean)
   };
 }
@@ -145,7 +145,9 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
     adapter = "walmart";
     products = extractWalmartCategory(values, context);
   }
-  if (products.length < maxProducts) {
+  // A recognized Walmart listing collection is authoritative for the supplied browse page.
+  // Do not top it up by recursively harvesting recommendation/navigation state.
+  if (adapter !== "walmart" || !products.length) {
     const existing = new Set(products.map((item) => item.fields.gtin || item.fields.sku || item.fields.product_url || `${item.fields.name}|${item.fields.price}`));
     for (const item of genericStructuredProducts(values, context)) {
       const key = item.fields.gtin || item.fields.sku || item.fields.product_url || `${item.fields.name}|${item.fields.price}`;
@@ -157,7 +159,7 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
   const location = categoryLocation(html, matchedStore);
-  products = products.map((item) => ({ ...item, retailer, location }));
+  products = products.map((item) => ({ ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location }));
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");
   if (products.length >= maxProducts) warnings.push(`Detection stopped at the selected ${maxProducts}-product limit.`);

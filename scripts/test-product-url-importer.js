@@ -1,9 +1,12 @@
 const assert = require("assert");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const sharp = require("sharp");
 const { extractProduct, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
-const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
+const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { categoryUrlHint, extractCategory, analyzePage } = require("../src/categoryImporter");
+const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, "..", "test", "fixtures", "product-importer", name), "utf8");
 const stores = [
@@ -52,6 +55,8 @@ async function main() {
   assert.equal(walmartCategory.products[2].fields.raw_size_text, "18 oz");
   assert.equal(walmartCategory.products[2].fields.image_url, "");
   assert.equal(walmartCategory.products[3].fields.price, null);
+  assert.ok(walmartCategory.products.every((item) => item.category_relevance === "high"));
+  assert.ok(!walmartCategory.products.some((item) => /seafood|meat|shrimp/i.test(item.fields.name)));
   assert.equal(walmartCategory.location.confidence, "unknown");
   assert.equal(walmartCategory.pagination_likely, true);
   assert.ok(walmartCategory.warnings.some((warning) => warning.includes("malformed")));
@@ -99,7 +104,55 @@ async function main() {
     requestOnce: async () => new Promise(() => {})
   }), "REQUEST_TIMEOUT");
 
-  console.log("Product URL importer parser, normalization, retailer, duplicate, and SSRF tests passed.");
+  const validJpeg = await sharp({ create: { width: 80, height: 60, channels: 3, background: "#f2d447" } }).jpeg().toBuffer();
+  const validPng = await sharp({ create: { width: 60, height: 80, channels: 4, background: "#6fba73" } }).png().toBuffer();
+  const validWebp = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#5e76a7" } }).webp().toBuffer();
+  assert.equal(magicType(validJpeg), "image/jpeg");
+  assert.equal(magicType(validPng), "image/png");
+  assert.equal(magicType(validWebp), "image/webp");
+  for (const [buffer, contentType] of [[validJpeg, "image/jpeg"], [validPng, "image/png"], [validWebp, "image/webp"]]) {
+    const sanitized = await sanitizeImageBuffer(buffer, { contentType });
+    assert.equal(sanitized.mimeType, "image/webp");
+    assert.equal(magicType(sanitized.buffer), "image/webp");
+  }
+  await assert.rejects(() => sanitizeImageBuffer(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'></svg>")), (error) => error instanceof RemoteImageError && error.code === "INVALID_IMAGE_SIGNATURE");
+  await assert.rejects(() => sanitizeImageBuffer(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from("<html><script>alert(1)</script></html>")])), (error) => error instanceof RemoteImageError && error.code === "IMAGE_DECODE_FAILED");
+  await assert.rejects(() => sanitizeImageBuffer(validJpeg, { contentType: "image/png" }), (error) => error instanceof RemoteImageError && error.code === "IMAGE_TYPE_MISMATCH");
+  await assert.rejects(() => sanitizeImageBuffer(Buffer.alloc(REMOTE_IMAGE_MAX_BYTES + 1)), (error) => error instanceof RemoteImageError && error.code === "IMAGE_TOO_LARGE");
+  const overDimensionImage = await sharp({ create: { width: REMOTE_IMAGE_MAX_DIMENSION + 1, height: 1, channels: 3, background: "white" } }).png().toBuffer();
+  await assert.rejects(() => sanitizeImageBuffer(overDimensionImage), (error) => error instanceof RemoteImageError && error.code === "IMAGE_DIMENSIONS_EXCEEDED");
+  const overPixelImage = await sharp({ create: { width: 5000, height: 5000, channels: 3, background: "white" } }).png().toBuffer();
+  await assert.rejects(() => sanitizeImageBuffer(overPixelImage), (error) => error instanceof RemoteImageError && ["IMAGE_DECODE_FAILED", "IMAGE_DIMENSIONS_EXCEEDED"].includes(error.code));
+  assert.equal(REMOTE_IMAGE_MAX_PIXELS, 24000000);
+  assert.equal(IMAGE_CONCURRENCY, 3);
+
+  const imageResponse = (body = validJpeg, contentType = "image/jpeg") => ({ statusCode: 200, headers: { "content-type": contentType }, body });
+  const safeImageResponse = await safeRemoteBufferFetch("https://public.example/image.jpg", { resolveHost: publicDns, requestOnce: async () => imageResponse() });
+  assert.equal(safeImageResponse.contentType, "image/jpeg");
+  assert.ok(safeImageResponse.body.equals(validJpeg));
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.jpg", { resolveHost: publicDns, requestOnce: async () => ({ statusCode: 302, headers: { location: "https://127.0.0.1/private.jpg" }, body: Buffer.alloc(0) }) }), "PRIVATE_ADDRESS");
+  let rebindingCalls = 0;
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.jpg", {
+    resolveHost: async () => (++rebindingCalls === 1 ? [{ address: "8.8.8.8", family: 4 }] : [{ address: "127.0.0.1", family: 4 }]),
+    requestOnce: async () => ({ statusCode: 302, headers: { location: "https://public.example/next.jpg" }, body: Buffer.alloc(0) })
+  }), "PRIVATE_ADDRESS");
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.jpg", { resolveHost: publicDns, maxBytes: 10, requestOnce: async () => imageResponse(Buffer.alloc(11)) }), "RESPONSE_TOO_LARGE");
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.svg", { resolveHost: publicDns, requestOnce: async () => imageResponse(Buffer.from("<svg></svg>"), "image/svg+xml") }), "UNSUPPORTED_CONTENT");
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.jpg", { resolveHost: publicDns, totalTimeoutMs: 10, requestOnce: async () => new Promise(() => {}) }), "REQUEST_TIMEOUT");
+  await expectCode(safeRemoteBufferFetch("https://public.example/image.jpg", { resolveHost: publicDns, maxRedirects: 1, requestOnce: async () => ({ statusCode: 302, headers: { location: "/again.jpg" }, body: Buffer.alloc(0) }) }), "TOO_MANY_REDIRECTS");
+  for (const input of ["http://example.com/image.jpg", "file:///etc/passwd", "data:image/png,a", "ftp://example.com/image.jpg"]) await assert.rejects(() => safeRemoteBufferFetch(input, { resolveHost: publicDns }), (error) => error instanceof SafeFetchError && error.code === "UNSUPPORTED_PROTOCOL");
+  for (const input of ["https://localhost/image.jpg", "https://127.0.0.1/image.jpg", "https://10.0.0.1/image.jpg", "https://169.254.169.254/image.jpg", "https://[::1]/image.jpg", "https://[fd00::1]/image.jpg"]) await assert.rejects(() => safeRemoteBufferFetch(input), (error) => error instanceof SafeFetchError && ["PRIVATE_HOST", "PRIVATE_ADDRESS"].includes(error.code));
+  const fetchedImage = await fetchAndSanitizeRemoteImage("https://public.example/image.jpg", { fetchRemote: async () => ({ url: "https://public.example/image.jpg", contentType: "image/jpeg", body: validJpeg }) });
+  assert.equal(fetchedImage.mimeType, "image/webp");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "grocery-import-image-"));
+  try {
+    const stored = await storeSanitizedRemoteImage("https://public.example/image.png", tempDir, { fetchRemote: async () => ({ url: "https://public.example/image.png", contentType: "image/png", body: validPng }) });
+    assert.match(stored.filename, /^product-import-\d+-[a-f0-9]{32}\.webp$/);
+    assert.ok(fs.existsSync(path.join(tempDir, stored.filename)));
+    assert.equal(fs.statSync(path.join(tempDir, stored.filename)).mode & 0o777, 0o600);
+  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+
+  console.log("Product/category extraction, relevance, normalization, duplicate, SSRF, and safe image pipeline tests passed.");
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

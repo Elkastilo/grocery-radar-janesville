@@ -3823,12 +3823,12 @@ function renderProductTools() {
   const cartItems = productTools?.popular_cart_items || [];
 
   productToolsContent.innerHTML = `
-    <article class="admin-card compact-card" data-product-url-importer>
-      <div class="admin-panel-heading"><div><h3>Import from product or category URL</h3><p class="field-help">Analyze one product or a single retailer listing page, review detected fields, then save pending imports. Nothing is published automatically.</p></div><span class="badge confidence-medium">Human review required</span></div>
-      <form class="admin-control-grid" data-product-url-analyze-form>
-        <label><span>Product or category URL</span><input name="url" type="url" inputmode="url" autocomplete="url" maxlength="2000" required placeholder="https://retailer.example/browse/..."></label>
-        <label><span>Maximum listing products</span><select name="max_products"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
-        <button class="primary-button" type="submit" data-product-url-analyze>Analyze URL</button>
+    <article class="admin-card importer-shell" data-product-url-importer>
+      <header class="importer-hero"><div><p class="importer-eyebrow">Grocery data tools</p><h3>Product URL Importer</h3><p>Import products from retailer category or search pages.<br>We'll analyze the page and create clean product records.</p></div><span class="importer-review-badge"><span aria-hidden="true">✓</span> Human review required</span></header>
+      <form class="importer-analysis-card" data-product-url-analyze-form>
+        <label class="importer-url-field"><span>Retailer URL</span><input name="url" type="url" inputmode="url" autocomplete="url" maxlength="2000" required placeholder="https://www.walmart.com/browse/food/..."><small>Category or individual product URLs supported</small></label>
+        <label class="importer-batch-field"><span>Products per batch</span><select name="max_products"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
+        <button class="primary-button importer-analyze-button" type="submit" data-product-url-analyze><span data-analyze-label>Analyze URL</span></button>
       </form>
       <div class="message" data-product-url-message aria-live="polite"></div>
       <section data-product-url-preview hidden></section>
@@ -3991,10 +3991,12 @@ function renderProductUrlPreview(data) {
   const extraction = data.extraction || {};
   const fields = extraction.fields || {};
   const confidence = extraction.confidence || {};
+  const imagePreview = fields.image_url ? `/api/admin/product-url-imports/image-preview?url=${encodeURIComponent(fields.image_url)}${adminQuery().replace("?", "&")}` : "";
   productUrlAnalysis = data;
   preview.hidden = false;
   preview.innerHTML = `
     <div class="admin-panel-heading"><div><h4>Product found</h4><p class="field-help">Review every field. Low and Unknown fields need extra attention.</p></div>${confidenceBadge(extraction.overall_confidence)}</div>
+    <div class="importer-single-preview">${imagePreview ? `<div class="importer-thumb"><img src="${escapeHtml(imagePreview)}" alt="Sanitized preview of ${escapeHtml(fields.name || "detected product")}"><span class="importer-image-fallback">Image unavailable</span></div>` : '<div class="importer-thumb"><span class="importer-image-fallback is-visible">No image</span></div>'}<div><strong>${escapeHtml(fields.name || "Detected product")}</strong><span>${escapeHtml([fields.brand, fields.raw_size_text].filter(Boolean).join(" · "))}</span><b>${Number.isFinite(Number(fields.price)) ? `$${Number(fields.price).toFixed(2)}` : "Price unavailable"}</b></div></div>
     <form class="admin-control-grid" data-product-url-review-form>
       ${importerField("name", "Product name", fields.name, confidence.name, { maxlength: 120 })}
       ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
@@ -4014,8 +4016,8 @@ function renderProductUrlPreview(data) {
       ${importerField("availability", "Availability", fields.availability, confidence.availability, { maxlength: 120 })}
       <label><span>Price location confidence</span><select name="price_location_confidence"><option value="unknown" ${extraction.location?.confidence === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${extraction.location?.confidence === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville" ${extraction.location?.confidence === "confirmed_janesville" ? "selected" : ""}>Confirmed Janesville</option></select><small class="field-help">${escapeHtml(extraction.location?.evidence || "No location evidence detected.")}</small></label>
       <label><span>Source URL</span><input name="source_url" type="url" readonly value="${escapeHtml(extraction.source_url || "")}"></label>
-      <label><span>Detected image source</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small class="field-help">Remote images are not displayed or copied, preserving CSP and avoiding unreviewed third-party content.</small></label>
-      <label><span>Image provenance</span><span><input name="use_image_source" type="checkbox" value="true" ${fields.image_url ? "" : "disabled"}> Use image source URL for later human review</span><small class="field-help">This only records provenance; it does not download or publish the image.</small></label>
+      <label><span>Detected image source</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small class="field-help">The preview is fetched and re-encoded by Grocery Radar; the browser never loads the retailer image directly.</small></label>
+      <label><span>Image provenance</span><span><input name="use_image_source" type="checkbox" value="true" ${fields.image_url ? "checked" : "disabled"}> Import approved image</span><small class="field-help">Stores a private sanitized image for the existing image moderation workflow. It is never public automatically.</small></label>
       <label><span>Admin notes</span><textarea name="notes" maxlength="500" placeholder="Corrections or review notes"></textarea></label>
       <div class="card-actions"><button class="primary-button" type="submit">Save as pending import</button><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button></div>
     </form>
@@ -4023,6 +4025,7 @@ function renderProductUrlPreview(data) {
     <section><h4>Likely duplicates</h4>${(data.duplicate_candidates || []).length ? data.duplicate_candidates.map((candidate) => `<div class="mini-row"><strong>${escapeHtml(candidate.name || `Earlier import #${candidate.import_id}`)}</strong><span>${escapeHtml(titleCase(candidate.type))} · ${escapeHtml(titleCase(candidate.confidence))}</span></div>`).join("") : '<p class="field-help">No likely duplicate was detected. Admin review is still required.</p>'}</section>
   `;
   preview.querySelector("[data-product-url-review-form]")?.addEventListener("submit", saveProductUrlImport);
+  preview.querySelector(".importer-single-preview img")?.addEventListener("error", (event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling?.classList.add("is-visible"); });
   preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
 }
 
@@ -4031,48 +4034,97 @@ function renderCategoryUrlPreview(data) {
   const category = data.category || {};
   productUrlAnalysis = data;
   preview.hidden = false;
+  const locationValue = category.location?.confidence || "unknown";
+  const productRows = (category.products || []).map((product, index) => {
+    const fields = product.fields || {};
+    const duplicates = product.duplicate_candidates || [];
+    const selected = product.selected_by_default !== false && product.category_relevance !== "low";
+    const imagePreview = fields.image_url ? `/api/admin/product-url-imports/image-preview?url=${encodeURIComponent(fields.image_url)}${adminQuery().replace("?", "&")}` : "";
+    const priceLabel = Number.isFinite(Number(fields.price)) ? `$${Number(fields.price).toFixed(2)}` : "Price unavailable";
+    const regularLabel = Number.isFinite(Number(fields.regular_price)) ? `$${Number(fields.regular_price).toFixed(2)}` : "—";
+    const packageLabel = fields.raw_size_text || [fields.quantity && Number(fields.quantity) !== 1 ? `${fields.quantity} ×` : "", fields.item_size, fields.unit].filter(Boolean).join(" ") || "Not provided";
+    const unitPriceLabel = Number.isFinite(Number(fields.unit_price)) ? `$${Number(fields.unit_price).toFixed(2)}${fields.unit ? ` / ${fields.unit}` : ""}` : "—";
+    const relevance = product.category_relevance || "medium";
+    return `<article class="importer-product-row ${selected ? "is-selected" : ""}" data-category-product="${index}">
+      <div class="importer-product-main">
+        <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
+        <div class="importer-thumb">${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback" aria-hidden="true">Image<br>unavailable</span>` : '<span class="importer-image-fallback is-visible" aria-hidden="true">No image</span>'}</div>
+        <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
+        <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong>${fields.raw_price_text && fields.raw_price_text !== String(fields.price ?? "") ? `<span>${escapeHtml(fields.raw_price_text)}</span>` : ""}</div>
+        <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
+        <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong><span>${Number(fields.quantity) > 1 ? `${escapeHtml(fields.quantity)} items` : "Package size"}</span></div>
+        <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
+        <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong><span class="importer-location-badge location-${escapeHtml(locationValue)}">${escapeHtml(titleCase(locationValue))}</span></div>
+        <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
+        <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
+        <div class="importer-source-status"><span>${fields.image_url ? "Image ready" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
+        <div class="importer-row-actions">${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
+      </div>
+      <section class="importer-edit-panel" id="import-details-${index}" hidden>
+        <div class="importer-edit-heading"><div><strong>Product details</strong><span>Correct extracted values before saving.</span></div><span>${escapeHtml((product.methods_used || []).map(titleCase).join(", ") || "Structured product data")}</span></div>
+        <div class="importer-edit-grid">
+          ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}
+          ${importerField("brand", "Brand", fields.brand, product.confidence?.brand, { maxlength: 80 })}
+          ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0, step: "0.01" })}
+          ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0, step: "0.01" })}
+          ${importerField("quantity", "Quantity", fields.quantity, product.confidence?.quantity, { type: "number", min: 0, step: "0.01" })}
+          ${importerField("item_size", "Item size", fields.item_size, product.confidence?.item_size, { type: "number", min: 0, step: "0.01" })}
+          ${importerField("unit", "Unit", fields.unit, product.confidence?.unit, { maxlength: 30 })}
+          ${importerField("unit_price", "Unit price", fields.unit_price, product.confidence?.unit_price, { type: "number", min: 0, step: "0.0001" })}
+          ${importerField("size_text", "Package text", fields.raw_size_text, product.confidence?.raw_size_text, { maxlength: 80 })}
+          ${importerField("sku", "Retailer SKU", fields.sku, product.confidence?.sku, { maxlength: 100 })}
+          ${importerField("gtin", "UPC / GTIN", fields.gtin, product.confidence?.gtin, { maxlength: 40 })}
+          ${importerField("availability", "Availability", fields.availability, product.confidence?.availability, { maxlength: 120 })}
+          <label><span>Product source URL</span><input name="product_url" type="url" value="${escapeHtml(fields.product_url || category.source_url || "")}" maxlength="2000"></label>
+          <label><span>Image provenance</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small>${fields.image_url ? `Source: ${escapeHtml(category.retailer?.retailer_name || category.retailer?.hostname || "retailer")}` : "No image source detected."}</small></label>
+          <label class="importer-checkbox-field"><span><input name="use_image_source" type="checkbox" ${fields.image_url ? "checked" : "disabled"}> Import approved image</span><small>Fetched again, validated, and stored privately. Image failure will not block this product.</small></label>
+          <label><span>Confidence</span><select name="overall_confidence"><option value="high" ${product.overall_confidence === "high" ? "selected" : ""}>High</option><option value="medium" ${product.overall_confidence === "medium" ? "selected" : ""}>Medium</option><option value="low" ${product.overall_confidence === "low" ? "selected" : ""}>Low</option></select></label>
+        </div>
+        ${(product.warnings || []).length ? `<div class="importer-evidence"><strong>Extraction warnings</strong>${product.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+      </section>
+    </article>`;
+  }).join("");
   preview.innerHTML = `
-    <div class="admin-panel-heading"><div><h4>${escapeHtml(category.category_title || "Category listing")}</h4><p><strong>${Number(category.detected_count || 0)} products detected</strong> · ${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</p></div><span class="badge confidence-medium">Category review</span></div>
-    <p class="field-help"><strong>Price location: ${escapeHtml(titleCase(category.location?.confidence || "unknown"))}.</strong> ${escapeHtml(category.location?.evidence || "The listing did not establish an exact store.")}</p>
-    ${(category.warnings || []).map((warning) => `<p class="field-help">⚠ ${escapeHtml(warning)}</p>`).join("")}
-    <form data-category-import-form>
-      <div class="admin-control-grid">
-        <label><span>Grocery Radar store</span><select name="store_id">${storeOptionsWithEmpty(category.retailer?.recognized ? "Select exact store" : "Retailer not recognized", category.retailer?.store_id)}</select></label>
-        <label><span>Price location confirmation</span><select name="price_location_confidence"><option value="unknown" ${category.location?.confidence === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${category.location?.confidence === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville">Confirmed Janesville — admin verified</option></select></label>
-        <button class="secondary-button" type="button" data-category-select-all>Select all</button>
-        <button class="quiet-button" type="button" data-category-select-none>Clear selection</button>
-      </div>
-      <div data-category-products>
-        ${(category.products || []).map((product, index) => {
-          const fields = product.fields || {};
-          const duplicates = product.duplicate_candidates || [];
-          return `<article class="admin-card compact-card" data-category-product="${index}">
-            <div class="admin-panel-heading"><label><span><input type="checkbox" name="selected" checked> Include</span></label>${confidenceBadge(product.overall_confidence)}</div>
-            <div class="admin-control-grid">
-              ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}
-              ${importerField("brand", "Brand", fields.brand, product.confidence?.brand, { maxlength: 80 })}
-              ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0, step: "0.01" })}
-              ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0, step: "0.01" })}
-              ${importerField("quantity", "Quantity", fields.quantity, product.confidence?.quantity, { type: "number", min: 0, step: "0.01" })}
-              ${importerField("item_size", "Item size", fields.item_size, product.confidence?.item_size, { type: "number", min: 0, step: "0.01" })}
-              ${importerField("unit", "Unit", fields.unit, product.confidence?.unit, { maxlength: 30 })}
-              ${importerField("size_text", "Package text", fields.raw_size_text, product.confidence?.raw_size_text, { maxlength: 80 })}
-              ${importerField("unit_price", "Unit price (if provided)", fields.unit_price, product.confidence?.unit_price, { type: "number", min: 0, step: "0.0001" })}
-              ${importerField("availability", "Availability", fields.availability, product.confidence?.availability, { maxlength: 120 })}
-              <label><span>Image source</span><span>${fields.image_url ? "Available" : "Not detected"}</span><small class="field-help">${escapeHtml(fields.image_url || "No remote image URL")}</small></label>
-              <label><span>Image provenance</span><span><input name="use_image_source" type="checkbox" ${fields.image_url ? "" : "disabled"}> Retain source URL for later image review</span></label>
-            </div>
-            <p class="field-help">${fields.product_url ? `<a href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer">Open source product page</a>` : "No product detail URL detected."}</p>
-            ${duplicates.length ? `<div class="message warning"><strong>Likely duplicates:</strong> ${duplicates.map((item) => escapeHtml(item.name || `Earlier import #${item.import_id}`)).join(", ")}</div>` : '<p class="field-help">No likely duplicate detected.</p>'}
-          </article>`;
-        }).join("") || '<div class="empty-state">No listing products were detected.</div>'}
-      </div>
-      <div class="card-actions"><button class="primary-button" type="submit">Save selected as pending imports</button><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button></div>
+    <form class="importer-results" data-category-import-form>
+      <header class="importer-results-header"><div><p class="importer-eyebrow">${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</p><h4>Found ${Number(category.detected_count || 0)} products on this page</h4><p>Review and select the items you want to import.</p></div><div class="importer-location-controls"><label><span>Grocery Radar store</span><select name="store_id">${storeOptionsWithEmpty(category.retailer?.recognized ? "Select exact store" : "Retailer not recognized", category.retailer?.store_id)}</select></label><label><span>Price location</span><select name="price_location_confidence"><option value="unknown" ${locationValue === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${locationValue === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville">Confirmed Janesville — admin verified</option></select></label></div></header>
+      <div class="importer-location-note"><strong>Location check required.</strong> ${escapeHtml(category.location?.evidence || "This listing did not establish an exact store.")}</div>
+      ${(category.warnings || []).length ? `<details class="importer-page-warnings"><summary>${category.warnings.length} page note${category.warnings.length === 1 ? "" : "s"}</summary>${category.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</details>` : ""}
+      <div class="importer-bulk-toolbar"><div><button class="importer-link" type="button" data-category-select-all>Select all</button><button class="importer-link" type="button" data-category-select-none>Clear selection</button></div><button class="primary-button" type="submit" data-import-save-top>Save selected as pending imports</button></div>
+      <div class="importer-table-head" aria-hidden="true"><span></span><span>Image</span><span>Product</span><span>Current price</span><span>Regular</span><span>Size / quantity</span><span>Unit price</span><span>Store & location</span><span>Confidence</span><span>Duplicate</span><span>Image / source</span><span>Actions</span></div>
+      <div class="importer-product-list" data-category-products>${productRows || '<div class="empty-state">No listing products were detected.</div>'}</div>
+      <div class="importer-save-bar"><div class="importer-save-summary" aria-live="polite"><strong><span data-selected-count>0</span> selected</strong><span>Estimated new products: <b data-new-count>0</b></span><span>Possible duplicates: <b data-duplicate-count>0</b></span></div><div class="importer-save-actions"><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button><button class="primary-button" type="submit" data-import-save-bottom>Save selected as pending imports</button></div></div>
+      <div class="importer-progress" data-import-progress hidden role="status" aria-live="polite"><span class="importer-spinner" aria-hidden="true"></span><div><strong>Saving products…</strong><span data-import-progress-text>Preparing selected products and safe images.</span></div></div>
     </form>`;
-  preview.querySelector("[data-category-select-all]")?.addEventListener("click", () => preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = true; }));
-  preview.querySelector("[data-category-select-none]")?.addEventListener("click", () => preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = false; }));
+  const updateSummary = () => {
+    const selectedCards = [...preview.querySelectorAll("[data-category-product]")].filter((card) => card.querySelector('input[name="selected"]')?.checked);
+    const duplicates = selectedCards.filter((card) => card.querySelector(".duplicate-warning")).length;
+    preview.querySelectorAll("[data-selected-count]").forEach((node) => { node.textContent = String(selectedCards.length); });
+    preview.querySelectorAll("[data-new-count]").forEach((node) => { node.textContent = String(Math.max(0, selectedCards.length - duplicates)); });
+    preview.querySelectorAll("[data-duplicate-count]").forEach((node) => { node.textContent = String(duplicates); });
+    preview.querySelectorAll("[data-import-save-top],[data-import-save-bottom]").forEach((button) => { button.disabled = selectedCards.length === 0; });
+    preview.querySelectorAll("[data-category-product]").forEach((card) => card.classList.toggle("is-selected", Boolean(card.querySelector('input[name="selected"]')?.checked)));
+  };
+  preview.querySelector("[data-category-select-all]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = true; }); updateSummary(); });
+  preview.querySelector("[data-category-select-none]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = false; }); updateSummary(); });
+  preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => input.addEventListener("change", updateSummary));
+  preview.querySelectorAll("[data-toggle-import-details]").forEach((button) => button.addEventListener("click", () => { const panel = preview.querySelector(`#import-details-${button.dataset.toggleImportDetails}`); const expanded = panel.hidden; panel.hidden = !expanded; button.setAttribute("aria-expanded", String(expanded)); button.closest("[data-category-product]")?.classList.toggle("is-expanded", expanded); }));
+  preview.querySelectorAll("[data-view-match]").forEach((button) => button.addEventListener("click", () => openAdminTab("productToolsTab", { productId: button.dataset.viewMatch })));
+  preview.querySelectorAll("[data-import-image]").forEach((image) => image.addEventListener("error", () => { image.hidden = true; image.nextElementSibling?.classList.add("is-visible"); }));
+  preview.querySelectorAll("[data-category-product]").forEach((card) => {
+    const refreshDisplay = () => {
+      const values = Object.fromEntries(new FormData(card).entries());
+      const set = (name, value) => card.querySelectorAll(`[data-display="${name}"]`).forEach((node) => { node.textContent = value; node.hidden = !value; });
+      set("name", values.name || "Unnamed product");
+      set("brand", values.brand || "");
+      set("price", Number.isFinite(Number(values.price)) && values.price !== "" ? `$${Number(values.price).toFixed(2)}` : "Price unavailable");
+      set("regular_price", Number.isFinite(Number(values.regular_price)) && values.regular_price !== "" ? `$${Number(values.regular_price).toFixed(2)}` : "—");
+      set("package", values.size_text || [Number(values.quantity) > 1 ? `${values.quantity} ×` : "", values.item_size, values.unit].filter(Boolean).join(" ") || "Not provided");
+    };
+    card.querySelectorAll(".importer-edit-panel input,.importer-edit-panel select").forEach((input) => input.addEventListener("input", refreshDisplay));
+  });
   preview.querySelector("[data-category-import-form]")?.addEventListener("submit", saveCategoryUrlImports);
   preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
+  updateSummary();
 }
 
 async function analyzeProductUrl(event) {
@@ -4080,15 +4132,21 @@ async function analyzeProductUrl(event) {
   const form = event.currentTarget;
   const message = productToolsContent.querySelector("[data-product-url-message]");
   const button = form.querySelector("[data-product-url-analyze]");
+  const buttonLabel = button.querySelector("[data-analyze-label]");
+  const urlValue = String(new FormData(form).get("url") || "");
+  let retailerLabel = "retailer";
+  try { retailerLabel = new URL(urlValue).hostname.replace(/^www\./, "").split(".")[0] || "retailer"; } catch {}
   button.disabled = true;
-  setMessage(message, "Analyzing product page…", "info");
+  button.classList.add("is-loading");
+  if (buttonLabel) buttonLabel.textContent = `Analyzing ${titleCase(retailerLabel)} page…`;
+  setMessage(message, `Analyzing ${titleCase(retailerLabel)} page…`, "info");
   try {
     const formData = new FormData(form);
     const data = await fetchJson("/api/admin/product-url-imports/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: formData.get("url"), max_products: Number(formData.get("max_products")) }) });
     if (data.url_type === "category") renderCategoryUrlPreview(data); else renderProductUrlPreview(data);
     setMessage(message, data.message, "success");
   } catch (error) { setMessage(message, error.message, "error"); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; button.classList.remove("is-loading"); if (buttonLabel) buttonLabel.textContent = "Analyze URL"; }
 }
 
 async function saveCategoryUrlImports(event) {
@@ -4096,21 +4154,52 @@ async function saveCategoryUrlImports(event) {
   const form = event.currentTarget;
   const category = productUrlAnalysis?.category || {};
   const selected = [];
+  const selectedCards = [];
   for (const card of form.querySelectorAll("[data-category-product]")) {
     if (!card.querySelector('input[name="selected"]')?.checked) continue;
+    selectedCards.push(card);
     const index = Number(card.dataset.categoryProduct);
     const source = category.products?.[index] || {};
     const values = Object.fromEntries(new FormData(card).entries());
-    selected.push({ ...values, product_url: source.fields?.product_url || category.source_url, image_source_url: source.fields?.image_url || "", use_image_source: Boolean(card.querySelector('input[name="use_image_source"]')?.checked), sku: source.fields?.sku || "", gtin: source.fields?.gtin || "", raw_price_text: source.fields?.raw_price_text || "", raw_size_text: source.fields?.raw_size_text || "", overall_confidence: source.overall_confidence, field_confidences: source.confidence || {}, extraction_methods: source.methods_used || [], warnings: source.warnings || [] });
+    selected.push({ ...values, product_url: values.product_url || source.fields?.product_url || category.source_url, image_source_url: source.fields?.image_url || "", use_image_source: Boolean(card.querySelector('input[name="use_image_source"]')?.checked), sku: values.sku || source.fields?.sku || "", gtin: values.gtin || source.fields?.gtin || "", raw_price_text: source.fields?.raw_price_text || "", raw_size_text: values.size_text || source.fields?.raw_size_text || "", overall_confidence: values.overall_confidence || source.overall_confidence, field_confidences: source.confidence || {}, extraction_methods: source.methods_used || [], warnings: source.warnings || [], category_relevance: source.category_relevance || "unknown" });
   }
   const message = productToolsContent.querySelector("[data-product-url-message]");
   if (!selected.length) { setMessage(message, "Select at least one product.", "warning"); return; }
+  const progress = form.querySelector("[data-import-progress]");
+  const progressText = form.querySelector("[data-import-progress-text]");
+  const buttons = form.querySelectorAll('[type="submit"]');
+  buttons.forEach((button) => { button.disabled = true; });
+  if (progress) progress.hidden = false;
+  if (progressText) progressText.textContent = `0 / ${selected.length} complete · validating records and importing selected images with bounded concurrency.`;
   try {
     const data = await fetchJson("/api/admin/product-url-imports/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: selected, category_source_url: category.source_url, source_timestamp: category.extracted_at, retailer_name: category.retailer?.retailer_name || "", store_id: new FormData(form).get("store_id"), price_location_confidence: new FormData(form).get("price_location_confidence"), location_evidence_text: category.location?.evidence || "" }) });
+    if (progressText) progressText.textContent = `${data.summary?.saved || selected.length} / ${selected.length} complete${data.summary?.image_unavailable ? ` · ${data.summary.image_unavailable} image warning${data.summary.image_unavailable === 1 ? "" : "s"}` : ""}.`;
+    const preview = form.closest("[data-product-url-preview]");
+    if (data.failures?.length) {
+      const failedIndexes = new Set(data.failures.map((failure) => Number(failure.input_index)));
+      for (const [originalSelectionIndex, card] of selectedCards.entries()) {
+        const checkbox = card.querySelector('input[name="selected"]');
+        const failed = failedIndexes.has(originalSelectionIndex);
+        if (failed) {
+          card.classList.add("has-save-error");
+          const failure = data.failures.find((item) => Number(item.input_index) === originalSelectionIndex);
+          const editPanel = card.querySelector(".importer-edit-panel");
+          editPanel?.insertAdjacentHTML("afterbegin", `<div class="message error">${escapeHtml(failure?.error || "This product needs correction.")}</div>`);
+          if (editPanel) editPanel.hidden = false;
+          card.classList.add("is-expanded");
+          card.querySelector("[data-toggle-import-details]")?.setAttribute("aria-expanded", "true");
+        } else { checkbox.checked = false; checkbox.disabled = true; card.classList.add("is-saved"); }
+      }
+      if (progress) progress.hidden = true;
+      buttons.forEach((button) => { button.disabled = false; });
+      form.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
+      setMessage(message, data.message, "warning");
+      return;
+    }
     productUrlAnalysis = null;
-    const preview = form.closest("[data-product-url-preview]"); preview.hidden = true; preview.innerHTML = "";
-    setMessage(message, data.message, "success");
-  } catch (error) { setMessage(message, error.message, "error"); }
+    setTimeout(() => { preview.hidden = true; preview.innerHTML = ""; }, 900);
+    setMessage(message, data.message, data.summary?.image_unavailable ? "warning" : "success");
+  } catch (error) { setMessage(message, error.message, "error"); if (progress) progress.hidden = true; buttons.forEach((button) => { button.disabled = false; }); }
 }
 
 async function saveProductUrlImport(event) {

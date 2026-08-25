@@ -10,6 +10,7 @@ const session = require("express-session");
 const multer = require("multer");
 const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
+const { getSanitizedPreview, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
 const { findDuplicateCandidates } = require("./src/productImporter");
 const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CategoryImportError, categoryUrlHint, analyzePage } = require("./src/categoryImporter");
 let tesseract = null;
@@ -746,6 +747,8 @@ const PRODUCT_URL_IMPORT_WINDOW_MS = 15 * 60 * 1000;
 const PRODUCT_URL_IMPORT_LIMIT = 10;
 const categoryUrlImportAttempts = new Map();
 const CATEGORY_URL_IMPORT_LIMIT = 4;
+const productImagePreviewAttempts = new Map();
+const PRODUCT_IMAGE_PREVIEW_LIMIT = 75;
 
 const REVIEW_ROW_REJECTION_REASONS = [...PUBLIC_REJECTION_REASONS];
 const REVIEW_PROOF_REJECTION_REASONS = [...PUBLIC_REJECTION_REASONS];
@@ -2761,6 +2764,68 @@ function sendUploadFileByFilename(filename, response) {
       response.status(error.statusCode || 404).send("Upload not found.");
     }
   });
+}
+
+async function importRemoteImageForPendingUrlImport(importId, imageUrl, adminUserId) {
+  const now = new Date().toISOString();
+  let source;
+  try { source = validateRemoteUrl(imageUrl).toString(); }
+  catch (error) { return { status: "unavailable", warning: error.message || "Image source URL was invalid." }; }
+  const sourceDomain = new URL(source).hostname.toLowerCase();
+  let storedFilename = "";
+  try {
+    await run(`INSERT INTO product_url_import_images (import_id,source_url,source_domain,imported_by,status,created_at,updated_at) VALUES (?,?,?,?,'downloading',?,?) ON CONFLICT(import_id) DO UPDATE SET source_url=excluded.source_url,source_domain=excluded.source_domain,imported_by=excluded.imported_by,status='downloading',error_message=NULL,updated_at=excluded.updated_at`, [importId, source, sourceDomain, adminUserId, now, now]);
+    const image = await storeSanitizedRemoteImage(source, UPLOAD_DIR);
+    storedFilename = image.filename;
+    const duplicate = await get("SELECT storage_path FROM product_url_import_images WHERE file_hash = ? AND status IN ('ready','attached') AND import_id != ? LIMIT 1", [image.hash, importId]);
+    let storagePath = uploadedFileUrl(image.filename);
+    if (duplicate?.storage_path && uploadPathFromPhotoPath(duplicate.storage_path)) {
+      await fs.promises.unlink(path.join(UPLOAD_DIR, image.filename)).catch(() => {});
+      storedFilename = "";
+      storagePath = duplicate.storage_path;
+    }
+    const retrievedAt = image.retrievedAt || new Date().toISOString();
+    await run("UPDATE product_url_import_images SET source_url=?,source_domain=?,retrieved_at=?,storage_path=?,mime_type='image/webp',size_bytes=?,file_hash=?,width=?,height=?,status='ready',error_message=NULL,updated_at=? WHERE import_id=?", [image.sourceUrl, image.sourceDomain, retrievedAt, storagePath, image.sizeBytes, image.hash, image.width, image.height, retrievedAt, importId]);
+    await run("UPDATE product_url_imports SET image_source_url=?, image_retrieved_at=? WHERE id=?", [image.sourceUrl, retrievedAt, importId]);
+    return { status: "ready", mime_type: "image/webp", width: image.width, height: image.height, retrieved_at: retrievedAt };
+  } catch (error) {
+    if (storedFilename) await fs.promises.unlink(path.join(UPLOAD_DIR, storedFilename)).catch(() => {});
+    const message = cleanText(error.message || "Product image could not be safely imported.", 300);
+    await run("UPDATE product_url_import_images SET status='unavailable',error_message=?,updated_at=? WHERE import_id=?", [message, new Date().toISOString(), importId]).catch(() => {});
+    return { status: "unavailable", warning: message, code: error.code || "IMAGE_IMPORT_FAILED" };
+  }
+}
+
+async function attachPendingUrlImportImage(rowId, productId, adminUserId) {
+  const pending = await get(`SELECT images.*, imports.source_url AS product_source_url FROM product_url_import_images images JOIN product_url_imports imports ON imports.id=images.import_id WHERE imports.row_id=? AND images.status='ready' AND images.attached_product_image_id IS NULL`, [rowId]);
+  if (!pending || !uploadPathFromPhotoPath(pending.storage_path)) return null;
+  const existing = pending.file_hash ? await get("SELECT id FROM product_images WHERE product_id=? AND file_hash=? LIMIT 1", [productId, pending.file_hash]) : null;
+  if (existing) {
+    await run("UPDATE product_url_import_images SET status='attached',attached_product_image_id=?,updated_at=? WHERE id=?", [existing.id, new Date().toISOString(), pending.id]);
+    return existing.id;
+  }
+  const product = await get("SELECT display_name FROM products WHERE id=?", [productId]);
+  const now = new Date().toISOString();
+  const result = await run(`INSERT INTO product_images (product_id,image_path,original_image_path,original_name,mime_type,size_bytes,file_hash,thumbnail_path,card_path,detail_path,alt_text,source_type,source_url,source_note,status,is_primary,uploaded_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',0,?,?,?)`, [productId, pending.storage_path, pending.storage_path, `retailer-import-${pending.id}.webp`, "image/webp", pending.size_bytes, pending.file_hash, pending.storage_path, pending.storage_path, pending.storage_path, cleanText(`${product?.display_name || "Product"} product image`, 240), "retailer_url_import", pending.source_url, cleanText(`Imported from ${pending.source_domain}; product source ${pending.product_source_url}`, 300), adminUserId, now, now]);
+  await run("UPDATE product_url_import_images SET status='attached',attached_product_image_id=?,updated_at=? WHERE id=?", [result.lastID, now, pending.id]);
+  return result.lastID;
+}
+
+async function cleanupOrphanedProductImportImages(options = {}) {
+  const minimumAgeMs = options.minimumAgeMs ?? 24 * 60 * 60 * 1000;
+  const referencedRows = await all("SELECT storage_path AS path FROM product_url_import_images WHERE COALESCE(storage_path,'') != '' UNION SELECT image_path AS path FROM product_images WHERE COALESCE(image_path,'') != ''");
+  const referenced = new Set(referencedRows.map((row) => path.basename(String(row.path || ""))).filter(Boolean));
+  const now = Date.now();
+  let removed = 0;
+  for (const entry of await fs.promises.readdir(UPLOAD_DIR, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^product-import-\d+-[a-f0-9]{32}\.webp$/.test(entry.name) || referenced.has(entry.name)) continue;
+    const fullPath = path.join(UPLOAD_DIR, entry.name);
+    const stats = await fs.promises.stat(fullPath).catch(() => null);
+    if (!stats || now - stats.mtimeMs < minimumAgeMs) continue;
+    await fs.promises.unlink(fullPath).catch(() => {});
+    removed += 1;
+  }
+  return removed;
 }
 
 async function sendPublicUploadFile(request, response) {
@@ -5847,6 +5912,20 @@ function limitCategoryUrlImports(request, response, next) {
 function limitUrlImportAnalysis(request, response, next) {
   if (categoryUrlHint(request.body?.url) === "category") return limitCategoryUrlImports(request, response, next);
   return limitProductUrlImports(request, response, next);
+}
+
+function limitProductImagePreviews(request, response, next) {
+  const key = String(request.adminUser?.id || "unknown");
+  const now = Date.now();
+  const recent = (productImagePreviewAttempts.get(key) || []).filter((timestamp) => now - timestamp < PRODUCT_URL_IMPORT_WINDOW_MS);
+  if (recent.length >= PRODUCT_IMAGE_PREVIEW_LIMIT) {
+    response.setHeader("Retry-After", String(Math.ceil((PRODUCT_URL_IMPORT_WINDOW_MS - (now - recent[0])) / 1000)));
+    response.status(429).json({ error: "Too many product image previews. Wait before loading more images." });
+    return;
+  }
+  recent.push(now);
+  productImagePreviewAttempts.set(key, recent);
+  next();
 }
 
 const adminV2RoleGuard = asyncRoute(async (request, response, next) => {
@@ -12836,6 +12915,11 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
     ]
   );
 
+  // A retailer image follows the approved row to its resolved product as a
+  // private draft. Existing image moderation remains the publication gate.
+  try { await attachPendingUrlImportImage(rowId, productId, adminUser.id); }
+  catch (error) { console.warn("Pending URL import image could not be attached:", cleanText(error.message, 200)); }
+
   await run(
     `
       UPDATE price_import_batches
@@ -17676,6 +17760,23 @@ app.post("/api/admin/suggestions/:id/status", requireAdminAccess, requireLoggedI
   response.json({ message: `Suggestion marked ${status}.` });
 }));
 
+app.get("/api/admin/product-url-imports/image-preview", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitProductImagePreviews, asyncRoute(async (request, response) => {
+  try {
+    const image = await getSanitizedPreview(cleanText(request.query.url, 2000));
+    response.setHeader("Content-Type", image.mimeType);
+    response.setHeader("Cache-Control", "private, max-age=300");
+    response.setHeader("Content-Disposition", "inline");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.send(image.buffer);
+  } catch (error) {
+    if (error instanceof SafeFetchError || error instanceof RemoteImageError) {
+      response.status(error.statusCode || 422).json({ error: error.message, code: error.code });
+      return;
+    }
+    throw error;
+  }
+}));
+
 app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), limitUrlImportAnalysis, asyncRoute(async (request, response) => {
   const requestedUrl = cleanText(request.body.url, 2000);
   if (!requestedUrl) {
@@ -17701,7 +17802,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
         url_type: "category",
         category: analysis,
         limits: { allowed_product_counts: CATEGORY_PRODUCT_CHOICES, maximum_products: MAX_CATEGORY_PRODUCTS, response_bytes: CATEGORY_DEFAULTS.maxBytes },
-        image_policy: "Retailer images are not loaded or copied. An explicit selection only retains the image source URL for later review."
+        image_policy: "Retailer images are fetched through a bounded SSRF-safe sanitizer for same-origin previews. Only selected images are stored as private pending assets."
       });
       return;
     }
@@ -17716,7 +17817,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       url_type: "product",
       extraction,
       duplicate_candidates: duplicates,
-      image_policy: "Remote images are not loaded in the browser or copied into public assets. Choosing Use image source only preserves the URL for later human image review."
+      image_policy: "Remote images are fetched through a bounded SSRF-safe sanitizer for same-origin previews. Choosing Import approved image stores a private pending asset; it is never published automatically."
     });
   } catch (error) {
     if (error instanceof SafeFetchError) {
@@ -17749,9 +17850,10 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
   const now = new Date().toISOString();
   const created = [];
-  const createdBatchIds = [];
-  try {
-    for (const input of items) {
+  const failures = [];
+  for (const [itemIndex, input] of items.entries()) {
+    let currentBatchId = null;
+    try {
       const inferredSale = Number.isFinite(Number(input.price)) && Number.isFinite(Number(input.regular_price)) && Number(input.regular_price) > Number(input.price);
       const draft = cleanImportRowDraft({ ...input, sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: store?.id || "", proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: input.overall_confidence || "low", status: "ready_for_review" });
       if (!draft.item_name) throw Object.assign(new Error("Every selected product needs a name."), { statusCode: 400 });
@@ -17765,21 +17867,25 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const duplicateWarning = duplicates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500);
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
       const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?, 'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, store?.id || null, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, locationConfidence === "confirmed_janesville" ? "verified_exact_store" : "legacy_unknown", locationConfidence === "confirmed_janesville" ? store.id : null, cleanText(request.body.location_evidence_text, 500), now, now]);
-      createdBatchIds.push(batch.lastID);
+      currentBatchId = batch.lastID;
       const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, store?.id || null, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
       let imageSource = "";
       if (input.use_image_source && input.image_source_url) {
         try { imageSource = validateRemoteUrl(input.image_source_url).toString(); } catch { imageSource = ""; warnings.push("Invalid image source URL was not retained."); }
       }
-      await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now]);
-      created.push({ batch_id: batch.lastID, row_id: row.lastID, duplicate_candidates: duplicates });
+      const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20)]);
+      created.push({ input_index: itemIndex, name: draft.item_name, batch_id: batch.lastID, row_id: row.lastID, import_id: imported.lastID, duplicate_candidates: duplicates, requested_image_url: imageSource });
+    } catch (error) {
+      if (currentBatchId) await run("DELETE FROM price_import_batches WHERE id = ?", [currentBatchId]).catch(() => {});
+      failures.push({ input_index: itemIndex, name: cleanText(input.name || input.item_name || `Product ${itemIndex + 1}`, 120), error: cleanText(error.message || "Product could not be saved.", 300) });
     }
-  } catch (error) {
-    for (const batchId of createdBatchIds) await run("DELETE FROM price_import_batches WHERE id = ?", [batchId]);
-    throw error;
   }
-  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRODUCT_URL_CATEGORY_IMPORT_SAVED", method: request.method, path: request.path, statusCode: 201, affectedType: "price_import_batch", affectedId: created[0]?.batch_id, metadata: { pending_import_count: created.length, source_domain: sourceDomainFromUrl(categorySourceUrl), location_confidence: locationConfidence } });
-  response.status(201).json({ message: `${created.length} selected product${created.length === 1 ? "" : "s"} saved as pending imports. Nothing was published.`, imports: created });
+  if (!created.length) { response.status(400).json({ error: "None of the selected products could be saved.", failures }); return; }
+  const imageResults = await Promise.all(created.map(async (item) => item.requested_image_url ? importRemoteImageForPendingUrlImport(item.import_id, item.requested_image_url, request.adminUser.id) : { status: "not_requested" }));
+  created.forEach((item, index) => { item.image = imageResults[index]; delete item.requested_image_url; });
+  const unavailableImages = imageResults.filter((item) => item.status === "unavailable").length;
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRODUCT_URL_CATEGORY_IMPORT_SAVED", method: request.method, path: request.path, statusCode: 201, affectedType: "price_import_batch", affectedId: created[0]?.batch_id, metadata: { pending_import_count: created.length, product_failure_count: failures.length, source_domain: sourceDomainFromUrl(categorySourceUrl), location_confidence: locationConfidence, image_failure_count: unavailableImages } });
+  response.status(201).json({ message: `${created.length} selected product${created.length === 1 ? "" : "s"} saved as pending imports. Nothing was published.${failures.length ? ` ${failures.length} product${failures.length === 1 ? " needs" : "s need"} correction.` : ""}${unavailableImages ? ` ${unavailableImages} image${unavailableImages === 1 ? " was" : "s were"} unavailable; the product imports were preserved.` : ""}`, imports: created, failures, summary: { saved: created.length, product_failed: failures.length, image_unavailable: unavailableImages, publication_state: "pending" } });
 }));
 
 app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
@@ -17826,12 +17932,18 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
   const duplicateCandidates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: request.body.gtin, sku: request.body.sku }, products, priorImports, draft.store_id);
   const now = new Date().toISOString();
   const warnings = Array.isArray(request.body.warnings) ? request.body.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
+  let retainedImageSource = "";
+  if (request.body.use_image_source && request.body.image_source_url) {
+    try { retainedImageSource = validateRemoteUrl(request.body.image_source_url).toString(); }
+    catch { warnings.push("Invalid image source URL was not retained."); }
+  }
   const confidences = request.body.field_confidences && typeof request.body.field_confidences === "object" && !Array.isArray(request.body.field_confidences) ? request.body.field_confidences : {};
   const extractionMethods = Array.isArray(request.body.extraction_methods) ? request.body.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
   const duplicateWarning = duplicateCandidates.length ? duplicateCandidates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500) : "";
 
   let batchId = null;
   let rowId = null;
+  let importId = null;
   try {
     const batch = await run(`
       INSERT INTO price_import_batches (
@@ -17869,26 +17981,30 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
       duplicateWarning, cleanText(request.body.notes, 500), request.adminUser.id, now, request.adminUser.id, now
     ]);
     rowId = row.lastID;
-    await run(`
+    const imported = await run(`
       INSERT INTO product_url_imports (
         batch_id, row_id, source_url, source_domain, fetched_url, extraction_method, raw_price_text,
         raw_size_text, image_source_url, sku, gtin, availability, field_confidences_json,
         extraction_warnings_json, retailer_name, price_location_confidence, location_evidence_text,
-        imported_by, imported_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        imported_by, imported_at, created_at, category_relevance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       batchId, rowId, draft.source_url, sourceDomain, cleanText(request.body.fetched_url || draft.source_url, 2000),
       extractionMethods.join(","), cleanText(request.body.raw_price_text, 120), cleanText(request.body.raw_size_text, 120),
-      request.body.use_image_source ? cleanText(request.body.image_source_url, 2000) : "", cleanText(request.body.sku, 100),
+      retainedImageSource, cleanText(request.body.sku, 100),
       cleanText(request.body.gtin, 40), cleanText(request.body.availability, 120), JSON.stringify(confidences).slice(0, 5000),
       JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence,
-      cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now
+      cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(request.body.category_relevance || "high", 20)
     ]);
+    importId = imported.lastID;
   } catch (error) {
     if (batchId) await run("DELETE FROM price_import_batches WHERE id = ?", [batchId]);
     throw error;
   }
 
+  const image = retainedImageSource
+    ? await importRemoteImageForPendingUrlImport(importId, retainedImageSource, request.adminUser.id)
+    : { status: "not_requested" };
   await recordAdminAudit({
     adminUserId: request.adminUser.id,
     action: "PRODUCT_URL_IMPORT_SAVED",
@@ -17903,7 +18019,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
     message: "Saved as a pending import. It has not been published and still requires approval.",
     batch_id: batchId,
     row_id: rowId,
-    duplicate_candidates: duplicateCandidates
+    duplicate_candidates: duplicateCandidates,
+    image
   });
 }));
 
@@ -19493,6 +19610,7 @@ async function resumeAiProofJobs() {
 Promise.resolve()
   .then(runOwnerRepairOnStartIfEnabled)
   .then(initDb)
+  .then(() => cleanupOrphanedProductImportImages())
   .then(loadSourceFreshnessSettings)
   .then(ensureBootstrapSuperAdmin)
   .then(auditExistingUsernames)
@@ -19501,6 +19619,8 @@ Promise.resolve()
     app.listen(PORT, HOST, () => {
       console.log(`Grocery Radar Janesville running at http://localhost:${PORT}`);
       console.log(`Network testing: open http://YOUR-MAC-IP:${PORT} on your phone`);
+      const importerImageCleanupTimer = setInterval(() => cleanupOrphanedProductImportImages().catch((error) => console.warn("Product importer image cleanup failed:", cleanText(error.message, 200))), 6 * 60 * 60 * 1000);
+      importerImageCleanupTimer.unref();
     });
   })
   .catch((error) => {

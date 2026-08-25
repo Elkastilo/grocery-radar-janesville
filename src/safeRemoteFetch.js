@@ -147,6 +147,39 @@ function requestHttps(url, addresses, options) {
   });
 }
 
+function requestHttpsBuffer(url, addresses, options) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => { if (!settled) { settled = true; callback(value); } };
+    const request = https.request(url, {
+      method: "GET",
+      headers: { "User-Agent": options.userAgent, Accept: options.accept || "image/webp,image/png,image/jpeg", "Accept-Encoding": "identity" },
+      lookup: (_hostname, lookupOptions, callback) => {
+        const family = typeof lookupOptions === "object" ? lookupOptions.family : 0;
+        const eligible = family ? addresses.filter((entry) => entry.family === family) : addresses;
+        if (!eligible.length) return callback(new Error("No validated address for requested family."));
+        if (lookupOptions?.all) return callback(null, eligible);
+        callback(null, eligible[0].address, eligible[0].family);
+      }
+    }, (response) => {
+      const chunks = [];
+      let bytes = 0;
+      response.on("data", (chunk) => {
+        bytes += chunk.length;
+        if (bytes > options.maxBytes) {
+          request.destroy(new SafeFetchError("RESPONSE_TOO_LARGE", options.sizeErrorMessage || "The remote response exceeded the safety limit.", 413));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => finish(resolve, { statusCode: response.statusCode || 0, headers: response.headers, body: Buffer.concat(chunks) }));
+    });
+    request.setTimeout(options.connectTimeoutMs, () => request.destroy(new SafeFetchError("REQUEST_TIMEOUT", "The remote server did not respond in time.", 504)));
+    request.on("error", (error) => finish(reject, error));
+    request.end();
+  });
+}
+
 async function safeRemoteFetch(input, custom = {}) {
   const options = { ...DEFAULTS, ...custom };
   const resolver = custom.resolveHost || dns.lookup;
@@ -185,4 +218,47 @@ function safeCategoryRemoteFetch(input, custom = {}) {
   return safeRemoteFetch(input, { ...CATEGORY_DEFAULTS, ...custom });
 }
 
-module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, safeRemoteFetch, safeCategoryRemoteFetch };
+async function safeRemoteBufferFetch(input, custom = {}) {
+  const options = {
+    ...DEFAULTS,
+    maxBytes: 4 * 1024 * 1024,
+    totalTimeoutMs: 15000,
+    accept: "image/webp,image/png,image/jpeg",
+    sizeErrorMessage: "The remote image exceeded the 4 MiB safety limit.",
+    ...custom
+  };
+  const resolver = custom.resolveHost || dns.lookup;
+  const requester = custom.requestOnce || requestHttpsBuffer;
+  const allowedContentTypes = custom.allowedContentTypes || ["image/jpeg", "image/png", "image/webp"];
+  const operation = async () => {
+    let current = validateRemoteUrl(input);
+    for (let redirect = 0; redirect <= options.maxRedirects; redirect += 1) {
+      const hostname = current.hostname.replace(/^\[|\]$/g, "");
+      const addresses = await resolveAndValidate(hostname, resolver);
+      const result = await requester(current, addresses, options);
+      if ([301, 302, 303, 307, 308].includes(result.statusCode)) {
+        if (redirect >= options.maxRedirects) throw new SafeFetchError("TOO_MANY_REDIRECTS", "The remote image redirected too many times.", 502);
+        if (!result.headers?.location) throw new SafeFetchError("INVALID_REDIRECT", "The remote server returned an invalid redirect.", 502);
+        current = validateRemoteUrl(new URL(result.headers.location, current).toString());
+        continue;
+      }
+      if ([401, 403, 429].includes(result.statusCode)) throw new SafeFetchError("RETAILER_BLOCKED", "Retailer blocked automated retrieval.", 422);
+      if (result.statusCode < 200 || result.statusCode >= 300) throw new SafeFetchError("REMOTE_STATUS", `Remote image returned HTTP ${result.statusCode}.`, 502);
+      const contentType = String(result.headers?.["content-type"] || "").split(";")[0].trim().toLowerCase();
+      if (!allowedContentTypes.includes(contentType)) throw new SafeFetchError("UNSUPPORTED_CONTENT", "The image URL did not return a supported raster image.", 422);
+      const body = Buffer.isBuffer(result.body) ? result.body : Buffer.from(result.body || "");
+      if (body.length > options.maxBytes) throw new SafeFetchError("RESPONSE_TOO_LARGE", options.sizeErrorMessage, 413);
+      return { url: current.toString(), statusCode: result.statusCode, contentType, body };
+    }
+    throw new SafeFetchError("TOO_MANY_REDIRECTS", "The remote image redirected too many times.", 502);
+  };
+  let timer;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new SafeFetchError("REQUEST_TIMEOUT", "The remote image request exceeded the total time limit.", 504)), options.totalTimeoutMs); })
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch };
