@@ -1,6 +1,6 @@
 "use strict";
 
-const { parsePrice, normalizeRetailerText, normalizePackage } = require("../productImporter");
+const { parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle } = require("../productImporter");
 
 function clean(value, limit = 500) {
   return normalizeRetailerText(value, limit);
@@ -71,22 +71,43 @@ function walmartPackageData(item) {
     item.packageSizeDisplay,
     item.size,
     weight,
-    item.weightIncrement && salesUnit ? `${item.weightIncrement} ${salesUnit}` : "",
-    item.quantity && salesUnit ? `${item.quantity} ${salesUnit}` : "",
-    /^(?:each|ea)$/i.test(salesUnit) ? "Each" : "",
+    item.weightIncrement && salesUnit && !/^(?:each|ea)$/i.test(salesUnit) ? `${item.weightIncrement} ${salesUnit}` : "",
+    item.packageQuantity && item.packageUnit ? `${item.packageQuantity} ${item.packageUnit}` : "",
     item.variant
   ];
+  let eachFallback = null;
   for (const candidate of candidates) {
     const normalized = normalizePackage(candidate);
-    if (normalized.raw_text) return normalized;
+    if (!normalized.raw_text) continue;
+    if (normalized.unit === "each") { eachFallback ||= normalized; continue; }
+    return normalized;
   }
-  return normalizePackage(null);
+  const titlePackage = packageFromProductTitle(item.name || item.title || item.productName);
+  if (titlePackage.raw_text) return titlePackage;
+  return eachFallback || normalizePackage(null);
+}
+
+function walmartSellingData(item) {
+  const rawUnit = clean(item.salesUnit || item.salesUnitType || item.soldBy || item.unit, 30).toLowerCase();
+  const sellUnit = /^(?:each|ea)$/.test(rawUnit) ? "each" : /^(?:lb|lbs|pound|pounds|per lb)$/.test(rawUnit) ? "lb" : rawUnit.includes("weight") ? "weight" : "";
+  const explicitQuantity = Number(item.salesQuantity ?? item.sellQuantity);
+  return { quantity: Number.isFinite(explicitQuantity) && explicitQuantity > 0 ? explicitQuantity : sellUnit === "each" ? 1 : null, unit: sellUnit };
+}
+
+function walmartUnitPriceUnit(item, prices) {
+  if (prices.unit.value === null) return "";
+  const priceInfo = item.priceInfo && typeof item.priceInfo === "object" ? item.priceInfo : {};
+  const textValue = clean(priceInfo.unitPrice?.priceString || priceInfo.unitPrice?.priceDisplay || priceInfo.unitPrice?.displayValue || item.unitPriceDisplay, 100).toLowerCase();
+  const match = textValue.match(/(?:\/|per\s+)(lb|oz|fl\s*oz|kg|g|each|ea|ct|count)\b/i);
+  if (match) return match[1].replace(/^ea$/, "each").replace(/^count$/, "ct");
+  return clean(priceInfo.unitPrice?.unit || item.unitPriceUnit, 20).toLowerCase().replace(/^ea$/, "each");
 }
 
 function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMethod = "walmart_listing_collection") {
   const prices = walmartPriceData(item);
   const currentPrice = prices.current.value;
   const packageInfo = walmartPackageData(item);
+  const selling = walmartSellingData(item);
   const retailerDescription = clean(item.shortDescription || item.description, 500);
   const productUrl = safeUrl(item.canonicalUrl || item.productUrl || item.productPageUrl || item.url, pageUrl);
   const image = item.imageInfo || {};
@@ -102,10 +123,14 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
       quantity: packageInfo.quantity,
       item_size: packageInfo.item_size,
       unit: packageInfo.unit,
+      package_type: packageInfo.package_type,
       raw_size_text: packageInfo.raw_text,
+      sell_quantity: selling.quantity,
+      sell_unit: selling.unit,
       retailer_description: retailerDescription,
       raw_price_text: prices.current.raw || (currentPrice === null ? "" : String(currentPrice)),
       unit_price: prices.unit.value,
+      unit_price_unit: walmartUnitPriceUnit(item, prices),
       image_url: imageSource,
       product_url: productUrl,
       sku: clean(item.usItemId || item.sku || item.itemId, 100),
@@ -115,7 +140,7 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
     confidence: {
       name: "high", price: prices.current.confidence, regular_price: prices.regular.confidence, brand: item.brand || item.brandName || item.brandInfo?.name ? "high" : "unknown",
       raw_size_text: packageInfo.raw_text ? "high" : "unknown", quantity: packageInfo.raw_text ? "high" : "unknown", item_size: packageInfo.item_size !== null ? "high" : "unknown",
-      unit: packageInfo.unit ? "high" : "unknown", retailer_description: retailerDescription ? "medium" : "unknown", image_url: imageSource ? "high" : "unknown", product_url: productUrl ? "high" : "unknown",
+      unit: packageInfo.unit ? "high" : "unknown", package_type: packageInfo.package_type ? "high" : "unknown", sell_quantity: selling.quantity ? "high" : "unknown", sell_unit: selling.unit ? "high" : "unknown", retailer_description: retailerDescription ? "medium" : "unknown", image_url: imageSource ? "high" : "unknown", product_url: productUrl ? "high" : "unknown",
       unit_price: prices.unit.confidence, availability: item.availabilityStatusDisplayValue || item.availabilityStatus || item.availability ? "high" : "unknown",
       sku: item.usItemId || item.sku || item.itemId ? "high" : "unknown", gtin: item.gtin || item.upc ? "high" : "unknown"
     },
@@ -190,4 +215,4 @@ function extractWalmartCategory(jsonValues, context) {
   return products;
 }
 
-module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, walmartPackageData, findSearchResults, listingCollections, excludedListingItem };
+module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, walmartPackageData, walmartSellingData, findSearchResults, listingCollections, excludedListingItem };

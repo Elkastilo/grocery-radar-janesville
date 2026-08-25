@@ -58,7 +58,7 @@ function genericProduct(value, pageUrl, method = "generic_serialized_data") {
     fields: {
       name, brand: clean(typeof value.brand === "string" ? value.brand : value.brand?.name || value.brandName, 100),
       price, regular_price: regular !== null && price !== null && regular > price ? regular : null,
-      quantity: pkg.quantity, item_size: pkg.item_size, unit: pkg.unit, raw_size_text: pkg.raw_text,
+      quantity: pkg.quantity, item_size: pkg.item_size, unit: pkg.unit, package_type: pkg.package_type, raw_size_text: pkg.raw_text,
       raw_price_text: clean(offer.price ?? offer.lowPrice ?? value.currentPrice ?? value.price, 120),
       unit_price: parsePrice(value.unitPrice || offer.unitPrice), image_url: imageUrl, product_url: productUrl,
       sku: clean(value.sku || value.itemId || value.productId, 100), gtin: clean(value.gtin14 || value.gtin13 || value.gtin12 || value.gtin || value.upc, 40),
@@ -66,7 +66,7 @@ function genericProduct(value, pageUrl, method = "generic_serialized_data") {
     },
     confidence: {
       name: "high", price: price === null ? "unknown" : "high", brand: value.brand || value.brandName ? "medium" : "unknown",
-      raw_size_text: sizeText ? "medium" : "unknown", quantity: sizeText ? "medium" : "unknown", item_size: sizeText ? "medium" : "unknown", unit: sizeText ? "medium" : "unknown",
+      raw_size_text: sizeText ? "medium" : "unknown", quantity: sizeText ? "medium" : "unknown", item_size: sizeText ? "medium" : "unknown", unit: sizeText ? "medium" : "unknown", package_type: pkg.package_type ? "medium" : "unknown",
       image_url: imageUrl ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: value.sku || value.itemId || value.productId ? "medium" : "unknown",
       gtin: value.gtin || value.gtin12 || value.gtin13 || value.gtin14 || value.upc ? "high" : "unknown", unit_price: value.unitPrice || offer.unitPrice ? "medium" : "unknown",
       availability: offer.availability || value.availability ? "medium" : "unknown"

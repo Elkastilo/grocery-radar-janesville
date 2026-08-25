@@ -21,7 +21,7 @@ database.all("SELECT name FROM sqlite_master WHERE type = 'table'", (error, rows
   database.all("PRAGMA table_info(price_reports)", (columnError, columns) => {
     if (columnError) throw columnError;
     const columnNames = new Set(columns.map((column) => column.name));
-    for (const name of ["submitted_by_user_id", "source_import_batch_id", "source_import_row_id", "source_date", "review_completed_at", "freshness_status", "comparison_price", "comparison_unit", "estimated_item_price", "approximate_item_weight", "package_price", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "location_verification_status", "applicable_city", "applicable_state", "applicable_store_id", "location_evidence_text"]) assert.ok(columnNames.has(name), name);
+    for (const name of ["submitted_by_user_id", "source_import_batch_id", "source_import_row_id", "source_date", "review_completed_at", "freshness_status", "comparison_price", "comparison_unit", "estimated_item_price", "approximate_item_weight", "package_price", "price_type", "valid_from_date", "valid_through_date", "valid_from_time", "valid_through_time", "promotion_conditions", "promotion_schedule_text", "display_offer_text", "location_verification_status", "applicable_city", "applicable_state", "applicable_store_id", "location_evidence_text", "verification_source", "verified_by", "verified_at"]) assert.ok(columnNames.has(name), name);
     database.all("PRAGMA table_info(price_import_rows)", (rowError, rowColumns) => {
       if (rowError) throw rowError;
       const rowColumnNames = new Set(rowColumns.map((column) => column.name));

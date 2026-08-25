@@ -854,6 +854,25 @@ async function initDb() {
   `);
   await addColumnIfMissing("product_url_imports", "category_relevance", "TEXT NOT NULL DEFAULT 'unknown'");
   await addColumnIfMissing("product_url_imports", "image_retrieved_at", "TEXT");
+  await addColumnIfMissing("product_url_imports", "package_quantity", "REAL");
+  await addColumnIfMissing("product_url_imports", "item_size", "REAL");
+  await addColumnIfMissing("product_url_imports", "package_unit", "TEXT");
+  await addColumnIfMissing("product_url_imports", "package_type", "TEXT");
+  await addColumnIfMissing("product_url_imports", "sell_quantity", "REAL");
+  await addColumnIfMissing("product_url_imports", "sell_unit", "TEXT");
+  await addColumnIfMissing("product_url_imports", "unit_price", "REAL");
+  await addColumnIfMissing("product_url_imports", "unit_price_unit", "TEXT");
+  await addColumnIfMissing("product_url_imports", "retailer_description", "TEXT");
+  await addColumnIfMissing("product_url_imports", "idempotency_key", "TEXT");
+  await addColumnIfMissing("product_url_imports", "approval_status", "TEXT NOT NULL DEFAULT 'pending'");
+  await addColumnIfMissing("product_url_imports", "approved_product_id", "INTEGER");
+  await addColumnIfMissing("product_url_imports", "approved_price_report_id", "INTEGER");
+  await addColumnIfMissing("product_url_imports", "approved_by", "INTEGER");
+  await addColumnIfMissing("product_url_imports", "approved_at", "TEXT");
+  await addColumnIfMissing("product_url_imports", "duplicate_decision", "TEXT");
+  await addColumnIfMissing("product_url_imports", "location_confirmation_method", "TEXT");
+  await addColumnIfMissing("product_url_imports", "location_confirmed_by", "INTEGER");
+  await addColumnIfMissing("product_url_imports", "location_confirmed_at", "TEXT");
 
   await run(`
     CREATE TABLE IF NOT EXISTS product_url_import_images (
@@ -2074,6 +2093,7 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_product_url_imports_sku ON product_url_imports(sku, source_domain)");
   await run("CREATE INDEX IF NOT EXISTS idx_product_url_import_images_status ON product_url_import_images(status, updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_product_url_import_images_hash ON product_url_import_images(file_hash)");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_url_imports_idempotency ON product_url_imports(imported_by, idempotency_key) WHERE COALESCE(idempotency_key, '') != ''");
   await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_import_rows_ai_item ON price_import_rows(ai_analysis_id, ai_item_index) WHERE ai_analysis_id IS NOT NULL");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_jobs_status ON ai_proof_jobs(status, queued_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_ai_proof_attempts_started ON ai_proof_attempts(started_at, attempt_kind, status)");
@@ -2282,6 +2302,9 @@ async function migratePriceReportsTable() {
   await addColumnIfMissing("price_reports", "applicable_store_id", "INTEGER");
   await addColumnIfMissing("price_reports", "location_evidence_text", "TEXT");
   await addColumnIfMissing("price_reports", "retailer_displayed_discount_percent", "REAL");
+  await addColumnIfMissing("price_reports", "verification_source", "TEXT");
+  await addColumnIfMissing("price_reports", "verified_by", "INTEGER");
+  await addColumnIfMissing("price_reports", "verified_at", "TEXT");
   await run("UPDATE price_reports SET submitted_by_user_id = COALESCE(submitted_by_user_id, user_id) WHERE submitted_by_user_id IS NULL");
 }
 

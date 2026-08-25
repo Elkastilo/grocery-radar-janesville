@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const bcrypt = require("bcrypt");
+const sharp = require("sharp");
 const sqlite3 = require("sqlite3").verbose();
 const { verificationUrlForToken } = require("../src/email");
 
@@ -501,10 +503,11 @@ async function main() {
       price: "3.99",
       quantity: "12",
       item_size: "12",
-      unit: "fl_oz",
+      unit: "fl oz",
       size_text: "12 x 12 fl oz",
       store_id: proofStore.id,
       source_url: "https://www.walmart.com/ip/importer-auth-fixture",
+      sku: "APPROVE-IMPORT-001",
       fetched_url: "https://www.walmart.com/ip/importer-auth-fixture",
       retailer_name: "Walmart",
       extraction_methods: ["json_ld"],
@@ -512,17 +515,119 @@ async function main() {
       price_location_confidence: "unknown"
     });
     assert.equal(ownerUrlSave.response.status, 201, JSON.stringify(ownerUrlSave.body));
+    assert.ok(ownerUrlSave.body.import_id);
+    const blockedOrdinaryApproval = await normalClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, { confirm_location: true });
+    assert.equal(blockedOrdinaryApproval.response.status, 403);
+    const blockedPinApproval = await pinOnlyClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, { pin: "2468", confirm_location: true });
+    assert.equal(blockedPinApproval.response.status, 403);
+    const dataEntryClient = new TestClient(app.baseUrl);
+    const dataEntryRegistration = await register(dataEntryClient, { username: "importdataentry", email: "importdataentry@shopper.invalid" });
+    await updateUser(app.dataDir, "UPDATE users SET is_admin=1,staff_role='data_entry' WHERE id=?", [dataEntryRegistration.user.id]);
+    const blockedStaffApproval = await dataEntryClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, { confirm_location: true });
+    assert.equal(blockedStaffApproval.response.status, 403);
+
+    const importerWebp = await sharp({ create: { width: 72, height: 72, channels: 3, background: "#df3344" } }).webp().toBuffer();
+    const importerFilename = "product-import-approval-fixture.webp";
+    fs.writeFileSync(path.join(app.uploadsDir, importerFilename), importerWebp, { mode: 0o600 });
+    const importerHash = crypto.createHash("sha256").update(importerWebp).digest("hex");
+    await withDb(app.dataDir, async (database) => {
+      await dbRun(database, `INSERT INTO product_url_import_images (import_id,source_url,source_domain,retrieved_at,imported_by,storage_path,mime_type,size_bytes,file_hash,width,height,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?)`, [ownerUrlSave.body.import_id, "https://i5.walmartimages.com/fixture.jpg", "i5.walmartimages.com", new Date().toISOString(), ownerLogin.body.user.id, `/uploads/${importerFilename}`, "image/webp", importerWebp.length, importerHash, 72, 72, new Date().toISOString(), new Date().toISOString()]);
+      await dbRun(database, "UPDATE product_url_imports SET image_source_url=?,image_retrieved_at=? WHERE id=?", ["https://i5.walmartimages.com/fixture.jpg", new Date().toISOString(), ownerUrlSave.body.import_id]);
+    });
+    const ownerPointsBeforeImportApproval = (await queryOne(app.dataDir, "SELECT points FROM users WHERE id=?", [ownerLogin.body.user.id])).points;
+    const locationBlockedApproval = await ownerClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, {});
+    assert.equal(locationBlockedApproval.response.status, 409);
+    assert.equal(locationBlockedApproval.body.code, "LOCATION_CONFIRMATION_REQUIRED");
+    const ownerImportApproval = await ownerClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, { confirm_location: true });
+    assert.equal(ownerImportApproval.response.status, 200, JSON.stringify(ownerImportApproval.body));
+    assert.equal(ownerImportApproval.body.publication_state, "approved");
+    assert.equal(ownerImportApproval.body.verification.source, "admin_import");
+    assert.equal(ownerImportApproval.body.image.status, "approved");
+    const repeatedImportApproval = await ownerClient.post(`/api/admin/product-url-imports/${ownerUrlSave.body.import_id}/approve`, { confirm_location: true });
+    assert.equal(repeatedImportApproval.response.status, 200);
+    assert.equal(repeatedImportApproval.body.idempotent, true);
+    assert.equal(repeatedImportApproval.body.product_id, ownerImportApproval.body.product_id);
+    assert.equal(repeatedImportApproval.body.report_id, ownerImportApproval.body.report_id);
+    const approvalPersistence = await withDb(app.dataDir, async (database) => ({
+      imported: await dbGet(database, "SELECT approval_status,approved_product_id,approved_price_report_id,approved_by,approved_at,location_confirmation_method,location_confirmed_by,location_confirmed_at,source_url,source_domain,image_source_url,image_retrieved_at FROM product_url_imports WHERE id=?", [ownerUrlSave.body.import_id]),
+      report: await dbGet(database, "SELECT status,store_id,price,verification_source,verified_by,verified_at,verification_count FROM price_reports WHERE id=?", [ownerImportApproval.body.report_id]),
+      product: await dbGet(database, "SELECT status FROM products WHERE id=?", [ownerImportApproval.body.product_id]),
+      image: await dbGet(database, "SELECT status,is_primary,source_type,source_url,file_hash,mime_type,uploaded_by,moderated_by,moderated_at FROM product_images WHERE id=?", [ownerImportApproval.body.image.product_image_id]),
+      sourceImage: await dbGet(database, "SELECT source_url,source_domain,retrieved_at,file_hash,width,height,status,attached_product_image_id FROM product_url_import_images WHERE import_id=?", [ownerUrlSave.body.import_id]),
+      audits: await dbGet(database, "SELECT COUNT(*) AS count FROM admin_audit_log WHERE action='PRODUCT_IMPORT_APPROVED' AND affected_id=?", [ownerImportApproval.body.product_id]),
+      reports: await dbGet(database, "SELECT COUNT(*) AS count FROM price_reports WHERE source_import_row_id=?", [ownerUrlSave.body.row_id])
+    }));
+    assert.equal(approvalPersistence.imported.approval_status, "approved");
+    assert.equal(approvalPersistence.imported.location_confirmation_method, "admin_confirmed");
+    assert.equal(approvalPersistence.report.status, "approved");
+    assert.equal(approvalPersistence.report.store_id, proofStore.id);
+    assert.equal(approvalPersistence.report.price, 3.99);
+    assert.equal(approvalPersistence.report.verification_source, "admin_import");
+    assert.equal(approvalPersistence.report.verified_by, ownerLogin.body.user.id);
+    assert.equal(approvalPersistence.report.verification_count, 0, "Admin verification must not fake community verification.");
+    assert.equal(approvalPersistence.product.status, "active");
+    assert.equal(approvalPersistence.image.status, "approved");
+    assert.equal(approvalPersistence.image.is_primary, 1);
+    assert.equal(approvalPersistence.image.source_type, "retailer_url_import");
+    assert.equal(approvalPersistence.image.source_url, "https://i5.walmartimages.com/fixture.jpg");
+    assert.equal(approvalPersistence.image.file_hash, importerHash);
+    assert.equal(approvalPersistence.image.mime_type, "image/webp");
+    assert.equal(approvalPersistence.image.moderated_by, ownerLogin.body.user.id);
+    assert.equal(approvalPersistence.sourceImage.width, 72);
+    assert.equal(approvalPersistence.sourceImage.height, 72);
+    assert.equal(approvalPersistence.sourceImage.attached_product_image_id, ownerImportApproval.body.image.product_image_id);
+    assert.equal(approvalPersistence.imported.source_domain, "walmart.com");
+    assert.equal(approvalPersistence.imported.image_source_url, "https://i5.walmartimages.com/fixture.jpg");
+    assert.equal(approvalPersistence.audits.count, 1);
+    assert.equal(approvalPersistence.reports.count, 1, "Idempotent approval must not duplicate the store price.");
+    assert.equal((await queryOne(app.dataDir, "SELECT points FROM users WHERE id=?", [ownerLogin.body.user.id])).points, ownerPointsBeforeImportApproval, "Admin importer approval must not award points.");
+    const publicImporterImage = await anonymousClient.get(`/api/product-images/${ownerImportApproval.body.image.product_image_id}/file`);
+    assert.equal(publicImporterImage.response.status, 200);
+    assert.equal(publicImporterImage.response.headers.get("content-type"), "image/webp");
+    const duplicateImportSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/test-duplicate",
+      retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",
+      items: [{ idempotency_key: "duplicate-import-approval-fixture", name: "Importer Authorization Fixture", brand: "Fixture Brand", price: 3.99, quantity: 12, item_size: 12, unit: "fl oz", size_text: "12 × 12 fl oz", product_url: "https://www.walmart.com/ip/importer-auth-fixture-duplicate", sku: "APPROVE-IMPORT-001", overall_confidence: "high" }]
+    });
+    assert.equal(duplicateImportSave.response.status, 201, JSON.stringify(duplicateImportSave.body));
+    const duplicateImportId = duplicateImportSave.body.imports[0].import_id;
+    const repeatedDuplicateSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/test-duplicate", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "unknown",
+      items: [{ idempotency_key: "duplicate-import-approval-fixture", name: "Changed browser retry text", price: 8.88, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/browser-retry" }]
+    });
+    assert.equal(repeatedDuplicateSave.response.status, 201);
+    assert.equal(repeatedDuplicateSave.body.imports[0].import_id, duplicateImportId);
+    assert.equal(repeatedDuplicateSave.body.imports[0].reused, true);
+    const blockedDuplicateApproval = await ownerClient.post(`/api/admin/product-url-imports/${duplicateImportId}/approve`, { confirm_location: true });
+    assert.equal(blockedDuplicateApproval.response.status, 409);
+    assert.equal(blockedDuplicateApproval.body.code, "DUPLICATE_DECISION_REQUIRED");
+    assert.ok(blockedDuplicateApproval.body.duplicate_candidates.some((candidate) => Number(candidate.product_id || candidate.id) === Number(ownerImportApproval.body.product_id)));
+    const explicitExistingApproval = await ownerClient.post(`/api/admin/product-url-imports/${duplicateImportId}/approve`, { confirm_location: true, duplicate_decision: "use_existing", existing_product_id: ownerImportApproval.body.product_id });
+    assert.equal(explicitExistingApproval.response.status, 200, JSON.stringify(explicitExistingApproval.body));
+    assert.equal(explicitExistingApproval.body.product_id, ownerImportApproval.body.product_id);
+    assert.notEqual(explicitExistingApproval.body.image.status, "approved", "An unavailable image must not roll back the valid product/price approval.");
+    const productCountAfterDuplicateDecision = await queryOne(app.dataDir, "SELECT COUNT(*) AS count FROM products WHERE id=?", [ownerImportApproval.body.product_id]);
+    assert.equal(productCountAfterDuplicateDecision.count, 1);
+
+    const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",
+      items: [{ idempotency_key: "missing-price-approval-fixture", name: "Missing Price Approval Fixture", price: "", quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/missing-price-fixture", overall_confidence: "low" }]
+    });
+    assert.equal(missingPriceSave.response.status, 201);
+    const missingPriceApproval = await ownerClient.post(`/api/admin/product-url-imports/${missingPriceSave.body.imports[0].import_id}/approve`, { confirm_location: true });
+    assert.equal(missingPriceApproval.response.status, 400);
+    assert.match(missingPriceApproval.body.error, /price/i);
     const savedUrlImport = await withDb(app.dataDir, (database) => dbGet(database, `
       SELECT rows.status AS row_status, batches.status AS batch_status, reports.id AS public_report_id, imports.source_domain
       FROM product_url_imports imports
       JOIN price_import_rows rows ON rows.id = imports.row_id
       JOIN price_import_batches batches ON batches.id = imports.batch_id
       LEFT JOIN price_reports reports ON reports.id = rows.price_report_id
-      WHERE imports.id = (SELECT MAX(id) FROM product_url_imports)
-    `));
-    assert.equal(savedUrlImport.row_status, "ready_for_review");
+      WHERE imports.id = ?
+    `, [ownerUrlSave.body.import_id]));
+    assert.equal(savedUrlImport.row_status, "approved");
     assert.equal(savedUrlImport.batch_status, "ready_for_review");
-    assert.equal(savedUrlImport.public_report_id, null);
+    assert.equal(savedUrlImport.public_report_id, ownerImportApproval.body.report_id);
     assert.equal(savedUrlImport.source_domain, "walmart.com");
 
     const ownerCategorySave = await ownerClient.post("/api/admin/product-url-imports/batch", {
@@ -533,7 +638,7 @@ async function main() {
       location_evidence_text: "Fixture admin explicitly selected the Janesville store; approval is still required.",
       items: [
         { name: "Category Bananas Fixture", price: 0.27, quantity: 1, unit: "each", size_text: "1 each", product_url: "https://www.walmart.com/ip/category-bananas/1001", sku: "CAT-1001", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
-        { name: "Category Strawberries Fixture", price: 2.98, quantity: 1, item_size: 1, unit: "lb", size_text: "1 lb", product_url: "https://www.walmart.com/ip/category-strawberries/1002", sku: "CAT-1002", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
+        { name: "Category Strawberries Fixture, 1 lb Container", price: 2.98, package_quantity: 1, quantity: 1, item_size: 1, unit: "lb", package_type: "container", size_text: "1 lb Container", sell_quantity: 1, sell_unit: "each", unit_price: 2.98, unit_price_unit: "lb", product_url: "https://www.walmart.com/ip/category-strawberries/1002", sku: "CAT-1002", overall_confidence: "high", extraction_methods: ["walmart_serialized_data"] },
         { name: "", price: 4.25, product_url: "https://www.walmart.com/ip/invalid-edited-row/1003", overall_confidence: "low" }
       ]
     });
@@ -542,13 +647,15 @@ async function main() {
     assert.equal(ownerCategorySave.body.failures.length, 1);
     assert.equal(ownerCategorySave.body.summary.product_failed, 1);
     const categoryPersistence = await withDb(app.dataDir, async (database) => ({
-      rows: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_rows WHERE item_name LIKE 'Category % Fixture' AND status = 'ready_for_review'"),
-      batches: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_batches WHERE batch_title LIKE 'Category URL import:%' AND status = 'ready_for_review'"),
-      reports: await dbGet(database, "SELECT COUNT(*) AS count FROM price_reports WHERE item_name LIKE 'Category % Fixture'")
+      rows: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_rows WHERE item_name LIKE 'Category % Fixture%' AND status = 'ready_for_review'"),
+      batches: await dbGet(database, "SELECT COUNT(*) AS count FROM price_import_batches WHERE id IN (?,?) AND status = 'ready_for_review'", [ownerCategorySave.body.imports[0].batch_id, ownerCategorySave.body.imports[1].batch_id]),
+      reports: await dbGet(database, "SELECT COUNT(*) AS count FROM price_reports WHERE item_name LIKE 'Category % Fixture%'")
     }));
     assert.equal(categoryPersistence.rows.count, 2);
     assert.equal(categoryPersistence.batches.count, 2);
     assert.equal(categoryPersistence.reports.count, 0);
+    const strawberryImportMetadata = await queryOne(app.dataDir, "SELECT imports.package_quantity,imports.item_size,imports.package_unit,imports.package_type,imports.sell_quantity,imports.sell_unit,imports.unit_price,imports.unit_price_unit,rows.size_text FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id WHERE imports.id=?", [ownerCategorySave.body.imports[1].import_id]);
+    assert.deepEqual(strawberryImportMetadata, { package_quantity: 1, item_size: 1, package_unit: "lb", package_type: "container", sell_quantity: 1, sell_unit: "each", unit_price: 2.98, unit_price_unit: "lb", size_text: "1 lb Container" });
 
     const blockedOperations = await normalClient.get("/api/admin/operations/overview");
     assert.equal(blockedOperations.response.status, 403);

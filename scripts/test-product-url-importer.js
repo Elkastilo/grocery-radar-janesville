@@ -3,7 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const sharp = require("sharp");
-const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
+const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { categoryUrlHint, extractCategory, analyzePage } = require("../src/categoryImporter");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
@@ -77,7 +77,7 @@ async function main() {
   const walmartPrices = extractCategory(fixture("walmart-price-cases.html"), "https://www.walmart.com/browse/food/fresh-apples/456", stores, 25);
   assert.equal(walmartPrices.products.length, 3);
   assert.equal(walmartPrices.products[0].fields.price, 4.97);
-  assert.equal(walmartPrices.products[0].fields.raw_size_text, "3lb Tub");
+  assert.equal(walmartPrices.products[0].fields.raw_size_text, "3 lb Tub");
   assert.equal(walmartPrices.products[0].fields.regular_price, 5.48);
   assert.equal(walmartPrices.products[0].fields.unit_price, 1.66);
   assert.equal(walmartPrices.products[0].confidence.price, "high");
@@ -104,10 +104,13 @@ async function main() {
   assert.equal(capped.products.length, 50);
   assert.equal(CATEGORY_DEFAULTS.maxBytes, 5 * 1024 * 1024);
 
-  assert.deepEqual(normalizePackage("12 x 12 fl oz"), { raw_text: "12 x 12 fl oz", quantity: 12, item_size: 12, unit: "fl oz", normalized_text: "12 × 12 fl oz" });
-  assert.deepEqual(normalizePackage("1 lb Container"), { raw_text: "1 lb Container", quantity: 1, item_size: 1, unit: "lb", normalized_text: "1 lb" });
-  assert.deepEqual(normalizePackage("3lb Tub"), { raw_text: "3lb Tub", quantity: 1, item_size: 3, unit: "lb", normalized_text: "3 lb" });
-  assert.deepEqual(normalizePackage("Each"), { raw_text: "Each", quantity: 1, item_size: null, unit: "each", normalized_text: "Each" });
+  assert.deepEqual(normalizePackage("12 x 12 fl oz"), { raw_text: "12 × 12 fl oz", quantity: 12, item_size: 12, unit: "fl oz", package_type: "", normalized_text: "12 × 12 fl oz" });
+  assert.deepEqual(normalizePackage("1 lb Container"), { raw_text: "1 lb Container", quantity: 1, item_size: 1, unit: "lb", package_type: "container", normalized_text: "1 lb Container" });
+  assert.deepEqual(normalizePackage("3lb Tub"), { raw_text: "3 lb Tub", quantity: 1, item_size: 3, unit: "lb", package_type: "tub", normalized_text: "3 lb Tub" });
+  assert.deepEqual(normalizePackage("Each"), { raw_text: "Each", quantity: 1, item_size: null, unit: "each", package_type: "", normalized_text: "Each" });
+  assert.equal(normalizePackage("1 gallon").unit, "gallon");
+  assert.equal(normalizePackage("24 cans").package_type, "can");
+  assert.equal(packageFromProductTitle("Green Seedless Grapes, Bag (2.25 lbs/Bag Est.)").raw_text, "2.25 lb Bag");
   assert.equal(normalizePackage("2 lb").item_size, 2);
   assert.deepEqual(normalizePackage("12 ct").quantity, 12);
   assert.equal(normalizePackage(null).raw_text, null);
@@ -221,9 +224,24 @@ async function main() {
   assert.match(adminScript, /Price unavailable/);
   assert.match(adminScript, /function importerPackageLabel\(/);
   assert.match(adminScript, /Retailer description evidence/);
+  assert.match(adminScript, /data-approve-import/);
+  assert.match(adminScript, /Approve selected/);
+  assert.match(adminScript, /product-url-imports\/\$\{card\.dataset\.importId\}\/approve/);
   assert.doesNotMatch(adminScript, /fields\.(?:description|retailer_description)\s*\|\|\s*fields\.raw_size_text/);
   const adminStyle = fs.readFileSync(path.join(__dirname, "..", "public", "style.css"), "utf8");
   assert.match(adminStyle, /\.importer-package strong[^}]*-webkit-line-clamp:\s*2/);
+
+  const walmartSellingPackages = extractCategory(fixture("walmart-selling-package-cases.html"), "https://www.walmart.com/browse/food/fresh-fruits/123", stores, 25);
+  const bySku = Object.fromEntries(walmartSellingPackages.products.map((product) => [product.fields.sku, product.fields]));
+  assert.equal(walmartSellingPackages.products.length, 6);
+  assert.deepEqual([bySku["3001"].raw_size_text, bySku["3001"].sell_quantity, bySku["3001"].sell_unit], ["Each", 1, "each"]);
+  assert.deepEqual([bySku["3002"].raw_size_text, bySku["3002"].item_size, bySku["3002"].unit, bySku["3002"].package_type, bySku["3002"].sell_unit], ["1 lb Container", 1, "lb", "container", "each"]);
+  assert.equal(bySku["3003"].raw_size_text, "Each");
+  assert.equal(bySku["3004"].raw_size_text, "2.25 lb Bag");
+  assert.equal(bySku["3004"].unit_price_unit, "lb");
+  assert.equal(bySku["3005"].raw_size_text, "3 lb Bag");
+  assert.equal(bySku["3006"].raw_size_text, "52 oz Jar");
+  assert.ok(!walmartSellingPackages.products.some((product) => /seafood/i.test(product.fields.name)));
 
   console.log("Product/category extraction, compact UI, price confidence, duplicate, SSRF, and safe image preview tests passed.");
 }

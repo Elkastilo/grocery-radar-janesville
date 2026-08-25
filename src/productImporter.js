@@ -48,28 +48,62 @@ function normalizeUnit(value) {
   return ({ floz: "fl oz", fluidounce: "fl oz", fluidounces: "fl oz", oz: "oz", ounce: "oz", ounces: "oz", lb: "lb", lbs: "lb", pound: "lb", pounds: "lb", g: "g", gram: "g", grams: "g", kg: "kg", kilogram: "kg", kilograms: "kg", ml: "ml", milliliter: "ml", milliliters: "ml", l: "l", liter: "l", liters: "l", gal: "gallon", gallon: "gallon", gallons: "gallon", qt: "qt", quart: "qt", quarts: "qt", pt: "pt", pint: "pt", pints: "pt", ct: "count", count: "count", counts: "count", pk: "pack", pack: "pack", packs: "pack", bag: "bag", bags: "bag", tub: "tub", tubs: "tub", bottle: "bottle", bottles: "bottle", can: "can", cans: "can", box: "box", boxes: "box", each: "each", ea: "each" })[key] || "";
 }
 
+function packageTypeName(value) {
+  const key = text(value, 30).toLowerCase().replace(/[^a-z]/g, "");
+  return ({ containers: "container", container: "container", jars: "jar", jar: "jar", bags: "bag", bag: "bag", tubs: "tub", tub: "tub", bottles: "bottle", bottle: "bottle", cans: "can", can: "can", boxes: "box", box: "box", packs: "pack", pack: "pack" })[key] || "";
+}
+
 function normalizePackage(value) {
   const original = String(value ?? "");
   const raw = normalizeRetailerText(original, 120);
-  const empty = { raw_text: null, quantity: null, item_size: null, unit: "", normalized_text: "" };
+  const empty = { raw_text: null, quantity: null, item_size: null, unit: "", package_type: "", normalized_text: "" };
   if (!raw || raw.length > 80) return empty;
   if (/<\/?(?:li|ul|ol)\b/i.test(original) || /[•▪◦]/.test(original)) return empty;
   if ((raw.match(/[.!?](?:\s|$)/g) || []).length > 1) return empty;
   if (/\b(?:best when|enjoyed|refreshing|flavorful|healthy|sweet treat|perfect for|great for|addition to|recipes?|ingredients?|instructions?|made with)\b/i.test(raw)) return empty;
-  if (/^each$/i.test(raw)) return { raw_text: "Each", quantity: 1, item_size: null, unit: "each", normalized_text: "Each" };
-  const unitPattern = "fl\\s*\\.?\\s*oz|fluid\\s+ounces?|oz|ounces?|lbs?|pounds?|kg|kilograms?|g|grams?|ml|milliliters?|l|liters?|gal|gallons?|qt|quarts?|pt|pints?|ct|count|pk|packs?|bags?|tubs?|bottles?|cans?|box(?:es)?|each|ea";
+  if (/^(?:1\s+)?(?:each|ea)$/i.test(raw)) return { raw_text: "Each", quantity: 1, item_size: null, unit: "each", package_type: "", normalized_text: "Each" };
+  const unitPattern = "fluid\\s+ounces?|fl\\s*\\.?\\s*oz|ounces?|oz|pounds?|lbs?|kilograms?|kg|milliliters?|ml|liters?|l|gallons?|gal|grams?|g|quarts?|qt|pints?|pt|count|ct|packs?|pk|bags?|tubs?|bottles?|cans?|box(?:es)?|each|ea";
+  const typePattern = "containers?|jars?|bags?|tubs?|bottles?|cans?|box(?:es)?|packs?";
   let match = raw.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:x|×)\\s*(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`, "i"));
   if (match) {
     const unit = normalizeUnit(match[3]);
-    return { raw_text: raw, quantity: Number(match[1]), item_size: Number(match[2]), unit, normalized_text: `${Number(match[1])} × ${Number(match[2])} ${unit}` };
+    const normalized = `${Number(match[1])} × ${Number(match[2])} ${unit}`;
+    return { raw_text: normalized, quantity: Number(match[1]), item_size: Number(match[2]), unit, package_type: "", normalized_text: normalized };
+  }
+  match = raw.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(pounds?|lbs?|fluid\\s+ounces?|fl\\s*\\.?\\s*oz|ounces?|oz|kilograms?|kg|milliliters?|ml|liters?|l|gallons?|gal|grams?|g|quarts?|qt|pints?|pt)\\s*(?:\\/\\s*)?(${typePattern})?`, "i"));
+  if (match) {
+    const amount = Number(match[1]);
+    const unit = normalizeUnit(match[2]);
+    const packageType = packageTypeName(match[3]);
+    const normalized = `${amount} ${unit}${packageType ? ` ${titlePackageType(packageType)}` : ""}`;
+    return { raw_text: normalized, quantity: 1, item_size: amount, unit, package_type: packageType, normalized_text: normalized };
   }
   match = raw.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitPattern})\\b`, "i"));
   if (!match) return empty;
   const amount = Number(match[1]);
   const unit = normalizeUnit(match[2]);
-  if (["count", "pack", "bag", "tub", "bottle", "can", "box"].includes(unit)) return { raw_text: raw, quantity: amount, item_size: null, unit, normalized_text: `${amount} ${unit}` };
-  if (unit === "each") return { raw_text: raw, quantity: amount, item_size: null, unit, normalized_text: amount === 1 ? "Each" : `${amount} each` };
-  return { raw_text: raw, quantity: 1, item_size: amount, unit, normalized_text: `${amount} ${unit}` };
+  if (["count", "pack", "bag", "tub", "bottle", "can", "box"].includes(unit)) {
+    const packageType = unit === "count" ? "" : packageTypeName(unit);
+    const normalized = unit === "count" ? `${amount} ct` : `${amount} ${amount === 1 ? unit : `${unit}s`}`;
+    return { raw_text: normalized, quantity: amount, item_size: null, unit: unit === "count" ? "count" : "count", package_type: packageType, normalized_text: normalized };
+  }
+  if (unit === "each") return { raw_text: amount === 1 ? "Each" : `${amount} each`, quantity: amount, item_size: null, unit, package_type: "", normalized_text: amount === 1 ? "Each" : `${amount} each` };
+  return { raw_text: `${amount} ${unit}`, quantity: 1, item_size: amount, unit, package_type: "", normalized_text: `${amount} ${unit}` };
+}
+
+function titlePackageType(value) { return value ? value[0].toUpperCase() + value.slice(1) : ""; }
+
+function packageFromProductTitle(value) {
+  const title = normalizeRetailerText(value, 240);
+  if (!title) return normalizePackage(null);
+  const each = title.match(/(?:^|[,;(]\s*)(?:1\s+)?each\s*\)?$/i);
+  if (each) return normalizePackage("Each");
+  const candidates = [...title.matchAll(/(\d+(?:\.\d+)?\s*(?:x|×)\s*\d+(?:\.\d+)?\s*(?:fl\s*\.?\s*oz|oz|lb|g|kg|ml|l)\b|\d+(?:\.\d+)?\s*(?:lbs?|pounds?|fl\s*\.?\s*oz|oz|ounces?|kg|g|ml|l|liters?|gal|gallons?|qt|pt|ct|count)\s*(?:\/\s*)?(?:containers?|jars?|bags?|tubs?|bottles?|cans?|box(?:es)?|packs?)?)/gi)];
+  for (const candidate of candidates.reverse()) {
+    const parsed = normalizePackage(candidate[1]);
+    if (parsed.raw_text) return parsed;
+  }
+  return normalizePackage(null);
 }
 
 function typeNames(value) {
@@ -206,7 +240,7 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   if (best) {
     const confidence = best.method === "json_ld" ? "high" : "medium";
     for (const name of ["name", "brand", "variant", "image_url", "sku", "gtin", "price", "regular_price", "unit_price", "currency", "availability", "raw_price_text", "raw_size_text"]) applyField(result, name, best[name], confidence, best.method);
-    for (const name of ["quantity", "item_size", "unit"]) applyField(result, name, best.package[name], best.package.raw_text ? "medium" : "unknown", "size_normalization");
+    for (const name of ["quantity", "item_size", "unit", "package_type"]) applyField(result, name, best.package[name], best.package.raw_text ? "medium" : "unknown", "size_normalization");
   }
 
   const meta = metaMap(html);
@@ -225,7 +259,7 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   if (packageMatch) {
     const normalized = normalizePackage(packageMatch);
     applyField(result, "raw_size_text", normalized.raw_text, "low", "html_heuristic");
-    for (const name of ["quantity", "item_size", "unit"]) applyField(result, name, normalized[name], "low", "html_heuristic");
+    for (const name of ["quantity", "item_size", "unit", "package_type"]) applyField(result, name, normalized[name], "low", "html_heuristic");
   }
   if ((!best || !best.name) && (h1 || title || priceText || packageMatch)) result.methods_used.push("html_heuristic");
 
@@ -255,8 +289,8 @@ function findDuplicateCandidates(imported, products = [], priorImports = [], sto
     if (gtin && productGtin === gtin) matches.push({ type: "gtin", confidence: "high", product_id: product.id, name: product.display_name || product.name });
     else if (name && normalizeMatch(product.display_name || product.name) === name && (!brand || normalizeMatch(product.brand_optional || product.brand) === brand) && (!size || normalizeMatch(product.default_size_text || product.size_text) === size)) matches.push({ type: "name_brand_size", confidence: "medium", product_id: product.id, name: product.display_name || product.name });
   }
-  for (const prior of priorImports) if (sku && normalizeMatch(prior.sku) === sku && String(prior.store_id || "") === String(storeId || "")) matches.push({ type: "sku_retailer", confidence: "high", import_id: prior.id, name: prior.item_name });
+  for (const prior of priorImports) if (sku && normalizeMatch(prior.sku) === sku && String(prior.store_id || "") === String(storeId || "")) matches.push({ type: "sku_retailer", confidence: "high", import_id: prior.id, product_id: prior.product_id || prior.approved_product_id || null, name: prior.item_name });
   return matches.slice(0, 10);
 }
 
-module.exports = { DOMAIN_RETAILERS, parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct, findDuplicateCandidates };
+module.exports = { DOMAIN_RETAILERS, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, extractProduct, findDuplicateCandidates };

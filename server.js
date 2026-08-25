@@ -2809,17 +2809,26 @@ async function importRemoteImageForPendingUrlImport(importId, imageUrl, adminUse
   }
 }
 
-async function attachPendingUrlImportImage(rowId, productId, adminUserId) {
-  const pending = await get(`SELECT images.*, imports.source_url AS product_source_url FROM product_url_import_images images JOIN product_url_imports imports ON imports.id=images.import_id WHERE imports.row_id=? AND images.status='ready' AND images.attached_product_image_id IS NULL`, [rowId]);
+async function attachPendingUrlImportImage(rowId, productId, adminUserId, options = {}) {
+  const approvePublic = options.approvePublic === true;
+  const pending = await get(`SELECT images.*, imports.source_url AS product_source_url FROM product_url_import_images images JOIN product_url_imports imports ON imports.id=images.import_id WHERE imports.row_id=? AND images.status IN ('ready','attached')`, [rowId]);
   if (!pending || !uploadPathFromPhotoPath(pending.storage_path)) return null;
-  const existing = pending.file_hash ? await get("SELECT id FROM product_images WHERE product_id=? AND file_hash=? LIMIT 1", [productId, pending.file_hash]) : null;
+  const existing = pending.attached_product_image_id
+    ? await get("SELECT id FROM product_images WHERE id=? AND product_id=?", [pending.attached_product_image_id, productId])
+    : pending.file_hash ? await get("SELECT id FROM product_images WHERE product_id=? AND file_hash=? LIMIT 1", [productId, pending.file_hash]) : null;
   if (existing) {
-    await run("UPDATE product_url_import_images SET status='attached',attached_product_image_id=?,updated_at=? WHERE id=?", [existing.id, new Date().toISOString(), pending.id]);
+    const now = new Date().toISOString();
+    if (approvePublic) {
+      await run("UPDATE product_images SET is_primary=0, updated_at=? WHERE product_id=? AND id != ?", [now, productId, existing.id]);
+      await run("UPDATE product_images SET status='approved',is_primary=1,moderated_by=?,moderated_at=?,updated_at=? WHERE id=?", [adminUserId, now, now, existing.id]);
+    }
+    await run("UPDATE product_url_import_images SET status='attached',attached_product_image_id=?,updated_at=? WHERE id=?", [existing.id, now, pending.id]);
     return existing.id;
   }
   const product = await get("SELECT display_name FROM products WHERE id=?", [productId]);
   const now = new Date().toISOString();
-  const result = await run(`INSERT INTO product_images (product_id,image_path,original_image_path,original_name,mime_type,size_bytes,file_hash,thumbnail_path,card_path,detail_path,alt_text,source_type,source_url,source_note,status,is_primary,uploaded_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',0,?,?,?)`, [productId, pending.storage_path, pending.storage_path, `retailer-import-${pending.id}.webp`, "image/webp", pending.size_bytes, pending.file_hash, pending.storage_path, pending.storage_path, pending.storage_path, cleanText(`${product?.display_name || "Product"} product image`, 240), "retailer_url_import", pending.source_url, cleanText(`Imported from ${pending.source_domain}; product source ${pending.product_source_url}`, 300), adminUserId, now, now]);
+  if (approvePublic) await run("UPDATE product_images SET is_primary=0, updated_at=? WHERE product_id=?", [now, productId]);
+  const result = await run(`INSERT INTO product_images (product_id,image_path,original_image_path,original_name,mime_type,size_bytes,file_hash,thumbnail_path,card_path,detail_path,alt_text,source_type,source_url,source_note,status,is_primary,uploaded_by,moderated_by,moderated_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [productId, pending.storage_path, pending.storage_path, `retailer-import-${pending.id}.webp`, "image/webp", pending.size_bytes, pending.file_hash, pending.storage_path, pending.storage_path, pending.storage_path, cleanText(`${product?.display_name || "Product"} product image`, 240), "retailer_url_import", pending.source_url, cleanText(`Imported from ${pending.source_domain}; product source ${pending.product_source_url}`, 300), approvePublic ? "approved" : "draft", approvePublic ? 1 : 0, adminUserId, approvePublic ? adminUserId : null, approvePublic ? now : null, now, now]);
   await run("UPDATE product_url_import_images SET status='attached',attached_product_image_id=?,updated_at=? WHERE id=?", [result.lastID, now, pending.id]);
   return result.lastID;
 }
@@ -12666,7 +12675,20 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
   }
   const unitPrice = calculateUnitPrice(cleanReport.price, cleanReport.quantity, cleanReport.unit);
   const submittedAt = new Date().toISOString();
-  const productId = await resolveReportProductId(cleanReport, adminUser.id);
+  let productId;
+  if (Number.isInteger(Number(options.forceProductId)) && Number(options.forceProductId) > 0) {
+    const selectedProduct = await get("SELECT id FROM products WHERE id=? AND status != 'merged'", [Number(options.forceProductId)]);
+    if (!selectedProduct) {
+      const error = new Error("The selected existing product is no longer available.");
+      error.statusCode = 409;
+      throw error;
+    }
+    productId = selectedProduct.id;
+  } else if (options.forceNewProduct === true) {
+    productId = await createProductCandidateFromReport(cleanReport, adminUser.id);
+  } else {
+    productId = await resolveReportProductId(cleanReport, adminUser.id);
+  }
   const equivalentReport = await approvedEquivalentReportForDraft(
     {
       ...row,
@@ -17858,11 +17880,24 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   for (const [itemIndex, input] of items.entries()) {
     let currentBatchId = null;
     try {
+      const idempotencyKey = cleanText(input.idempotency_key, 100);
+      if (idempotencyKey && !/^[a-zA-Z0-9._:-]{16,100}$/.test(idempotencyKey)) throw Object.assign(new Error("Importer request identifier is invalid."), { statusCode: 400 });
+      if (idempotencyKey) {
+        const existingImport = await get(`SELECT imports.id AS import_id,imports.batch_id,imports.row_id,imports.approval_status,imports.approved_product_id,imports.approved_price_report_id,rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id WHERE imports.imported_by=? AND imports.idempotency_key=?`, [request.adminUser.id, idempotencyKey]);
+        if (existingImport) {
+          created.push({ input_index: itemIndex, name: existingImport.item_name, ...existingImport, reused: true, duplicate_candidates: [], requested_image_url: "" });
+          continue;
+        }
+      }
       const currentPrice = parsePrice(input.price);
       const regularPrice = parsePrice(input.regular_price);
+      const requestedItemStoreId = Number.parseInt(input.store_id, 10);
+      let itemStore = store;
+      if (Number.isInteger(requestedItemStoreId) && requestedItemStoreId > 0 && Number(requestedItemStoreId) !== Number(store?.id)) itemStore = await get("SELECT id,name,city,state FROM stores WHERE id=? AND active=1", [requestedItemStoreId]);
+      if (!itemStore) throw Object.assign(new Error("Choose an existing active store for every selected product."), { statusCode: 400 });
       const inferredSale = currentPrice !== null && regularPrice !== null && regularPrice > currentPrice;
       const normalizedOverallConfidence = currentPrice === null && input.overall_confidence === "high" ? "medium" : input.overall_confidence || "low";
-      const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: store?.id || "", proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
+      const draft = cleanImportRowDraft({ ...input, price: currentPrice ?? "", regular_price: regularPrice ?? "", sale_price: input.sale_price ?? inferredSale, item_name: input.name || input.item_name, store_id: itemStore.id, proof_type: "no_photo", source_url: input.product_url || categorySourceUrl, source_title: input.name || input.item_name, source_checked_at: request.body.source_timestamp || now, extraction_confidence: normalizedOverallConfidence, status: "ready_for_review" });
       if (!draft.item_name) throw Object.assign(new Error("Every selected product needs a name."), { statusCode: 400 });
       let itemSourceUrl;
       try { itemSourceUrl = validateRemoteUrl(draft.source_url).toString(); }
@@ -17872,17 +17907,21 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const methods = Array.isArray(input.extraction_methods) ? input.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
       const warnings = Array.isArray(input.warnings) ? input.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
       const retailerDescription = normalizeRetailerText(input.retailer_description, 500);
-      const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, store?.id || null);
+      const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, itemStore.id);
       const duplicateWarning = duplicates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500);
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
-      const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?, 'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, store?.id || null, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, locationConfidence === "confirmed_janesville" ? "verified_exact_store" : "legacy_unknown", locationConfidence === "confirmed_janesville" ? store.id : null, cleanText(request.body.location_evidence_text, 500), now, now]);
+      const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,'legacy_unknown',NULL,?,'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, itemStore.id, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, cleanText(request.body.location_evidence_text, 500), now, now]);
       currentBatchId = batch.lastID;
-      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, store?.id || null, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
+      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, itemStore.id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
       let imageSource = "";
       if (input.use_image_source && input.image_source_url) {
         try { imageSource = validateRemoteUrl(input.image_source_url).toString(); } catch { imageSource = ""; warnings.push("Invalid image source URL was not retained."); }
       }
-      const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20)]);
+      const packageQuantity = Number(input.package_quantity ?? input.quantity);
+      const itemSize = Number(input.item_size);
+      const sellQuantity = Number(input.sell_quantity);
+      const unitPriceValue = parsePrice(input.unit_price);
+      const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance,package_quantity,item_size,package_unit,package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20), Number.isFinite(packageQuantity) && packageQuantity > 0 ? packageQuantity : null, Number.isFinite(itemSize) && itemSize > 0 ? itemSize : null, cleanText(input.unit, 30), cleanText(input.package_type, 40), Number.isFinite(sellQuantity) && sellQuantity > 0 ? sellQuantity : null, cleanText(input.sell_unit, 30), unitPriceValue, cleanText(input.unit_price_unit, 30), retailerDescription, idempotencyKey || null]);
       created.push({ input_index: itemIndex, name: draft.item_name, batch_id: batch.lastID, row_id: row.lastID, import_id: imported.lastID, duplicate_candidates: duplicates, requested_image_url: imageSource });
     } catch (error) {
       if (currentBatchId) await run("DELETE FROM price_import_batches WHERE id = ?", [currentBatchId]).catch(() => {});
@@ -17897,7 +17936,106 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   response.status(201).json({ message: `${created.length} selected product${created.length === 1 ? "" : "s"} saved as pending imports. Nothing was published.${failures.length ? ` ${failures.length} product${failures.length === 1 ? " needs" : "s need"} correction.` : ""}${unavailableImages ? ` ${unavailableImages} image${unavailableImages === 1 ? " was" : "s were"} unavailable; the product imports were preserved.` : ""}`, imports: created, failures, summary: { saved: created.length, product_failed: failures.length, image_unavailable: unavailableImages, publication_state: "pending" } });
 }));
 
+async function productUrlImportApprovalRecord(importId) {
+  return get(`SELECT imports.*,rows.store_id,rows.item_name,rows.brand,rows.size_text,rows.price,rows.regular_price,rows.status AS row_status,rows.product_id AS row_product_id,rows.price_report_id,batches.location_verification_status,batches.applicable_store_id,stores.name AS store_name,stores.city AS store_city,stores.state AS store_state FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id JOIN price_import_batches batches ON batches.id=imports.batch_id LEFT JOIN stores ON stores.id=rows.store_id WHERE imports.id=?`, [importId]);
+}
+
+async function productUrlImportDuplicateCandidates(importRecord) {
+  const [products, priorImports] = await Promise.all([
+    all("SELECT id,display_name,brand_optional,default_size_text,upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 2000"),
+    all("SELECT imports.id,imports.sku,imports.approved_product_id,imports.approved_product_id AS product_id,rows.store_id,rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id WHERE imports.id != ? AND COALESCE(imports.sku,'') != '' ORDER BY imports.id DESC LIMIT 1000", [importRecord.id])
+  ]);
+  return findDuplicateCandidates({ name: importRecord.item_name, brand: importRecord.brand, raw_size_text: importRecord.raw_size_text || importRecord.size_text, gtin: importRecord.gtin, sku: importRecord.sku }, products, priorImports, importRecord.store_id);
+}
+
+function auditSafeSourceUrl(value) {
+  try { const parsed = new URL(value); return `${parsed.origin}${parsed.pathname}`.slice(0, 500); }
+  catch { return ""; }
+}
+
+app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), serializePriceImportRowMutation, asyncRoute(async (request, response) => {
+  const parsedImportId = Number.parseInt(request.params.id, 10);
+  const importId = Number.isInteger(parsedImportId) && parsedImportId > 0 ? parsedImportId : null;
+  let imported = importId ? await productUrlImportApprovalRecord(importId) : null;
+  if (!imported) { response.status(404).json({ error: "Product URL import was not found." }); return; }
+  if (imported.approval_status === "approved" && imported.approved_product_id) {
+    const image = await get("SELECT status,attached_product_image_id FROM product_url_import_images WHERE import_id=?", [importId]);
+    response.json({ message: "This product import was already approved.", idempotent: true, product_id: imported.approved_product_id, report_id: imported.approved_price_report_id, image: image?.attached_product_image_id ? { status: "approved", product_image_id: image.attached_product_image_id } : { status: image?.status || "unavailable" }, publication_state: "approved" });
+    return;
+  }
+  if (!imported.store_id) { response.status(409).json({ error: "Choose an active Grocery Radar store before approval.", code: "STORE_REQUIRED" }); return; }
+  const store = await get("SELECT id,name,city,state FROM stores WHERE id=? AND active=1", [imported.store_id]);
+  if (!store) { response.status(409).json({ error: "The selected store is no longer active.", code: "STORE_REQUIRED" }); return; }
+
+  const duplicateCandidates = await productUrlImportDuplicateCandidates(imported);
+  const duplicateDecision = cleanText(request.body.duplicate_decision, 40);
+  let forceProductId = null;
+  let forceNewProduct = false;
+  if (duplicateCandidates.length) {
+    if (!['use_existing','create_separate'].includes(duplicateDecision)) {
+      response.status(409).json({ error: "Possible duplicate — choose whether to use the existing product or create a separate product.", code: "DUPLICATE_DECISION_REQUIRED", duplicate_candidates: duplicateCandidates });
+      return;
+    }
+    if (duplicateDecision === "use_existing") {
+      const parsedProductId = Number.parseInt(request.body.existing_product_id, 10);
+      forceProductId = Number.isInteger(parsedProductId) && parsedProductId > 0 ? parsedProductId : null;
+      if (!forceProductId || !duplicateCandidates.some((candidate) => Number(candidate.product_id || candidate.id) === forceProductId)) {
+        response.status(409).json({ error: "Choose one of the detected existing products.", code: "DUPLICATE_SELECTION_REQUIRED", duplicate_candidates: duplicateCandidates });
+        return;
+      }
+    } else forceNewProduct = true;
+  }
+
+  const exactLocationAlreadyConfirmed = imported.location_verification_status === "verified_exact_store" && Number(imported.applicable_store_id) === Number(store.id) && imported.location_confirmation_method === "admin_confirmed" && Number(imported.location_confirmed_by) > 0;
+  let locationConfirmedAt = imported.location_confirmed_at || null;
+  if (!exactLocationAlreadyConfirmed) {
+    if (request.body.confirm_location !== true) {
+      response.status(409).json({ error: `Confirm this price applies to ${store.name}${store.city ? ` ${store.city}` : ""}.`, code: "LOCATION_CONFIRMATION_REQUIRED", store: { id: store.id, name: store.name, city: store.city, state: store.state } });
+      return;
+    }
+    locationConfirmedAt = new Date().toISOString();
+    await run("UPDATE price_import_batches SET location_verification_status='verified_exact_store',applicable_store_id=?,location_evidence_text=?,updated_at=? WHERE id=?", [store.id, `Administrator confirmed the retailer price applies to ${store.name}${store.city ? ` ${store.city}` : ""}.`, locationConfirmedAt, imported.batch_id]);
+    await run("UPDATE product_url_imports SET price_location_confidence='confirmed_janesville',location_confirmation_method='admin_confirmed',location_confirmed_by=?,location_confirmed_at=? WHERE id=?", [request.adminUser.id, locationConfirmedAt, importId]);
+  }
+
+  const approval = await approvePriceImportRow(imported.row_id, request.adminUser, { forceProductId, forceNewProduct });
+  const approvedAt = new Date().toISOString();
+  const ownsNewReport = Number(approval.report_id) > 0 && Number((await get("SELECT source_import_row_id FROM price_reports WHERE id=?", [approval.report_id]))?.source_import_row_id) === Number(imported.row_id);
+  if (ownsNewReport) await run("UPDATE price_reports SET verification_source='admin_import',verified_by=?,verified_at=? WHERE id=?", [request.adminUser.id, approvedAt, approval.report_id]);
+  let imageResult = { status: "unavailable" };
+  try {
+    const productImageId = await attachPendingUrlImportImage(imported.row_id, approval.product_id, request.adminUser.id, { approvePublic: true });
+    const sourceImage = await get("SELECT status,error_message FROM product_url_import_images WHERE import_id=?", [importId]);
+    imageResult = productImageId ? { status: "approved", product_image_id: productImageId } : { status: sourceImage?.status || "unavailable", warning: cleanText(sourceImage?.error_message || "Image unavailable — retry from this row when the retailer image is available.", 240) };
+  } catch (error) {
+    console.warn(`Product URL import image approval failed for import ${importId}: ${cleanText(error.message, 180)}`);
+    imageResult = { status: "unavailable", warning: "Image unavailable — the product and verified price were preserved." };
+  }
+  await run("UPDATE product_url_imports SET approval_status='approved',approved_product_id=?,approved_price_report_id=?,approved_by=?,approved_at=?,duplicate_decision=? WHERE id=?", [approval.product_id, approval.report_id, request.adminUser.id, approvedAt, duplicateCandidates.length ? duplicateDecision : "no_match", importId]);
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRODUCT_IMPORT_APPROVED", method: request.method, path: request.path, statusCode: 200, affectedType: "product", affectedId: approval.product_id, metadata: { import_id: importId, price_report_id: approval.report_id, store_id: store.id, source_domain: imported.source_domain, source_product_url: auditSafeSourceUrl(imported.source_url), image_result: imageResult.status, duplicate_decision: duplicateCandidates.length ? duplicateDecision : "no_match", location_confirmation: exactLocationAlreadyConfirmed ? (imported.location_confirmation_method || "previously_verified") : "admin_confirmed", approved_at: approvedAt } });
+  response.json({ message: imageResult.status === "approved" ? "Product approved, price verified, and image uploaded." : "Product approved and price verified. The image is unavailable and can be retried.", product_id: approval.product_id, report_id: approval.report_id, image: imageResult, duplicate: approval.duplicate === true, location: { status: "confirmed_janesville", confirmation_method: exactLocationAlreadyConfirmed ? (imported.location_confirmation_method || "previously_verified") : "admin_confirmed", confirmed_at: locationConfirmedAt }, verification: { source: ownsNewReport ? "admin_import" : "existing_approved_report", verified_by: request.adminUser.id, verified_at: approvedAt }, publication_state: "approved" });
+}));
+
+app.post("/api/admin/product-url-imports/:id/retry-image", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("approve"), limitProductUrlImports, asyncRoute(async (request, response) => {
+  const importId = Number.parseInt(request.params.id, 10);
+  const imported = Number.isInteger(importId) && importId > 0 ? await productUrlImportApprovalRecord(importId) : null;
+  if (!imported || imported.approval_status !== "approved" || !imported.approved_product_id) { response.status(409).json({ error: "Approve the product before retrying its image." }); return; }
+  if (!imported.image_source_url) { response.status(409).json({ error: "No retailer image source is available for this product." }); return; }
+  const fetched = await importRemoteImageForPendingUrlImport(importId, imported.image_source_url, request.adminUser.id);
+  if (fetched.status !== "ready") { response.status(422).json({ error: fetched.warning || "Image unavailable.", image: fetched }); return; }
+  const productImageId = await attachPendingUrlImportImage(imported.row_id, imported.approved_product_id, request.adminUser.id, { approvePublic: true });
+  if (!productImageId) { response.status(422).json({ error: "The sanitized image could not be attached." }); return; }
+  await recordAdminAudit({ adminUserId: request.adminUser.id, action: "PRODUCT_IMPORT_IMAGE_RETRIED", affectedType: "product", affectedId: imported.approved_product_id, metadata: { import_id: importId, product_image_id: productImageId, source_domain: imported.source_domain } });
+  response.json({ message: "Image uploaded and attached.", image: { status: "approved", product_image_id: productImageId } });
+}));
+
 app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("manage"), asyncRoute(async (request, response) => {
+  const idempotencyKey = cleanText(request.body.idempotency_key, 100);
+  if (idempotencyKey && !/^[a-zA-Z0-9._:-]{16,100}$/.test(idempotencyKey)) { response.status(400).json({ error: "Importer request identifier is invalid." }); return; }
+  if (idempotencyKey) {
+    const existingImport = await get("SELECT id AS import_id,batch_id,row_id,approval_status,approved_product_id,approved_price_report_id FROM product_url_imports WHERE imported_by=? AND idempotency_key=?", [request.adminUser.id, idempotencyKey]);
+    if (existingImport) { response.json({ message: "This reviewed import was already prepared.", ...existingImport, reused: true, duplicate_candidates: [] }); return; }
+  }
   const currentPrice = parsePrice(request.body.price);
   const regularPrice = parsePrice(request.body.regular_price);
   const normalizedOverallConfidence = currentPrice === null && request.body.overall_confidence === "high" ? "medium" : request.body.overall_confidence || "low";
@@ -17972,8 +18110,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
       draft.source_url, draft.item_name, sourceDomain, draft.source_checked_at || now, draft.store_id,
       `URL import: ${draft.item_name}`, draft.observed_at || now,
       "Created by the Admin Product URL Importer. Human approval is required before publication.", request.adminUser.id,
-      locationConfidence === "confirmed_janesville" ? "verified_exact_store" : "legacy_unknown",
-      locationConfidence === "confirmed_janesville" ? draft.store_id : null,
+      "legacy_unknown",
+      null,
       cleanText(request.body.location_evidence_text, 500), now, now
     ]);
     batchId = batch.lastID;
@@ -18002,15 +18140,20 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
         batch_id, row_id, source_url, source_domain, fetched_url, extraction_method, raw_price_text,
         raw_size_text, image_source_url, sku, gtin, availability, field_confidences_json,
         extraction_warnings_json, retailer_name, price_location_confidence, location_evidence_text,
-        imported_by, imported_at, created_at, category_relevance
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        imported_by, imported_at, created_at, category_relevance, package_quantity,item_size,package_unit,
+        package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       batchId, rowId, draft.source_url, sourceDomain, cleanText(request.body.fetched_url || draft.source_url, 2000),
       extractionMethods.join(","), cleanText(request.body.raw_price_text, 120), cleanText(request.body.raw_size_text, 120),
       retainedImageSource, cleanText(request.body.sku, 100),
       cleanText(request.body.gtin, 40), cleanText(request.body.availability, 120), JSON.stringify(confidences).slice(0, 5000),
       JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence,
-      cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(request.body.category_relevance || "high", 20)
+      cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(request.body.category_relevance || "high", 20),
+      Number(request.body.quantity) > 0 ? Number(request.body.quantity) : null, Number(request.body.item_size) > 0 ? Number(request.body.item_size) : null,
+      cleanText(request.body.unit, 30), cleanText(request.body.package_type, 40), Number(request.body.sell_quantity) > 0 ? Number(request.body.sell_quantity) : null,
+      cleanText(request.body.sell_unit, 30), parsePrice(request.body.unit_price), cleanText(request.body.unit_price_unit, 30), retailerDescription,
+      idempotencyKey || null
     ]);
     importId = imported.lastID;
   } catch (error) {
@@ -18035,6 +18178,7 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
     message: "Saved as a pending import. It has not been published and still requires approval.",
     batch_id: batchId,
     row_id: rowId,
+    import_id: importId,
     duplicate_candidates: duplicateCandidates,
     image
   });
