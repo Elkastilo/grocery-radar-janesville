@@ -245,12 +245,12 @@ function mergeWalmartStoreAnalysis(discovery, storeAnalysis, expectedStore) {
 function analyzePage(html, pageUrl, stores = [], options = {}) {
   const hint = categoryUrlHint(pageUrl);
   if (hint === "category") {
-    const categoryOptions = options.aldiCollection ? { aldiCollection: options.aldiCollection } : {};
+    const categoryOptions = options.aldiCollection ? { aldiCollection: options.aldiCollection, aldiContext: options.aldiContext || options.aldiCollection.__aldiContext } : {};
     return extractCategory(html, pageUrl, stores, options.maxProducts, categoryOptions);
   }
   const product = extractProduct(html, pageUrl, stores);
   if (product.fields?.name && (product.fields.price !== undefined || product.fields.sku || product.fields.gtin)) return { url_type: "product", extraction: product };
-  const category = extractCategory(html, pageUrl, stores, options.maxProducts, options.aldiCollection ? { aldiCollection: options.aldiCollection } : {});
+  const category = extractCategory(html, pageUrl, stores, options.maxProducts, options.aldiCollection ? { aldiCollection: options.aldiCollection, aldiContext: options.aldiContext || options.aldiCollection.__aldiContext } : {});
   return category.products.length > 1 ? category : { url_type: "unsupported", source_url: pageUrl, warnings: [...(category.warnings || []), "The page was not recognized as an individual product or product listing."] };
 }
 

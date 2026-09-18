@@ -8,7 +8,7 @@ const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, pac
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
 const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
-const { extractAldiCollection } = require("../src/importers/aldi");
+const { collectionContext, extractAldiCollection } = require("../src/importers/aldi");
 const { STATUS, retailerDefinition, classifyUrl, resolveAdapter, supportMatrix } = require("../src/importers/registry");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("../src/retailerStores");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
@@ -123,6 +123,15 @@ async function main() {
   assert.equal(aldiCategory.retailer.store_id, 2);
   assert.equal(aldiCategory.products[0].location.confidence, "confirmed_janesville");
   assert.equal(aldiCategory.products[0].readiness.ready, true, "ALDI readiness must agree with confirmed store context and a valid per-pound basis.");
+  const aldiAnalyzeCollection = { data: { collectionProducts: { items: [{ productId: "aldi-analyze-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } } };
+  const aldiAnalyzeConfirmed = analyzePage("<html><title>ALDI Beef</title></html>", "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", stores, { maxProducts: 10, aldiCollection: aldiAnalyzeCollection, aldiContext: { postalCode: "53546", city: "Janesville", state: "WI", shopId: "31930", zoneId: "797" } });
+  assert.equal(aldiAnalyzeConfirmed.location.confidence, "confirmed_janesville", "The analyze path must carry the authenticated ALDI storefront context into category extraction.");
+  assert.equal(aldiAnalyzeConfirmed.products[0].location.confidence, "confirmed_janesville");
+  assert.equal(aldiAnalyzeConfirmed.products[0].readiness.ready, true);
+  const aldiAnalyzeUnconfirmed = analyzePage("<html><title>ALDI Beef</title></html>", "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", stores, { maxProducts: 10, aldiCollection: aldiAnalyzeCollection });
+  assert.equal(aldiAnalyzeUnconfirmed.location.confidence, "unknown", "ALDI without request storefront context must remain unconfirmed.");
+  assert.equal(aldiAnalyzeUnconfirmed.products[0].readiness.ready, false);
+  assert.equal(collectionContext("<html><title>ALDI Beef</title></html>", "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379").postalCode, "", "ALDI context must not default to Janesville.");
   const aldiUnconfirmed = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
     aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53703", city: "Madison" } }
   });

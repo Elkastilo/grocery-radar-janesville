@@ -22,7 +22,7 @@ function encodedJsonScripts(html) {
 }
 
 function collectionContext(html, pageUrl) {
-  const fallback = { slug: new URL(pageUrl).pathname.split("/").filter(Boolean).pop() || "", shopId: "", postalCode: "53546", zoneId: "797", retailerLocationId: "", city: "", state: "" };
+  const fallback = { slug: new URL(pageUrl).pathname.split("/").filter(Boolean).pop() || "", shopId: "", postalCode: "", zoneId: "", retailerLocationId: "", city: "", state: "" };
   const visit = (value, operationName = "") => {
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
