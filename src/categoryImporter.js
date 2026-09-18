@@ -1,6 +1,6 @@
 "use strict";
 
-const { parsePrice, normalizeRetailerText, normalizePackage, detectRetailer, extractProduct } = require("./productImporter");
+const { parsePrice, normalizeRetailerText, normalizePackage, normalizeProductUrl, validateProductFields, detectRetailer, extractProduct } = require("./productImporter");
 const { extractWalmartCategory, parseWalmartStoreUrl, mergeWalmartStorePrices } = require("./importers/walmart");
 const { resolveAdapter } = require("./importers/registry");
 const { extractGenericListing } = require("./importers/generic");
@@ -24,14 +24,13 @@ function validHttpsSource(value) {
 }
 
 function productImportReadiness(fields = {}, options = {}) {
-  const reasons = [];
-  if (!clean(fields.name, 120)) reasons.push("name_required");
-  if (parsePrice(fields.price) === null) reasons.push("price_required");
+  const quality = validateProductFields(fields, { retailerRecognized: options.retailerRecognized });
+  const reasons = [...quality.reasons];
   if (!Number.isInteger(Number(options.storeId)) || Number(options.storeId) <= 0) reasons.push("store_required");
-  if (!validHttpsSource(fields.product_url || fields.source_url)) reasons.push("source_required");
+  if (options.categorySourceUrl && normalizeProductUrl(fields.product_url || fields.source_url) === normalizeProductUrl(options.categorySourceUrl)) reasons.push("product_page_required");
   if (options.hasDuplicates && !["use_existing", "create_separate"].includes(options.duplicateDecision)) reasons.push("duplicate_decision_required");
   if (options.locationConfirmable === false) reasons.push("location_confirmation_required");
-  return { ready: reasons.length === 0, reasons, image_required: false };
+  return { ready: reasons.length === 0, status: reasons.length === 0 ? "ready" : "needs_review", reasons: [...new Set(reasons)], warnings: quality.warnings, image_required: false };
 }
 
 function needsCriticalProductDetails(product = {}) {
@@ -138,6 +137,7 @@ async function enrichCategoryAnalysis(analysis, options = {}) {
   });
   await Promise.all(workers);
   for (const product of targets.slice(maxRequests)) product.enrichment = { status: "not_attempted", source_url: product.fields.product_url };
+  analysis.priced_count = analysis.products.filter((product) => parsePrice(product.fields?.price) !== null).length;
   analysis.enrichment = { attempted: attempted.length, updated, failed, deferred: Math.max(0, targets.length - attempted.length), max_requests: maxRequests, concurrency };
   return analysis;
 }
@@ -201,7 +201,8 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
   products = products.map((item) => {
     const price = parsePrice(item.fields?.price);
     const priceSource = walmartStore && price !== null ? { type: "retailer_store_page", url: pageUrl, retailer_store_id: walmartStore.retailer_store_id, retailer_store_slug: walmartStore.retailer_store_slug, retrieved_at: new Date().toISOString(), location_confirmation_method: "retailer_store_page" } : null;
-    return { ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, readiness: productImportReadiness(item.fields, { storeId: retailer.store_id, locationConfirmable: Boolean(retailer.store_id) }) };
+    const readiness = productImportReadiness(item.fields, { storeId: retailer.store_id, retailerRecognized: retailer.recognized, categorySourceUrl: pageUrl, locationConfirmable: Boolean(retailer.store_id) });
+    return { ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, warnings: [...new Set([...(item.warnings || []), ...readiness.warnings])], readiness };
   });
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");

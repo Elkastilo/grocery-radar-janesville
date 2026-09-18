@@ -20,10 +20,9 @@ let tesseract = null;
 let sharp = null;
 
 function logImporterDiagnostic(analysis, fetched, status, errorCode = "") {
-  if (process.env.IMPORTER_DIAGNOSTICS !== "1" && status === "ok") return;
   let finalUrl;
   try { finalUrl = new URL(fetched?.url || analysis?.source_url || ""); } catch { finalUrl = null; }
-  const payload = { retailer: analysis?.retailer?.retailer || resolveAdapter(fetched?.url).retailer?.id || "unknown", adapter: analysis?.adapter || resolveAdapter(fetched?.url).adapter, page_type: analysis?.page_type || analysis?.url_type || "unsupported", status, final_host: finalUrl?.hostname || "", final_path: finalUrl?.pathname || "", response_bytes: Buffer.byteLength(fetched?.body || ""), collection_selected: analysis?.products?.[0]?.methods_used?.[0] || "", products_discovered: Number(analysis?.detected_count || analysis?.products?.length || 0), priced_count: Number(analysis?.priced_count || 0), error_code: errorCode };
+  const payload = { retailer: analysis?.retailer?.retailer || resolveAdapter(fetched?.url).retailer?.id || "unknown", adapter: analysis?.adapter || resolveAdapter(fetched?.url).adapter, page_type: analysis?.page_type || analysis?.url_type || "unsupported", status, final_host: finalUrl?.hostname || "", final_path: finalUrl?.pathname || "", response_bytes: Buffer.byteLength(fetched?.body || ""), collection_selected: analysis?.products?.[0]?.methods_used?.[0] || "", products_discovered: Number(analysis?.detected_count || analysis?.products?.length || 0), priced_count: Number(analysis?.priced_count || 0), enrichment_attempted: Number(analysis?.enrichment?.attempted || 0), enrichment_succeeded: Number(analysis?.enrichment?.updated || 0), enrichment_failed: Number(analysis?.enrichment?.failed || 0), error_code: errorCode };
   const method = status === "ok" ? "info" : "warn";
   console[method]("product_importer_analysis", JSON.stringify(payload));
 }
@@ -7740,6 +7739,8 @@ async function sendAdminApp(request, response) {
       productToolsTab: "/admin/products",
       storesTab: "/admin/stores",
       workersTab: "/admin/workers",
+      usersTab: "/admin/users",
+      urlParserTab: "/admin/url-parser",
       advancedTab: "/admin/advanced",
       operationsTab: "/admin/operations",
       pricesTab: "/admin/prices",
@@ -17856,10 +17857,18 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
   }
 
   try {
+    const requestedResolution = resolveAdapter(requestedUrl);
+    if (!requestedResolution.retailer) { response.status(400).json({ error: "Unsupported retailer. Use a supported retailer product, category, or search URL.", code: "UNSUPPORTED_RETAILER" }); return; }
     const stores = await all("SELECT id, name, address, city, state FROM stores WHERE active = 1 ORDER BY name");
     const maxProducts = CATEGORY_PRODUCT_CHOICES.includes(Number(request.body.max_products)) ? Number(request.body.max_products) : 25;
     const hint = categoryUrlHint(requestedUrl);
     const fetched = hint === "category" ? await safeCategoryRemoteFetch(requestedUrl) : await safeRemoteFetch(requestedUrl);
+    const finalResolution = resolveAdapter(fetched.url);
+    if (!finalResolution.retailer || finalResolution.retailer.id !== requestedResolution.retailer.id) {
+      logImporterDiagnostic({ retailer: requestedResolution.retailer, page_type: hint }, fetched, "blocked", "UNSUPPORTED_REDIRECT");
+      response.status(400).json({ error: "The retailer redirected to an unsupported destination.", code: "UNSUPPORTED_REDIRECT" });
+      return;
+    }
     const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts });
     const adapterResolution = resolveAdapter(fetched.url);
     if (analysis.url_type === "category") {
@@ -17897,14 +17906,14 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       });
     }
     const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
-    const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
+    const priorImports = await all("SELECT imports.id, imports.sku, imports.source_url, imports.approved_product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id ORDER BY imports.id DESC LIMIT 1000");
     if (analysis.url_type === "category") {
       analysis.products = analysis.products.map((item) => {
         const duplicateCandidates = findDuplicateCandidates(item.fields, products, priorImports, analysis.retailer.store_id);
         return {
           ...item,
           duplicate_candidates: duplicateCandidates,
-          readiness: productImportReadiness(item.fields, { storeId: analysis.retailer.store_id, hasDuplicates: duplicateCandidates.length > 0, locationConfirmable: Boolean(analysis.retailer.store_id) })
+          readiness: productImportReadiness(item.fields, { storeId: analysis.retailer.store_id, retailerRecognized: analysis.retailer.recognized, categorySourceUrl: analysis.source_url, hasDuplicates: duplicateCandidates.length > 0, locationConfirmable: Boolean(analysis.retailer.store_id) })
         };
       });
       response.json({
@@ -17937,6 +17946,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     }
     const extraction = analysis.extraction;
     const duplicates = findDuplicateCandidates(extraction.fields, products, priorImports, extraction.retailer.store_id);
+    extraction.readiness = productImportReadiness(extraction.fields, { storeId: extraction.retailer.store_id, retailerRecognized: extraction.retailer.recognized, hasDuplicates: duplicates.length > 0, locationConfirmable: Boolean(extraction.retailer.store_id) });
     response.json({
       message: "Product page analyzed. Review every field before saving.",
       url_type: "product",
@@ -17946,6 +17956,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
     });
   } catch (error) {
     if (error instanceof SafeFetchError) {
+      logImporterDiagnostic({ page_type: categoryUrlHint(requestedUrl) }, { url: requestedUrl }, "failed", error.code);
       response.status(error.statusCode || 400).json({ error: error.message, code: error.code });
       return;
     }
@@ -17962,6 +17973,8 @@ app.post("/api/admin/product-url-imports/enrich", requireAdminAccess, requireLog
   const currentFields = currentProduct.fields && typeof currentProduct.fields === "object" && !Array.isArray(currentProduct.fields) ? currentProduct.fields : {};
   const sourceUrl = cleanText(request.body.product_url || currentFields.product_url, 2000);
   if (!sourceUrl) { response.status(400).json({ error: "A source product URL is required to fetch details." }); return; }
+  const sourceResolution = resolveAdapter(sourceUrl);
+  if (!sourceResolution.retailer || sourceResolution.page_type !== "product") { response.status(400).json({ error: "A supported retailer product-detail URL is required.", code: "INVALID_PRODUCT_URL" }); return; }
   try {
     const stores = await all("SELECT id, name, address, city, state FROM stores WHERE active = 1 ORDER BY name");
     const fetched = await safeRemoteFetch(sourceUrl, { totalTimeoutMs: 8000 });
@@ -17971,10 +17984,10 @@ app.post("/api/admin/product-url-imports/enrich", requireAdminAccess, requireLog
     const storeId = Number.parseInt(request.body.store_id || merged.retailer?.store_id, 10);
     const [products, priorImports] = await Promise.all([
       all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000"),
-      all("SELECT imports.id, imports.sku, imports.approved_product_id, imports.approved_product_id AS product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000")
+      all("SELECT imports.id, imports.sku, imports.source_url, imports.approved_product_id, imports.approved_product_id AS product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id ORDER BY imports.id DESC LIMIT 1000")
     ]);
     merged.duplicate_candidates = findDuplicateCandidates(merged.fields, products, priorImports, storeId);
-    merged.readiness = productImportReadiness(merged.fields, { storeId, hasDuplicates: merged.duplicate_candidates.length > 0, duplicateDecision: cleanText(request.body.duplicate_decision, 40), locationConfirmable: Number.isInteger(storeId) && storeId > 0 });
+    merged.readiness = productImportReadiness(merged.fields, { storeId, retailerRecognized: true, hasDuplicates: merged.duplicate_candidates.length > 0, duplicateDecision: cleanText(request.body.duplicate_decision, 40), locationConfirmable: Number.isInteger(storeId) && storeId > 0 });
     response.json({ message: merged.readiness.ready ? "Details updated. This product is ready for review." : "Details updated, but required information is still missing.", product: merged });
   } catch (error) {
     if (error instanceof SafeFetchError || error instanceof CategoryImportError) {
@@ -18000,7 +18013,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
   if (locationConfidence === "confirmed_janesville" && !store) { response.status(400).json({ error: "Select the exact Grocery Radar store before confirming a Janesville price location." }); return; }
 
   const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
-  const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
+  const priorImports = await all("SELECT imports.id, imports.sku, imports.source_url, imports.approved_product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id ORDER BY imports.id DESC LIMIT 1000");
   const now = new Date().toISOString();
   const created = [];
   const failures = [];
@@ -18041,7 +18054,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const methods = Array.isArray(input.extraction_methods) ? input.extraction_methods.map((entry) => cleanText(entry, 40)).filter(Boolean).slice(0, 10) : [];
       const warnings = Array.isArray(input.warnings) ? input.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
       const retailerDescription = normalizeRetailerText(input.retailer_description, 500);
-      const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku }, products, priorImports, itemStore.id);
+      const duplicates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: input.gtin, sku: input.sku, product_url: itemSourceUrl }, products, priorImports, itemStore.id);
       const duplicateWarning = duplicates.map((candidate) => `${candidate.type}: ${candidate.name || `import #${candidate.import_id}`}`).join("; ").slice(0, 500);
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
       const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?,'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, itemStore.id, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, verifiedStoreSource ? "verified_exact_store" : "legacy_unknown", verifiedStoreSource ? itemStore.id : null, verifiedStoreSource ? `Walmart store page established store #${priceSourceStore.retailer_store_id}.` : cleanText(request.body.location_evidence_text, 500), now, now]);
@@ -18078,9 +18091,9 @@ async function productUrlImportApprovalRecord(importId) {
 async function productUrlImportDuplicateCandidates(importRecord) {
   const [products, priorImports] = await Promise.all([
     all("SELECT id,display_name,brand_optional,default_size_text,upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 2000"),
-    all("SELECT imports.id,imports.sku,imports.approved_product_id,imports.approved_product_id AS product_id,rows.store_id,rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id WHERE imports.id != ? AND COALESCE(imports.sku,'') != '' ORDER BY imports.id DESC LIMIT 1000", [importRecord.id])
+    all("SELECT imports.id,imports.sku,imports.source_url,imports.approved_product_id,imports.approved_product_id AS product_id,rows.store_id,rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id=imports.row_id WHERE imports.id != ? ORDER BY imports.id DESC LIMIT 1000", [importRecord.id])
   ]);
-  return findDuplicateCandidates({ name: importRecord.item_name, brand: importRecord.brand, raw_size_text: importRecord.raw_size_text || importRecord.size_text, gtin: importRecord.gtin, sku: importRecord.sku }, products, priorImports, importRecord.store_id);
+  return findDuplicateCandidates({ name: importRecord.item_name, brand: importRecord.brand, raw_size_text: importRecord.raw_size_text || importRecord.size_text, gtin: importRecord.gtin, sku: importRecord.sku, product_url: importRecord.source_url }, products, priorImports, importRecord.store_id);
 }
 
 function auditSafeSourceUrl(value) {
@@ -18102,7 +18115,7 @@ app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requi
   const store = await get("SELECT id,name,city,state FROM stores WHERE id=? AND active=1", [imported.store_id]);
   if (!store) { response.status(409).json({ error: "The selected store is no longer active.", code: "STORE_REQUIRED" }); return; }
 
-  const requiredData = productImportReadiness({ name: imported.item_name, price: imported.price, product_url: imported.source_url }, { storeId: store.id, locationConfirmable: true });
+  const requiredData = productImportReadiness({ name: imported.item_name, price: imported.price, regular_price: imported.regular_price, product_url: imported.source_url, raw_size_text: imported.raw_size_text || imported.size_text, image_url: imported.image_source_url }, { storeId: store.id, retailerRecognized: Boolean(resolveAdapter(imported.source_url).retailer), locationConfirmable: true });
   if (!requiredData.ready) {
     response.status(400).json({ error: requiredData.reasons.includes("price_required") ? "A valid current price greater than zero is required before approval." : "Required product details are missing or invalid.", code: "IMPORT_DETAILS_REQUIRED", readiness: requiredData });
     return;
@@ -18208,12 +18221,15 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
     response.status(400).json({ error: error instanceof SafeFetchError ? error.message : "A valid HTTPS source URL is required." });
     return;
   }
-  if (draft.store_id) {
-    const store = await get("SELECT id FROM stores WHERE id = ? AND active = 1", [draft.store_id]);
-    if (!store) {
-      response.status(400).json({ error: "Choose an existing active store." });
-      return;
-    }
+  const store = draft.store_id ? await get("SELECT id FROM stores WHERE id = ? AND active = 1", [draft.store_id]) : null;
+  if (!store) {
+    response.status(400).json({ error: "Choose an existing active store." });
+    return;
+  }
+  const requiredData = productImportReadiness({ name: draft.item_name, price: currentPrice, regular_price: regularPrice, product_url: draft.source_url, raw_size_text: draft.size_text, image_url: request.body.image_source_url }, { storeId: draft.store_id, retailerRecognized: Boolean(resolveAdapter(draft.source_url).retailer), locationConfirmable: true });
+  if (!requiredData.ready) {
+    response.status(400).json({ error: "This product needs review before it can be imported.", code: "IMPORT_DETAILS_REQUIRED", readiness: requiredData });
+    return;
   }
 
   const locationConfidence = cleanText(request.body.price_location_confidence || "unknown", 40);
@@ -18223,8 +18239,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
   }
   const sourceDomain = sourceDomainFromUrl(draft.source_url);
   const products = await all("SELECT id, display_name, brand_optional, default_size_text, upc FROM products WHERE status != 'merged' ORDER BY updated_at DESC LIMIT 1000");
-  const priorImports = await all("SELECT imports.id, imports.sku, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id WHERE COALESCE(imports.sku, '') != '' ORDER BY imports.id DESC LIMIT 1000");
-  const duplicateCandidates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: request.body.gtin, sku: request.body.sku }, products, priorImports, draft.store_id);
+  const priorImports = await all("SELECT imports.id, imports.sku, imports.source_url, imports.approved_product_id, rows.store_id, rows.item_name FROM product_url_imports imports JOIN price_import_rows rows ON rows.id = imports.row_id ORDER BY imports.id DESC LIMIT 1000");
+  const duplicateCandidates = findDuplicateCandidates({ name: draft.item_name, brand: draft.brand, raw_size_text: draft.size_text, gtin: request.body.gtin, sku: request.body.sku, product_url: draft.source_url }, products, priorImports, draft.store_id);
   const now = new Date().toISOString();
   const warnings = Array.isArray(request.body.warnings) ? request.body.warnings.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, 20) : [];
   let retainedImageSource = "";

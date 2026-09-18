@@ -2,8 +2,9 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zlib = require("zlib");
 const sharp = require("sharp");
-const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
+const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, normalizeProductUrl, normalizeImageUrl, validateProductFields, detectRetailer, findDuplicateCandidates } = require("../src/productImporter");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
 const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
@@ -49,6 +50,27 @@ async function main() {
   assert.equal(walmart.fields.quantity, 12);
   assert.equal(walmart.fields.item_size, 12);
   assert.equal(walmart.fields.unit, "fl oz");
+
+  const walmartInternal = extractProduct(fixture("walmart-product-internal-fallback.html"), "https://www.walmart.com/ip/great-value-milk/987654321?athcpid=track", stores);
+  assert.equal(walmartInternal.fields.name, "Great Value Whole Milk, 1 Gallon");
+  assert.equal(walmartInternal.fields.price, 3.42, "Walmart internal product state must fill a missing JSON-LD price.");
+  assert.equal(walmartInternal.fields.regular_price, 3.78);
+  assert.equal(walmartInternal.fields.raw_size_text, "1 gallon");
+  assert.equal(walmartInternal.fields.sku, "987654321");
+  assert.equal(walmartInternal.fields.gtin, "078742000001");
+  assert.equal(walmartInternal.fields.product_url, "https://www.walmart.com/ip/great-value-milk/987654321");
+  assert.ok(!/Unrelated/.test(walmartInternal.fields.name));
+
+  const target = extractProduct(fixture("target-product.html"), "https://www.target.com/p/good-gather-oats-18oz/-/A-12345678?utm_source=test", stores);
+  assert.equal(target.retailer.retailer, "target");
+  assert.equal(target.fields.price, 3.49);
+  assert.equal(target.fields.raw_size_text, "18 oz");
+  assert.equal(target.fields.product_url, "https://www.target.com/p/good-gather-oats-18oz/-/A-12345678?preselect=12345678");
+  assert.ok(target.fields.image_url.startsWith("https://target.scene7.com/"));
+
+  const genericFallback = extractProduct(`<script type="application/ld+json">${JSON.stringify({ "@type": "Product", name: "ALDI Apples, 3 lb", sku: "ALDI-3LB" })}</script><script type="application/json">${JSON.stringify({ product: { name: "ALDI Apples, 3 lb", sku: "ALDI-3LB", price: "$4.49", url: "/product/aldi-apples" }, recommendations: [{ name: "Unrelated Navigation Offer", sku: "OTHER", price: "$99.00" }] })}</script>`, "https://www.aldi.us/product/aldi-apples", stores);
+  assert.equal(genericFallback.fields.price, 4.49, "Matching embedded product state must supplement incomplete JSON-LD.");
+  assert.equal(genericFallback.fields.name, "ALDI Apples, 3 lb");
   assert.equal(walmart.retailer.store_id, 1);
   assert.equal(walmart.location.confidence, "likely_janesville");
 
@@ -68,6 +90,10 @@ async function main() {
   assert.equal(retailerDefinition("https://www.target.com/p/-/A-123").id, "target");
   assert.equal(classifyUrl("https://www.target.com/s/milk?page=2"), "search");
   assert.equal(classifyUrl("https://www.walmart.com/store/1305-janesville-wi/produce-market"), "store_category");
+  assert.equal(classifyUrl("https://www.aldi.us/products/dairy-eggs/milk-milk-substitutes/"), "category");
+  assert.equal(classifyUrl("https://www.aldi.us/products/dairy-eggs/milk-milk-substitutes/detail/ps/p/friendly-farms-whole-milk-one-half-gallon/"), "product");
+  assert.equal(classifyUrl("https://www.aldi.us/store/aldi/products/20989941-friendly-farms-1-milk-0-5-gal"), "product");
+  assert.equal(classifyUrl("https://shopwoodmans.com/store/woodmans-food-markets/storefront"), "category");
   assert.equal(resolveAdapter("https://festivalfoods.net/specials/search/?page=2").adapter, "festival");
   const matrix = supportMatrix();
   assert.equal(matrix.find((entry) => entry.retailer === "walmart").store_price, STATUS.SUPPORTED);
@@ -171,7 +197,7 @@ async function main() {
   assert.equal(walmartEmptyPriceFields.products[0].fields.sku, "309762096");
   assert.equal(walmartEmptyPriceFields.products[0].fields.price, null, "Empty Walmart linePrice/itemPrice and zero minPrice are missing data, not a retail price.");
   assert.equal(walmartEmptyPriceFields.products[0].confidence.price, "unknown");
-  assert.deepEqual(productImportReadiness(walmartEmptyPriceFields.products[0].fields, { storeId: 1 }), { ready: false, reasons: ["price_required"], image_required: false });
+  assert.deepEqual(productImportReadiness(walmartEmptyPriceFields.products[0].fields, { storeId: 1 }), { ready: false, status: "needs_review", reasons: ["price_required"], warnings: [], image_required: false });
 
   const walmartMetadata = groceryStoreRetailerMetadata({ id: 1, name: "Walmart Janesville", address: "3800 Deerfield Dr", city: "Janesville", state: "WI" });
   assert.equal(walmartMetadata.retailer_store_id, "1305");
@@ -204,7 +230,7 @@ async function main() {
   assert.equal(missingRockit.fields.price, null);
   assert.equal(missingRockit.fields.raw_size_text, "3 lb Tub");
   assert.equal(missingRockit.confidence.price, "unknown");
-  assert.deepEqual(productImportReadiness(missingRockit.fields, { storeId: 1 }), { ready: false, reasons: ["price_required"], image_required: false });
+  assert.deepEqual(productImportReadiness(missingRockit.fields, { storeId: 1 }), { ready: false, status: "needs_review", reasons: ["price_required"], warnings: [], image_required: false });
   const rockitDetail = extractProduct(fixture("walmart-rockit-product.html"), "https://www.walmart.com/ip/rockit-apples/2001", stores);
   const enrichedRockit = mergeCategoryProductDetails(missingRockit, rockitDetail);
   assert.equal(enrichedRockit.fields.price, 8.97);
@@ -271,10 +297,33 @@ async function main() {
   assert.equal(blockedDetails.products[0].enrichment.status, "unavailable");
   assert.equal(blockedDetails.products[0].fields.price, null);
   assert.ok(blockedDetails.products[0].warnings.some((warning) => /manual correction/i.test(warning)));
+  const mixedDetails = { url_type: "category", products: [
+    { fields: { name: "Good detail", price: null, product_url: "https://www.walmart.com/ip/rockit-apples/2001" }, confidence: { name: "high", price: "unknown" }, warnings: [] },
+    { fields: { name: "Failed detail", price: null, product_url: "https://www.walmart.com/ip/blocked/22" }, confidence: { name: "high", price: "unknown" }, warnings: [] }
+  ] };
+  await enrichCategoryAnalysis(mixedDetails, { stores, fetchProductPage: async (url) => {
+    if (url.includes("blocked")) throw new SafeFetchError("RETAILER_BLOCKED", "Retailer blocked automated retrieval.", 422);
+    return { url, body: fixture("walmart-rockit-product.html") };
+  } });
+  assert.deepEqual(mixedDetails.enrichment, { attempted: 2, updated: 1, failed: 1, deferred: 0, max_requests: 8, concurrency: 2 });
+  assert.equal(mixedDetails.products[0].fields.price, 8.97);
+  assert.equal(mixedDetails.products[1].enrichment.status, "unavailable");
   assert.equal(productImportReadiness({ name: "No-image apple", price: 2.46, product_url: "https://www.walmart.com/ip/no-image/33", image_url: "" }, { storeId: 1 }).ready, true, "Image availability must not block approval readiness.");
 
   for (const invalidPrice of [0, 0.00, -1, NaN, Infinity, "", null, undefined, "$0.00", "-$3.99"]) assert.equal(parsePrice(invalidPrice), null);
   assert.equal(parsePrice("$4.97"), 4.97);
+  assert.equal(parsePrice("Now $4.99"), 4.99);
+  assert.equal(parsePrice("Was $6.49"), 6.49);
+  assert.equal(parsePrice("2/$5"), 2.5);
+  assert.equal(parsePrice("$1.99/lb"), 1.99);
+  assert.equal(parsePrice("4.8 stars"), null);
+  assert.equal(parsePrice("123 reviews"), null);
+  assert.equal(parsePrice("Product ID 987654321"), null);
+  assert.equal(normalizeProductUrl("https://www.walmart.com/ip/item/123?utm_source=x&selected=true#reviews"), "https://www.walmart.com/ip/item/123?selected=true");
+  assert.equal(normalizeImageUrl("https://example.com/assets/store-logo.svg"), "");
+  assert.equal(validateProductFields({ name: "Search Results", price: 4.99, product_url: "https://www.walmart.com/ip/item/123" }).status, "needs_review");
+  assert.ok(validateProductFields({ name: "Milk, 1 gallon", price: 4.99, product_url: "https://www.walmart.com/ip/item/123" }).reasons.includes("size_required"));
+  assert.equal(validateProductFields({ name: "Milk", price: 1400, product_url: "https://www.walmart.com/ip/item/123" }).status, "needs_review");
 
   const genericCategory = analyzePage(fixture("generic-category.html"), "https://shop.example.test/category/pantry", stores, { maxProducts: 10 });
   assert.equal(genericCategory.url_type, "category");
@@ -304,6 +353,8 @@ async function main() {
   const duplicates = findDuplicateCandidates({ name: "Coke", brand: "Coca-Cola", raw_size_text: "12 x 12 fl oz", gtin: "049000028904", sku: "WM-123" }, [{ id: 9, display_name: "Other", upc: "049000028904" }], [{ id: 7, sku: "WM-123", store_id: 1, item_name: "Coke" }], 1);
   assert.ok(duplicates.some((candidate) => candidate.type === "gtin"));
   assert.ok(duplicates.some((candidate) => candidate.type === "sku_retailer"));
+  const urlDuplicates = findDuplicateCandidates({ name: "Milk", product_url: "https://www.walmart.com/ip/milk/22?utm_source=x" }, [], [{ id: 8, source_url: "https://www.walmart.com/ip/milk/22", store_id: 1, item_name: "Milk" }], 1);
+  assert.ok(urlDuplicates.some((candidate) => candidate.type === "canonical_url"));
 
   for (const input of ["http://example.com/product", "file:///etc/passwd", "ftp://example.com/a", "data:text/plain,x", "javascript:alert(1)"]) assert.throws(() => validateRemoteUrl(input), /Only HTTPS/);
   for (const input of ["https://localhost/product", "https://127.0.0.1/product", "https://10.0.0.1/product", "https://169.254.169.254/latest/meta-data", "https://[::1]/product", "https://[fd00::1]/product"]) assert.throws(() => validateRemoteUrl(input), /Private|reserved/);
@@ -328,6 +379,15 @@ async function main() {
     resolveHost: publicDns, totalTimeoutMs: 10,
     requestOnce: async () => new Promise(() => {})
   }), "REQUEST_TIMEOUT");
+  await expectCode(safeRemoteFetch("https://missing.example/product", {
+    resolveHost: async () => { throw new Error("getaddrinfo ENOTFOUND"); }
+  }), "FETCH_FAILED");
+  const compressedHtml = "<html><body>compressed retailer response</body></html>";
+  const compressed = await safeRemoteFetch("https://public.example/product", {
+    resolveHost: publicDns,
+    requestOnce: async () => ({ statusCode: 200, headers: { "content-type": "text/html", "content-encoding": "gzip" }, body: zlib.gzipSync(compressedHtml) })
+  });
+  assert.equal(compressed.body, compressedHtml);
 
   const validJpeg = await sharp({ create: { width: 80, height: 60, channels: 3, background: "#f2d447" } }).jpeg().toBuffer();
   const validPng = await sharp({ create: { width: 60, height: 80, channels: 4, background: "#6fba73" } }).png().toBuffer();
@@ -483,6 +543,14 @@ async function main() {
   assert.deepEqual(importerRowReadiness(readinessRow).reasons, ["duplicate_decision_required"]);
   readinessRow.dataset.duplicateDecision = "create_separate";
   assert.equal(importerRowReadiness(readinessRow).ready, true, "Manual price edits and duplicate decisions must immediately make a valid row ready.");
+  readinessControls.find((control) => control.name === "name").value = "Search Results";
+  assert.ok(importerRowReadiness(readinessRow).reasons.includes("name_suspicious"));
+  readinessControls.find((control) => control.name === "name").value = "Whole Milk, 1 gallon";
+  readinessControls.find((control) => control.name === "size_text").value = "";
+  readinessControls.find((control) => control.name === "item_size").value = "";
+  readinessControls.find((control) => control.name === "quantity").value = "";
+  readinessControls.find((control) => control.name === "unit").value = "";
+  assert.ok(importerRowReadiness(readinessRow).reasons.includes("size_required"));
   const importerApprovalErrorMessage = loadNamedFunction(adminScript, "importerApprovalErrorMessage");
   const originalConsoleError = console.error;
   const loggedApprovalErrors = [];

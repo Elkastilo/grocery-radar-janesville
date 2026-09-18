@@ -30,9 +30,77 @@ function parsePrice(value) {
   if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : null;
   const cleaned = text(value, 80).replace(/,/g, "");
   if (!cleaned || /^\s*-\s*(?:\$|USD)?/i.test(cleaned)) return null;
+  if (/\b(?:ratings?|reviews?|stars?|product\s*id|item\s*id|sku|upc|gtin|percent|percentage)\b/i.test(cleaned) || /%/.test(cleaned)) return null;
+  const multiBuy = cleaned.match(/\b(\d+)\s*\/\s*\$\s*(\d+(?:\.\d{1,2})?)\b/i);
+  if (multiBuy) {
+    const quantity = Number(multiBuy[1]);
+    const total = Number(multiBuy[2]);
+    return quantity > 0 && total > 0 ? Number((total / quantity).toFixed(4)) : null;
+  }
+  const totalForQuantity = cleaned.match(/\$\s*(\d+(?:\.\d{1,2})?)\s*(?:for|\/)\s*(\d+)\b/i);
+  if (totalForQuantity) {
+    const total = Number(totalForQuantity[1]);
+    const quantity = Number(totalForQuantity[2]);
+    return quantity > 0 && total > 0 ? Number((total / quantity).toFixed(4)) : null;
+  }
   const match = cleaned.match(/(?:\$|USD\s*)?(-?\d+(?:\.\d{1,2})?)/i);
   const number = match ? Number(match[1]) : NaN;
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+const TRACKING_QUERY_PATTERN = /^(?:utm_[a-z0-9_]+|gclid|dclid|fbclid|msclkid|campaign|campaignid|adid|ref|ref_|source|affiliates_ad_id|ath[a-z0-9_]+|veh)$/i;
+const INVALID_IMAGE_PATTERN = /(?:^|[\/_-])(?:logo|favicon|sprite|spacer|tracking|pixel|placeholder|blank)(?:[\/_\-.]|$)/i;
+
+function normalizeProductUrl(value, baseUrl = "") {
+  if (!String(value || "").trim()) return "";
+  try {
+    const parsed = new URL(String(value || ""), baseUrl || undefined);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return "";
+    parsed.hash = "";
+    for (const key of [...parsed.searchParams.keys()]) if (TRACKING_QUERY_PATTERN.test(key)) parsed.searchParams.delete(key);
+    return parsed.toString();
+  } catch { return ""; }
+}
+
+function normalizeImageUrl(value, baseUrl = "") {
+  const normalized = normalizeProductUrl(value, baseUrl);
+  if (!normalized) return "";
+  try {
+    const parsed = new URL(normalized);
+    if (/\.svg(?:$|\?)/i.test(parsed.pathname) || INVALID_IMAGE_PATTERN.test(parsed.pathname)) return "";
+    const width = Number(parsed.searchParams.get("width") || parsed.searchParams.get("w"));
+    const height = Number(parsed.searchParams.get("height") || parsed.searchParams.get("h"));
+    if ((width > 0 && width < 40) || (height > 0 && height < 40)) return "";
+    return normalized;
+  } catch { return ""; }
+}
+
+function suspiciousProductName(value) {
+  const name = normalizeRetailerText(value, 200);
+  if (name.length < 2 || name.length > 160) return true;
+  return /^(?:home|menu|search|search results?|shop|products?|product details?|departments?|categories|weekly ad|sign in|account|cart|learn more|view all|next|previous)$/i.test(name)
+    || /\b(?:cookie policy|privacy policy|terms of use|skip to|customer service)\b/i.test(name);
+}
+
+function validateProductFields(fields = {}, options = {}) {
+  const reasons = [];
+  const warnings = [];
+  const name = normalizeRetailerText(fields.name || fields.productName, 200);
+  const price = parsePrice(fields.price);
+  const source = normalizeProductUrl(fields.product_url || fields.source_url);
+  if (!name) reasons.push("name_required");
+  else if (suspiciousProductName(name)) reasons.push("name_suspicious");
+  if (price === null) reasons.push("price_required");
+  else if (price > (Number(options.maximumPrice) || 1000)) reasons.push("price_suspicious");
+  if (!source) reasons.push("source_required");
+  if (options.retailerRecognized === false) reasons.push("retailer_required");
+  const titlePackage = packageFromProductTitle(name);
+  if (titlePackage.raw_text && !normalizePackage(fields.raw_size_text || fields.size_text).raw_text) reasons.push("size_required");
+  const regular = parsePrice(fields.regular_price);
+  if (fields.price_conflict === true || (regular !== null && price !== null && regular <= price)) reasons.push("price_conflict");
+  if (fields.image_url && !normalizeImageUrl(fields.image_url, source)) warnings.push("Image URL was invalid or appeared to be a placeholder.");
+  if (!normalizePackage(fields.raw_size_text || fields.size_text).raw_text) warnings.push("Package size was not available; confirm it when the retailer provides one.");
+  return { ready: reasons.length === 0, status: reasons.length === 0 ? "ready" : "needs_review", reasons, warnings };
 }
 
 function normalizeUnit(value) {
@@ -90,7 +158,7 @@ function packageFromProductTitle(value) {
   if (!title) return normalizePackage(null);
   const each = title.match(/(?:^|[,;(]\s*)(?:1\s+)?each\s*\)?$/i);
   if (each) return normalizePackage("Each");
-  const candidates = [...title.matchAll(/(\d+(?:\.\d+)?\s*(?:x|×)\s*\d+(?:\.\d+)?\s*(?:fl\s*\.?\s*oz|oz|lb|g|kg|ml|l)\b|\d+(?:\.\d+)?\s*(?:lbs?|pounds?|fl\s*\.?\s*oz|oz|ounces?|kg|g|ml|l|liters?|gal|gallons?|qt|pt|ct|count)\s*(?:\/\s*)?(?:containers?|jars?|bags?|tubs?|bottles?|cans?|box(?:es)?|packs?)?)/gi)];
+  const candidates = [...title.matchAll(/(\d+(?:\.\d+)?\s*(?:x|×)\s*\d+(?:\.\d+)?\s*(?:fl\s*\.?\s*oz|oz|lb|kg|ml|g|l)\b|\d+(?:\.\d+)?\s*(?:lbs?|pounds?|fl\s*\.?\s*oz|ounces?|oz|kilograms?|kg|grams?|g|milliliters?|ml|liters?|l|gallons?|gal|quarts?|qt|pints?|pt|count|ct)\b\s*(?:\/\s*)?(?:containers?|jars?|bags?|tubs?|bottles?|cans?|box(?:es)?|packs?)?)/gi)];
   for (const candidate of candidates.reverse()) {
     const parsed = normalizePackage(candidate[1]);
     if (parsed.raw_text) return parsed;
@@ -127,6 +195,7 @@ function offerFrom(value) {
   return {
     price,
     regular_price: regular && price !== null && regular > price ? regular : null,
+    price_conflict: regular !== null && price !== null && regular <= price,
     currency: normalizeRetailerText(offer.priceCurrency || offer.priceSpecification?.priceCurrency, 10),
     availability: normalizeRetailerText(offer.availability, 200).split("/").pop(),
     url: text(offer.url, 1000)
@@ -136,13 +205,13 @@ function offerFrom(value) {
 function productCandidate(product, method) {
   const offer = offerFrom(product.offers);
   const sizeRaw = normalizeRetailerText(product.size || product.weight, 120);
-  const packageInfo = normalizePackage(sizeRaw);
+  const packageInfo = normalizePackage(sizeRaw).raw_text ? normalizePackage(sizeRaw) : packageFromProductTitle(product.name);
   return {
     method,
     name: normalizeRetailerText(product.name, 200), brand: normalizeRetailerText(brandName(product.brand), 100), variant: normalizeRetailerText(product.variant || product.model, 100), description: normalizeRetailerText(product.description, 500),
     image_url: imageUrl(product.image), sku: normalizeRetailerText(product.sku || product.mpn, 100),
     gtin: normalizeRetailerText(product.gtin14 || product.gtin13 || product.gtin12 || product.gtin8 || product.gtin, 40),
-    price: offer.price, regular_price: offer.regular_price, unit_price: parsePrice(product.unitPrice || product.offers?.unitPrice), currency: offer.currency,
+    price: offer.price, regular_price: offer.regular_price, price_conflict: offer.price_conflict, unit_price: parsePrice(product.unitPrice || product.offers?.unitPrice), currency: offer.currency,
     availability: offer.availability, product_url: offer.url || text(product.url, 1000),
     raw_price_text: offer.price === null ? "" : normalizeRetailerText(product.offers?.price ?? product.offers?.lowPrice ?? offer.price, 120),
     raw_size_text: packageInfo.raw_text, package: packageInfo,
@@ -219,11 +288,27 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   jsonLd.forEach((value) => walkJson(value, (node) => { if (typeNames(node).includes("product")) products.push(productCandidate(node, "json_ld")); }));
   if (products.length) result.methods_used.push("json_ld");
 
-  if (!products.length) {
-    const embedded = parseJsonScripts(html, (attrs) => /type\s*=\s*["']application\/json["']/i.test(attrs) || /id\s*=\s*["'](?:__NEXT_DATA__|__APOLLO_STATE__)["']/i.test(attrs), result.warnings);
+  const embedded = parseJsonScripts(html, (attrs) => /type\s*=\s*["']application\/json["']/i.test(attrs) || /id\s*=\s*["'](?:__NEXT_DATA__|__APOLLO_STATE__)["']/i.test(attrs), result.warnings);
+  if (retailerDefinition(sourceUrl)?.id === "walmart" && embedded.length) {
+    const { extractWalmartProduct } = require("./importers/walmart");
+    const walmartProduct = extractWalmartProduct(embedded, sourceUrl);
+    if (walmartProduct) {
+      for (const [name, value] of Object.entries(walmartProduct.fields || {})) applyField(result, name, value, walmartProduct.confidence?.[name] || "high", walmartProduct.field_origins?.[name] || "walmart_product_state");
+      result.methods_used.push("walmart_product_state");
+    }
+  }
+
+  if (!result.fields.name) {
+    const structuredIdentities = new Set(products.flatMap((product) => [product.sku && `sku:${normalizeMatch(product.sku)}`, product.gtin && `gtin:${normalizeMatch(product.gtin)}`, product.name && `name:${normalizeMatch(product.name)}`].filter(Boolean)));
+    let sourcePath = "";
+    try { sourcePath = new URL(sourceUrl).pathname.replace(/\/$/, ""); } catch {}
     embedded.forEach((value) => walkJson(value, (node) => {
       if (node && !Array.isArray(node) && (node.name || node.productName || node.title) && (node.price !== undefined || node.offers || node.sku || node.gtin)) {
-        products.push(productCandidate({ ...node, name: node.name || node.productName || node.title, offers: node.offers || { price: node.price, priceCurrency: node.currency }, image: node.image || node.imageUrl }, "embedded_json"));
+        const candidate = productCandidate({ ...node, name: node.name || node.productName || node.title, offers: node.offers || { price: node.price, priceCurrency: node.currency }, image: node.image || node.imageUrl }, "embedded_json");
+        const identities = [candidate.sku && `sku:${normalizeMatch(candidate.sku)}`, candidate.gtin && `gtin:${normalizeMatch(candidate.gtin)}`, candidate.name && `name:${normalizeMatch(candidate.name)}`].filter(Boolean);
+        let candidatePath = "";
+        try { candidatePath = new URL(candidate.product_url || "", sourceUrl).pathname.replace(/\/$/, ""); } catch {}
+        if (!products.length || identities.some((identity) => structuredIdentities.has(identity)) || (sourcePath && candidatePath === sourcePath)) products.push(candidate);
       }
     }));
     if (products.length) result.methods_used.push("embedded_json");
@@ -232,7 +317,7 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   const best = products.sort((a, b) => candidateScore(b) - candidateScore(a))[0];
   if (best) {
     const confidence = best.method === "json_ld" ? "high" : "medium";
-    for (const name of ["name", "brand", "variant", "image_url", "sku", "gtin", "price", "regular_price", "unit_price", "currency", "availability", "raw_price_text", "raw_size_text"]) applyField(result, name, best[name], confidence, best.method);
+    for (const name of ["name", "brand", "variant", "image_url", "sku", "gtin", "price", "regular_price", "price_conflict", "unit_price", "currency", "availability", "raw_price_text", "raw_size_text"]) applyField(result, name, best[name], confidence, best.method);
     for (const name of ["quantity", "item_size", "unit", "package_type"]) applyField(result, name, best.package[name], best.package.raw_text ? "medium" : "unknown", "size_normalization");
   }
 
@@ -256,13 +341,40 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   }
   if ((!best || !best.name) && (h1 || title || priceText || packageMatch)) result.methods_used.push("html_heuristic");
 
+  const canonicalTag = (html.match(/<link\b[^>]*\brel\s*=\s*["'][^"']*\bcanonical\b[^"']*["'][^>]*>/i) || [""])[0];
+  const canonicalHref = canonicalTag.match(/\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+  const canonicalUrl = normalizeProductUrl(canonicalHref?.[1] || canonicalHref?.[2] || canonicalHref?.[3], sourceUrl) || normalizeProductUrl(sourceUrl);
+  if (canonicalHref && canonicalUrl) {
+    result.fields.product_url = canonicalUrl;
+    result.confidence.product_url = "high";
+    result.field_methods.product_url = "canonical_link";
+  } else if (result.fields.product_url) result.fields.product_url = normalizeProductUrl(result.fields.product_url, sourceUrl) || canonicalUrl;
+  else applyField(result, "product_url", canonicalUrl, "medium", "final_response_url");
+  if (result.fields.image_url) {
+    const normalizedImage = normalizeImageUrl(result.fields.image_url, sourceUrl);
+    if (normalizedImage) result.fields.image_url = normalizedImage;
+    else {
+      delete result.fields.image_url;
+      result.confidence.image_url = "unknown";
+      result.warnings.push("The detected image was invalid or appeared to be a placeholder.");
+    }
+  }
+  const titlePackage = packageFromProductTitle(result.fields.name);
+  if (!normalizePackage(result.fields.raw_size_text).raw_text && titlePackage.raw_text) {
+    applyField(result, "raw_size_text", titlePackage.raw_text, "medium", "product_title_size");
+    for (const name of ["quantity", "item_size", "unit", "package_type"]) applyField(result, name, titlePackage[name], "medium", "product_title_size");
+  }
+
   const retailer = detectRetailer(sourceUrl, result.fields.retailer || best?.seller, stores);
   result.retailer = retailer;
   result.location = locationAssessment(html, stores.find((store) => String(store.id) === String(retailer.store_id)));
   if (!retailer.store_id) result.warnings.push(retailer.recognized ? "Retailer recognized, but no existing Grocery Radar store location was matched." : "Retailer not recognized. Select an existing store manually.");
   if (result.location.confidence !== "confirmed_janesville") result.warnings.push("This price may be location-dependent and is not confirmed for the Janesville store.");
   if (!result.fields.name) result.warnings.push("No reliable product name was found.");
+  else if (suspiciousProductName(result.fields.name)) result.warnings.push("The detected product name looks like navigation or page text.");
   if (result.fields.price == null) result.warnings.push("No reliable current price was found.");
+  if (result.fields.price_conflict === true) result.warnings.push("The source exposed conflicting current and regular prices.");
+  if (parsePrice(result.fields.price) !== null && result.fields.price > 1000) result.warnings.push("The detected price is unusually large and requires review.");
   result.methods_used = [...new Set(result.methods_used)];
   result.overall_confidence = result.confidence.name === "high" && result.confidence.price === "high" ? "high" : result.fields.name && result.fields.price != null ? "medium" : "low";
   return result;
@@ -276,14 +388,21 @@ function findDuplicateCandidates(imported, products = [], priorImports = [], sto
   const name = normalizeMatch(imported.name);
   const brand = normalizeMatch(imported.brand);
   const size = normalizeMatch(imported.raw_size_text || imported.size_text);
+  const canonicalUrl = normalizeProductUrl(imported.product_url || imported.source_url);
   const matches = [];
   for (const product of products) {
     const productGtin = text(product.upc || product.gtin, 40).replace(/\D/g, "");
     if (gtin && productGtin === gtin) matches.push({ type: "gtin", confidence: "high", product_id: product.id, name: product.display_name || product.name });
-    else if (name && normalizeMatch(product.display_name || product.name) === name && (!brand || normalizeMatch(product.brand_optional || product.brand) === brand) && (!size || normalizeMatch(product.default_size_text || product.size_text) === size)) matches.push({ type: "name_brand_size", confidence: "medium", product_id: product.id, name: product.display_name || product.name });
+    else if (name && size && normalizeMatch(product.display_name || product.name) === name && (!brand || normalizeMatch(product.brand_optional || product.brand) === brand) && normalizeMatch(product.default_size_text || product.size_text) === size) matches.push({ type: "name_brand_size", confidence: "medium", product_id: product.id, name: product.display_name || product.name });
   }
-  for (const prior of priorImports) if (sku && normalizeMatch(prior.sku) === sku && String(prior.store_id || "") === String(storeId || "")) matches.push({ type: "sku_retailer", confidence: "high", import_id: prior.id, product_id: prior.product_id || prior.approved_product_id || null, name: prior.item_name });
-  return matches.slice(0, 10);
+  for (const prior of priorImports) {
+    const priorProductId = prior.product_id || prior.approved_product_id || null;
+    if (canonicalUrl && normalizeProductUrl(prior.source_url) === canonicalUrl) matches.push({ type: "canonical_url", confidence: "high", import_id: prior.id, product_id: priorProductId, name: prior.item_name });
+    else if (sku && normalizeMatch(prior.sku) === sku && String(prior.store_id || "") === String(storeId || "")) matches.push({ type: "sku_retailer", confidence: "high", import_id: prior.id, product_id: priorProductId, name: prior.item_name });
+  }
+  const unique = new Map();
+  for (const match of matches) unique.set(`${match.product_id || ""}:${match.import_id || ""}:${match.type}`, match);
+  return [...unique.values()].slice(0, 10);
 }
 
-module.exports = { DOMAIN_RETAILERS, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, detectRetailer, extractProduct, findDuplicateCandidates };
+module.exports = { DOMAIN_RETAILERS, parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, normalizeProductUrl, normalizeImageUrl, suspiciousProductName, validateProductFields, detectRetailer, extractProduct, findDuplicateCandidates };

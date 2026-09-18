@@ -33,6 +33,11 @@ function classifyUrl(value, retailer = retailerDefinition(value)) {
   try { url = new URL(String(value || "")); } catch { return "unsupported"; }
   const path = url.pathname.toLowerCase();
   if (retailer?.id === "walmart" && /^\/store\/\d+-[a-z0-9-]+\/[a-z0-9-]+\/?$/.test(path)) return "store_category";
+  if (retailer?.id === "aldi") {
+    if (/\/detail\/ps\/p\/|\/store\/aldi\/products\/\d+-/.test(path)) return "product";
+    if (/\/products(?:\/|$)/.test(path) || /\/store\/aldi\/pages\/browse/.test(path)) return "category";
+  }
+  if (retailer?.id === "woodmans" && /\/store\/[^/]+\/storefront\/?$/.test(path)) return "category";
   if (/\/(?:ip|products?|product-detail|p)\//.test(path) || /\/dp\//.test(path) || /\/view\/\d+/.test(path)) return "product";
   if (/\/(?:search|s)(?:\/|$)/.test(path) || url.searchParams.has("q") || url.searchParams.has("query") || url.searchParams.has("search")) return "search";
   if (/\/(?:browse|category|categories|collections?|aisle|aisles-online\/browse|dept|department|specials)(?:\/|$)/.test(path)) return "category";

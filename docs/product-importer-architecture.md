@@ -4,7 +4,13 @@ The importer resolves every HTTPS URL through `src/importers/registry.js`. The r
 
 Normalized rows keep shopper item price (`price`) separate from supplemental comparison price (`unit_price` / `comparison_price`). Missing, zero, negative, or non-finite prices remain null. Fields carry confidence and origin metadata; weaker enrichment cannot erase stronger listing data. Listings may discover a product without price, but approval readiness still requires a positive item price.
 
+Product-page extraction is ordered by authority: Walmart's matching internal product state, Schema.org Product data, matching embedded application state, OpenGraph, then conservative visible HTML. Embedded state is allowed to supplement incomplete JSON-LD only when its SKU, GTIN, exact normalized name, or product path identifies the same item; recommendation state is not treated as the primary product. Canonical HTTPS URLs are preferred and common tracking parameters are removed. Placeholder/logo/SVG/tiny image candidates are discarded before preview.
+
+Readiness is a data-quality decision, not a synonym for “name found.” It requires a plausible name, positive non-suspicious price, supported retailer, active store, and valid product source. Conflicting prices, category URLs used as product URLs, and a size expression left unparsed in the product name remain `needs_review`. Missing optional size/image data is disclosed as a warning and never invented. Duplicate candidates are ranked by GTIN/UPC, canonical source URL, retailer SKU, then exact normalized name plus size.
+
 All remote HTML and image requests use the centralized SSRF-safe fetchers: HTTPS only, DNS validation and pinning, redirect revalidation, bounded bodies, timeouts, no credentials/cookies, and conservative rate limits. Adapters never execute retailer JavaScript. Images remain candidates until the existing sanitizer validates, decodes, bounds, and re-encodes them.
+
+HTML fetches support bounded gzip, deflate, and Brotli decoding. Product analysis is limited to registered retailer domains, and the final redirect must remain with the same retailer. Category detail enrichment remains capped at eight requests with concurrency two; failures are isolated per row and summarized in structured `product_importer_analysis` diagnostics.
 
 To add a retailer:
 

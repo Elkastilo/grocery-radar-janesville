@@ -60,6 +60,7 @@ const storeRequestCount = document.querySelector("#storeRequestCount");
 const adminSuggestionsList = document.querySelector("#adminSuggestionsList");
 const suggestionsCount = document.querySelector("#suggestionsCount");
 const productToolsContent = document.querySelector("#productToolsContent");
+const urlParserContent = document.querySelector("#urlParserContent");
 const emailSetupStatus = document.querySelector("#emailSetupStatus");
 const emailTestForm = document.querySelector("#emailTestForm");
 const emailTestTo = document.querySelector("#emailTestTo");
@@ -143,6 +144,8 @@ let allStoreRequests = [];
 let allSuggestions = [];
 let productTools = null;
 let productUrlAnalysis = null;
+let activeUrlParserView = "analyze";
+const urlParserSessionHistory = [];
 let betaReadiness = null;
 let analyticsData = null;
 let sponsorData = null;
@@ -338,6 +341,8 @@ function renderAdminSessionStatus() {
   const operationsTab = document.querySelector('[data-admin-tab="operationsTab"]');
 
   if (!adminSession?.loggedIn) {
+    if (pinForm) pinForm.hidden = false;
+    for (const element of document.querySelectorAll("[data-manager-only], [data-owner-only]")) element.hidden = true;
     adminSessionStatus.innerHTML = '<span class="badge confidence-low">Not logged in as admin</span>';
     if (operationsTab) {
       operationsTab.classList.add("is-restricted");
@@ -347,6 +352,7 @@ function renderAdminSessionStatus() {
   }
 
   const role = adminSession.staff_role || adminSession.admin_role || (adminSession.is_super_admin ? "owner" : adminSession.is_admin ? "manager" : "user");
+  if (pinForm) pinForm.hidden = true;
   const roleLabel = titleCase(role);
   const badgeClass = adminSession.is_super_admin
     ? "confidence-high"
@@ -447,6 +453,8 @@ function openAdminTab(tabId, options = {}) {
     renderPriceImporter();
   }
 
+  if (tabId === "urlParserTab") renderUrlParser();
+
   if (tabId === "operationsTab") {
     loadOperationsCenter();
   }
@@ -474,12 +482,13 @@ const adminTabPaths = {
   productToolsTab: "/admin/products",
   storesTab: "/admin/stores",
   workersTab: "/admin/workers",
+  urlParserTab: "/admin/url-parser",
   advancedTab: "/admin/advanced",
   operationsTab: "/admin/operations",
   pricesTab: "/admin/prices",
   priceImporterTab: "/admin/imports",
   reviewTab: "/admin/reports",
-  usersTab: "/admin/legacy-users",
+  usersTab: "/admin/users",
   feedbackTab: "/admin/feedback",
   announcementsTab: "/admin/announcements",
   analyticsTab: "/admin/analytics",
@@ -774,16 +783,16 @@ async function loadAdminData() {
   renderUsers(allUsers);
   renderStores();
   renderSuggestions();
+  if (!productUrlAnalysis && urlParserContent) urlParserContent.dataset.ready = "";
+  renderUrlParser();
   renderProductTools();
   renderPriceImporter();
-  setAdminMessage("Admin data loaded.", "success");
+  setAdminMessage("");
 }
 
 function renderDashboard(notifications = {}, home = null) {
   if (home) {
     const attention = home.needs_attention || {};
-    const today = home.today || {};
-    const live = home.live || {};
     const role = home.role || "reviewer";
     const isManager = ["owner", "manager"].includes(role);
     const command = operationsCommandData || {};
@@ -791,25 +800,22 @@ function renderDashboard(notifications = {}, home = null) {
     const attentionCount = isManager ? Number(commandAttention.totals?.needs_action || 0) + Number(commandAttention.totals?.system || 0) : Number(attention.proofs_waiting || 0);
     const attentionBreakdown = Object.values(commandAttention.groups || {}).flat().filter((item) => item.count > 0 && item.level !== "waiting").sort((a, b) => b.count - a.count).slice(0, 5);
     const coverage = command.coverage?.catalog || {};
-    const storeGaps = (command.coverage?.stores || []).slice(0, 4);
+    const coveredStores = command.coverage?.stores || [];
+    const storeGaps = coveredStores.slice(0, 5);
+    const maxStorePrices = Math.max(1, ...coveredStores.map((store) => Number(store.current_prices || 0)));
     const since = command.since_last_visit || {};
     adminNotifications.innerHTML = `
-      <section class="admin-home-section">
-        <p class="field-help">Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, ${escapeHtml(home.greeting_name || "")}</p>
-        <h2>${isManager ? `${attentionCount} thing${attentionCount === 1 ? "" : "s"} need attention` : `${attention.proofs_waiting || 0} proofs waiting`}</h2>
-        <div class="card-actions"><button class="primary-button large-primary-action" type="button" data-start-review>${isManager ? "Review Next" : "Start Reviewing"}</button>${isManager ? '<button class="secondary-button" type="button" data-jump-tab="attentionCenterTab">View Attention Center</button>' : ""}</div>
-        ${attentionBreakdown.length ? `<div class="simple-status-list operational-breakdown">${attentionBreakdown.map((item) => `<button class="simple-status-row actionable-row" type="button" data-attention-key="${escapeHtml(item.key)}"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></button>`).join("")}</div>` : '<p class="success">No human-action or system warnings right now.</p>'}
-        ${home.team?.unfinished_reviews ? '<button class="quiet-button" type="button" data-start-review>Continue unfinished review</button>' : ""}
-      </section>
-      <section class="admin-home-section"><h3>Today</h3><div class="simple-status-list">
-        <div class="simple-status-row"><span>Receipts reviewed</span><strong>${escapeHtml(today.receipts_reviewed || 0)}</strong></div>
-        <div class="simple-status-row"><span>Prices approved</span><strong>${escapeHtml(today.prices_approved || 0)}</strong></div>
-        ${isManager ? `<div class="simple-status-row"><span>People using Grocery Radar</span><strong>${escapeHtml(live.active_now || 0)}</strong></div>` : ""}
-      </div></section>
-      ${isManager ? `<section class="admin-home-section"><h3>Since your last visit</h3><div class="simple-status-list">${[["New proofs",since.new_proofs],["Candidate prices prepared",since.candidate_prices],["Prices approved",since.prices_approved],["Proofs needing your decision",since.manager_decisions],["Prices expired",since.prices_expired],["AI jobs failed",since.ai_failed]].map(([label,value]) => `<div class="simple-status-row"><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}</div></section>
-      <section class="admin-home-section"><h3>Catalog coverage</h3><div class="simple-status-list">${[["Products",coverage.products],["Current prices",coverage.current_prices],["Products with no current price",coverage.products_without_current_price],["Missing photos",coverage.products_missing_images],["Missing UPC",coverage.products_missing_upc],["Stale prices",coverage.stale_prices],["Promotions ending today",coverage.promotions_ending_today]].map(([label,value]) => `<div class="simple-status-row"><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}</div></section>
-      <section class="admin-home-section"><h3>Stores needing attention</h3><div class="simple-status-list">${storeGaps.map((store) => `<button class="simple-status-row actionable-row" type="button" data-jump-tab="storesTab"><span>${escapeHtml(store.name)} · ${escapeHtml(store.priority_label)}</span><strong>${store.current_prices} current</strong></button>`).join("") || '<div class="empty-state">No active stores configured.</div>'}</div></section>
-      <section class="admin-home-section"><h3>System</h3><button class="attention-card" type="button" data-jump-tab="operationsTab"><strong>${Number(commandAttention.totals?.system || 0) ? "Needs attention" : "Healthy"}</strong><span>Open system health</span></button></section>` : `<section class="admin-home-section"><h3>Work</h3><div class="manage-grid"><button class="attention-card" type="button" data-jump-tab="workersTab"><strong>My Hours</strong></button><button class="attention-card" type="button" data-open-home-notifications><strong>Notifications</strong></button></div><div class="card-actions"><button class="quiet-button" type="button" data-shift-home="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift-home="take-break">Take Break</button><button class="quiet-button" type="button" data-shift-home="return">Return</button><button class="quiet-button" type="button" data-shift-home="clock-out">Clock Out</button></div></section>`}
+      <section class="dashboard-metrics" aria-label="Operational metrics">${[
+        ["Products", coverage.products], ["Current Prices", coverage.current_prices], ["Missing Photos", coverage.products_missing_images], ["Needs Review", attentionCount], ["Active Stores", coveredStores.length]
+      ].map(([label, value]) => `<article class="metric-card"><span>${label}</span><strong>${Number(value || 0)}</strong></article>`).join("")}</section>
+      <div class="dashboard-two-column">
+        <section class="admin-card dashboard-card"><div class="section-heading"><div><h3>Priority Queues</h3><p>What needs your attention now.</p></div><button class="quiet-button" type="button" data-jump-tab="attentionCenterTab">View all</button></div><div class="simple-status-list">${attentionBreakdown.length ? attentionBreakdown.map((item) => `<button class="simple-status-row actionable-row" type="button" data-attention-key="${escapeHtml(item.key)}"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></button>`).join("") : '<div class="empty-state"><strong>All caught up</strong><span>No priority issues need attention.</span></div>'}</div></section>
+        <section class="admin-card dashboard-card"><div class="section-heading"><div><h3>Store Coverage</h3><p>Current price coverage by store.</p></div><button class="quiet-button" type="button" data-jump-tab="storesTab">Manage</button></div><div class="store-coverage-list">${storeGaps.length ? storeGaps.map((store) => { const current = Number(store.current_prices || 0); const percent = Math.min(100, Math.round((current / maxStorePrices) * 100)); return `<button type="button" data-jump-tab="storesTab"><span><strong>${escapeHtml(store.name)}</strong><small>${current} current prices</small></span><span class="coverage-track"><i style="width:${percent}%"></i></span></button>`; }).join("") : '<div class="empty-state">No active stores configured.</div>'}</div></section>
+      </div>
+      <div class="dashboard-two-column">
+        <section class="admin-card dashboard-card"><h3>Recent Activity</h3><div class="simple-status-list">${[["Candidate prices prepared", since.candidate_prices], ["Prices approved", since.prices_approved], ["New proofs", since.new_proofs], ["Items needing a decision", since.manager_decisions]].map(([label, value]) => `<div class="simple-status-row"><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}</div></section>
+        <section class="admin-card dashboard-card"><h3>Quick Actions</h3><div class="quick-action-list">${isManager ? '<button class="primary-button" type="button" data-jump-tab="urlParserTab">Open URL Parser</button><button class="secondary-button" type="button" data-jump-tab="productToolsTab">Review Products</button><button class="secondary-button" type="button" data-jump-tab="storesTab">Manage Stores</button>' : '<button class="primary-button" type="button" data-jump-tab="inboxTab">Open Inbox</button><button class="secondary-button" type="button" data-jump-tab="workersTab">My Work</button>'}</div>${!isManager ? '<div class="card-actions"><button class="quiet-button" type="button" data-shift-home="clock-in">Clock In</button><button class="quiet-button" type="button" data-shift-home="clock-out">Clock Out</button></div>' : ""}</section>
+      </div>
     `;
     for (const button of adminNotifications.querySelectorAll("[data-jump-tab]")) button.addEventListener("click", () => openAdminTab(button.dataset.jumpTab));
     for (const button of adminNotifications.querySelectorAll("[data-start-review]")) button.addEventListener("click", startReviewNext);
@@ -927,8 +933,13 @@ function renderAttentionCenter() {
   attentionCenterSummary.hidden = filteredQueue;
   attentionSearchDemand.hidden = filteredQueue;
   attentionDuplicateProducts.hidden = filteredQueue;
-  const groupLabels = { proofs: "Proofs", prices: "Prices", products: "Products", import_ai: "Import / AI", system: "System" };
-  attentionCenterSummary.innerHTML = Object.entries(groups).map(([group, entries]) => `<section class="admin-card compact-card"><h3>${escapeHtml(groupLabels[group] || titleCase(group))}</h3><div class="attention-command-grid">${entries.map((item) => `<a class="attention-card attention-level-${escapeHtml(item.level)}" href="${escapeHtml(item.href)}" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}" aria-label="Open ${escapeHtml(item.label)} queue, ${Number(item.count)} item${Number(item.count) === 1 ? "" : "s"}"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${Number(item.count)}</strong><span>${escapeHtml(item.label)}</span><span class="notification-open-affordance" aria-hidden="true">${Number(item.count) ? "Open queue →" : "View empty queue →"}</span></a>`).join("")}</div></section>`).join("") || '<div class="empty-state">Attention data is unavailable.</div>';
+  const entries = Object.entries(groups).flatMap(([group, items]) => items.map((item) => ({ ...item, group }))).filter((item) => Number(item.count) > 0);
+  attentionCenterSummary.innerHTML = `<div class="segmented-tabs attention-filters" role="tablist" aria-label="Attention filters"><button class="is-active" type="button" data-attention-filter="all">All</button><button type="button" data-attention-filter="proofs">Proofs</button><button type="button" data-attention-filter="prices">Prices</button><button type="button" data-attention-filter="duplicates">Duplicates</button><button type="button" data-attention-filter="import_ai">AI</button><button type="button" data-attention-filter="unresolved">Unresolved</button></div><div class="attention-command-grid">${entries.map((item) => `<a class="attention-card attention-level-${escapeHtml(item.level)}" href="${escapeHtml(item.href)}" data-attention-group="${escapeHtml(item.group)}" data-attention-key="${escapeHtml(item.key)}" data-load-attention="${escapeHtml(item.key)}" data-attention-label="${escapeHtml(item.label)}" aria-label="Open ${escapeHtml(item.label)} queue, ${Number(item.count)} items"><span class="badge">${escapeHtml(attentionLevelLabel(item.level))}</span><strong>${Number(item.count)}</strong><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.description || "Open this queue to review pending records.")}</small><span class="notification-open-affordance" aria-hidden="true">Open queue →</span></a>`).join("") || '<div class="empty-state"><strong>All caught up</strong><span>No operational queues currently contain work.</span></div>'}</div>`;
+  for (const button of attentionCenterSummary.querySelectorAll("[data-attention-filter]")) button.addEventListener("click", () => {
+    attentionCenterSummary.querySelectorAll("[data-attention-filter]").forEach((item) => item.classList.toggle("is-active", item === button));
+    const filter = button.dataset.attentionFilter;
+    attentionCenterSummary.querySelectorAll("[data-attention-group]").forEach((card) => { const key = card.dataset.attentionKey || ""; const matches = filter === "all" || (filter === "duplicates" ? key.includes("duplicate") : filter === "unresolved" ? key.includes("unresolved") || card.dataset.attentionGroup === "system" : card.dataset.attentionGroup === filter); card.hidden = !matches; });
+  });
   for (const link of attentionCenterSummary.querySelectorAll("[data-load-attention]")) link.addEventListener("click", (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -936,7 +947,7 @@ function renderAttentionCenter() {
   });
   const demand = operationsCommandData?.search_demand?.could_not_find || [];
   searchDemandList.innerHTML = demand.length ? demand.map((item) => `<article class="inbox-card"><div class="inbox-card-main"><strong>${escapeHtml(item.display_query)}</strong><span>${Number(item.total_searches)} searches · ${Number(item.zero_result_searches)} with no results</span><span>Last searched ${escapeHtml(formatDate(item.last_searched_at))}</span></div><div class="card-actions"><button class="secondary-button" type="button" data-demand-add="${escapeHtml(item.display_query)}">Add Product</button><a class="quiet-button" href="/?q=${encodeURIComponent(item.display_query)}" target="_blank" rel="noopener">Search Existing Catalog</a></div></article>`).join("") : '<div class="empty-state">No zero-result search demand recorded yet.</div>';
-  for (const button of searchDemandList.querySelectorAll("[data-demand-add]")) button.addEventListener("click", () => { openAdminTab("productToolsTab"); window.setTimeout(() => { const input = productToolsContent.querySelector('[data-product-create] [data-product-field="display_name"]'); if (input) { input.value = button.dataset.demandAdd; input.focus(); input.scrollIntoView({ behavior: "smooth", block: "center" }); } }, 100); });
+  for (const button of searchDemandList.querySelectorAll("[data-demand-add]")) button.addEventListener("click", () => { openAdminTab("productToolsTab"); window.setTimeout(() => { const input = productToolsContent.querySelector('[data-product-create] [data-product-field="display_name"]'); const drawer = input?.closest("details"); if (drawer) drawer.open = true; if (input) { input.value = button.dataset.demandAdd; input.focus(); input.scrollIntoView({ behavior: "smooth", block: "center" }); } }, 100); });
   if (!filteredQueue) loadDuplicateProductCandidates();
   if (initialFilter) {
     const item = Object.values(groups).flat().find((entry) => entry.key === initialFilter);
@@ -2623,7 +2634,7 @@ async function loadOperationUserDetail(userId) {
     const target = operationsCenter.querySelector("#operationsUserDetail");
     if (!target) return;
     target.innerHTML = `
-      <article class="admin-card compact-card">
+      <article class="admin-card compact-card" data-store-card data-store-active="${store.active ? "true" : "false"}" data-store-search-text="${escapeHtml([store.name, store.address, store.city, store.store_type].filter(Boolean).join(" ").toLowerCase())}">
         <div class="card-topline">
           <h4>${escapeHtml(detail.user.username)}</h4>
           <span class="badge confidence-medium">${escapeHtml(titleCase(detail.user.role))}</span>
@@ -3569,8 +3580,8 @@ function renderUsers(users) {
 
   adminUsers.innerHTML = users
     .map((user) => `
-      <article class="admin-card compact-card" data-user-card="${user.id}">
-        <h3>${escapeHtml(user.username)}</h3>
+      <article class="admin-card compact-card" data-user-card="${user.id}" data-user-status-value="${escapeHtml(user.account_status || "active")}" data-user-search-text="${escapeHtml([user.username, user.email].filter(Boolean).join(" ").toLowerCase())}">
+        <div class="user-summary-heading"><div><h3>${escapeHtml(user.username)}</h3><span>${escapeHtml(user.email || "No email")}</span></div><span class="badge ${user.account_status === "active" ? "status-ready" : "status-warning"}">${escapeHtml(titleCase(user.account_status || "active"))}</span></div>
         <dl class="details-list">
           <div><dt>User ID</dt><dd>${user.id}</dd></div>
           <div><dt>Email</dt><dd>${escapeHtml(user.email || "No email")}</dd></div>
@@ -3606,6 +3617,7 @@ function renderUsers(users) {
             ${user.hide_from_leaderboard ? "Show leaderboard" : "Hide leaderboard"}
           </button>
           <button class="quiet-button" type="button" data-user-action="force_username_change" data-user-id="${user.id}">Require new username</button>
+          <button class="danger-button" type="button" data-user-action="banned" data-user-id="${user.id}">Ban</button>
           <button class="quiet-button" type="button" data-user-action="approve_username" data-user-id="${user.id}">Approve username</button>
           <button class="quiet-button" type="button" data-user-flag="is_email_verified" data-user-flag-value="${user.email_verified ? "0" : "1"}" data-user-id="${user.id}">
             ${user.email_verified ? "Mark unverified" : "Mark verified"}
@@ -3657,7 +3669,6 @@ function renderUsers(users) {
             <span>Ban note</span>
             <input data-ban-note="${user.id}" type="text" maxlength="500" value="${escapeHtml(user.ban_note || "")}">
           </label>
-          <button class="danger-button" type="button" data-user-action="banned" data-user-id="${user.id}">Ban</button>
         </div>
       </article>
     `)
@@ -3707,6 +3718,18 @@ function renderUsers(users) {
   for (const button of adminUsers.querySelectorAll("[data-delete-user]")) {
     button.addEventListener("click", () => softDeleteUser(button.dataset.deleteUser));
   }
+
+  const applyUserFilters = () => {
+    const query = String(document.querySelector("[data-user-search]")?.value || "").trim().toLowerCase();
+    const status = document.querySelector("[data-user-status]")?.value || "all";
+    adminUsers.querySelectorAll("[data-user-card]").forEach((card) => {
+      card.hidden = Boolean(query && !card.dataset.userSearchText.includes(query)) || (status !== "all" && card.dataset.userStatusValue !== status);
+    });
+  };
+  const search = document.querySelector("[data-user-search]");
+  const status = document.querySelector("[data-user-status]");
+  if (search && search.dataset.bound !== "true") { search.dataset.bound = "true"; search.addEventListener("input", applyUserFilters); }
+  if (status && status.dataset.bound !== "true") { status.dataset.bound = "true"; status.addEventListener("change", applyUserFilters); }
 }
 
 function renderStores() {
@@ -3749,7 +3772,7 @@ function renderStores() {
           <div><dt>Reports</dt><dd>${store.report_count}</dd></div>
           <div><dt>Created</dt><dd>${escapeHtml(formatDate(store.created_at) || "Unknown")}</dd></div>
         </dl>
-        <div class="admin-control-grid" data-store-edit="${store.id}">
+        <details class="technical-details store-edit-drawer"><summary>Edit store</summary><div class="admin-control-grid" data-store-edit="${store.id}">
           <label><span>Name</span><input data-store-field="name" type="text" maxlength="120" value="${escapeHtml(store.name)}"></label>
           <label><span>Address</span><input data-store-field="address" type="text" maxlength="160" value="${escapeHtml(store.address)}"></label>
           <label><span>City</span><input data-store-field="city" type="text" maxlength="80" value="${escapeHtml(store.city)}"></label>
@@ -3758,7 +3781,7 @@ function renderStores() {
           <button class="${store.active ? "danger-button" : "quiet-button"}" type="button" data-store-action="${store.active ? "disable" : "enable"}" data-store-id="${store.id}">
             ${store.active ? "Disable store" : "Re-enable store"}
           </button>
-        </div>
+        </div></details>
       </article>
     `).join("")
     : '<div class="empty-state">No stores yet.</div>';
@@ -3774,6 +3797,15 @@ function renderStores() {
   for (const button of adminStoresList.querySelectorAll("[data-store-save]")) {
     button.addEventListener("click", () => saveStore(button.dataset.storeSave));
   }
+  const applyStoreFilters = () => {
+    const query = String(document.querySelector("[data-store-search]")?.value || "").trim().toLowerCase();
+    const status = document.querySelector("[data-store-status]")?.value || "all";
+    adminStoresList.querySelectorAll("[data-store-card]").forEach((card) => { card.hidden = Boolean(query && !card.dataset.storeSearchText.includes(query)) || (status !== "all" && (card.dataset.storeActive === "true") !== (status === "active")); });
+  };
+  const search = document.querySelector("[data-store-search]");
+  const status = document.querySelector("[data-store-status]");
+  if (search && search.dataset.bound !== "true") { search.dataset.bound = "true"; search.addEventListener("input", applyStoreFilters); }
+  if (status && status.dataset.bound !== "true") { status.dataset.bound = "true"; status.addEventListener("change", applyStoreFilters); }
 }
 
 function renderSuggestions() {
@@ -3815,6 +3847,55 @@ function renderSuggestions() {
   }
 }
 
+function urlParserResultSummary(data = productUrlAnalysis) {
+  if (!data) return { analyzed: 0, ready: 0, review: 0, duplicates: 0, failed: 0 };
+  if (data.url_type !== "category") {
+    const ready = data.extraction?.readiness?.ready === true ? 1 : 0;
+    return { analyzed: 1, ready, review: ready ? 0 : 1, duplicates: (data.duplicate_candidates || []).length ? 1 : 0, failed: 0 };
+  }
+  const products = data.category?.products || [];
+  return {
+    analyzed: products.length,
+    ready: products.filter((item) => item.readiness?.ready === true).length,
+    review: products.filter((item) => item.readiness?.ready !== true).length,
+    duplicates: products.filter((item) => (item.duplicate_candidates || []).length).length,
+    failed: Number(data.category?.failed_count || 0)
+  };
+}
+
+function renderUrlParserHistory() {
+  const history = urlParserContent?.querySelector("[data-url-parser-history]");
+  if (!history) return;
+  history.innerHTML = urlParserSessionHistory.length ? `<div class="admin-table-wrap"><table class="admin-data-table"><thead><tr><th>Date / time</th><th>Retailer / domain</th><th>Analyzed</th><th>Ready</th><th>Review</th><th>Failed</th></tr></thead><tbody>${urlParserSessionHistory.map((job) => `<tr><td>${escapeHtml(formatDate(job.createdAt))}</td><td><strong>${escapeHtml(job.retailer)}</strong><br><span>${escapeHtml(job.domain)}</span></td><td>${job.analyzed}</td><td>${job.ready}</td><td>${job.review}</td><td>${job.failed}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty-state"><strong>No analyses in this session</strong><span>Completed URL analyses will appear here. Persistent importer history is not exposed by the current API.</span></div>';
+}
+
+function setUrlParserView(view) {
+  activeUrlParserView = ["analyze", "results", "history", "settings"].includes(view) ? view : "analyze";
+  document.querySelectorAll("[data-url-parser-view]").forEach((button) => button.classList.toggle("is-active", button.dataset.urlParserView === activeUrlParserView));
+  urlParserContent?.querySelectorAll("[data-url-parser-panel]").forEach((panel) => { panel.hidden = panel.dataset.urlParserPanel !== activeUrlParserView; });
+  if (activeUrlParserView === "history") renderUrlParserHistory();
+}
+
+function renderUrlParser() {
+  if (!urlParserContent || urlParserContent.dataset.ready === "true") { setUrlParserView(activeUrlParserView); return; }
+  urlParserContent.dataset.ready = "true";
+  urlParserContent.innerHTML = `
+    <div class="message" data-product-url-message aria-live="polite"></div>
+    <section data-url-parser-panel="analyze" class="admin-card url-parser-analyze-card">
+      <form class="importer-analysis-card" data-product-url-analyze-form>
+        <label class="importer-url-field"><span>Retailer URL</span><input name="url" type="url" inputmode="url" autocomplete="url" maxlength="2000" required placeholder="https://www.walmart.com/browse/food/..."><small>Product, category, and search URLs from supported retailers.</small></label>
+        <label class="importer-batch-field"><span>Products per batch</span><select name="max_products"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
+        <button class="primary-button importer-analyze-button" type="submit" data-product-url-analyze><span data-analyze-label>Analyze URL</span></button>
+      </form>
+    </section>
+    <section data-url-parser-panel="results" hidden><div class="url-parser-summary" data-url-parser-summary></div><section data-product-url-preview><div class="empty-state"><strong>No results yet</strong><span>Analyze a retailer URL to review extracted products.</span></div></section></section>
+    <section data-url-parser-panel="history" data-url-parser-history hidden></section>
+    <section data-url-parser-panel="settings" hidden><div class="admin-card compact-card"><h3>Parser settings</h3><p class="field-help">Choose the batch size when starting an analysis. Fetch safety, retailer allowlists, timeouts, and enrichment limits are enforced by the server and are intentionally not editable here.</p></div></section>`;
+  urlParserContent.querySelector("[data-product-url-analyze-form]")?.addEventListener("submit", analyzeProductUrl);
+  document.querySelectorAll("[data-url-parser-view]").forEach((button) => button.addEventListener("click", () => setUrlParserView(button.dataset.urlParserView)));
+  setUrlParserView(activeUrlParserView);
+}
+
 function renderProductTools() {
   const products = productTools?.products || [];
   const pendingProducts = productTools?.pending_product_candidates || [];
@@ -3823,38 +3904,38 @@ function renderProductTools() {
   const cartItems = productTools?.popular_cart_items || [];
 
   productToolsContent.innerHTML = `
-    <article class="admin-card importer-shell" data-product-url-importer>
-      <header class="importer-hero"><div><p class="importer-eyebrow">Grocery data tools</p><h3>Product URL Importer</h3><p>Import products from retailer category or search pages.<br>We'll analyze the page and create clean product records.</p></div><span class="importer-review-badge"><span aria-hidden="true">✓</span> Human review required</span></header>
-      <form class="importer-analysis-card" data-product-url-analyze-form>
-        <label class="importer-url-field"><span>Retailer URL</span><input name="url" type="url" inputmode="url" autocomplete="url" maxlength="2000" required placeholder="https://www.walmart.com/browse/food/..."><small>Category or individual product URLs supported</small></label>
-        <label class="importer-batch-field"><span>Products per batch</span><select name="max_products"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
-        <button class="primary-button importer-analyze-button" type="submit" data-product-url-analyze><span data-analyze-label>Analyze URL</span></button>
-      </form>
-      <div class="message" data-product-url-message aria-live="polite"></div>
-      <section data-product-url-preview hidden></section>
-    </article>
-    <article class="admin-card compact-card">
+    <section class="product-metrics" aria-label="Product metrics">
+      ${[["Total Products", products.length], ["Missing Photos", Number(productTools?.missing_photo_count || 0)], ["Missing UPC", products.filter((item) => !item.upc).length], ["Drafts", pendingProducts.length]].map(([label, value]) => `<article class="metric-card"><span>${label}</span><strong>${value}</strong></article>`).join("")}
+    </section>
+    <div class="catalog-toolbar"><label class="catalog-search"><span class="sr-only">Search products</span><input type="search" data-product-search placeholder="Search products, brands, UPCs"></label><div class="card-actions"><button class="secondary-button" type="button" data-open-product-tool="create">New Product</button><button class="secondary-button" type="button" data-open-product-tool="barcode">Scan Barcode</button><button class="primary-button" type="button" data-product-view-link="imports">Bulk Import</button></div></div>
+    <details class="admin-card compact-card admin-tool-drawer" data-product-tool="barcode">
+      <summary>Scan or enter barcode</summary>
       <h3>Scan / Enter Barcode</h3>
       <p class="field-help">Exact UPC-A, EAN-8, EAN-13, and GTIN-14 matches are preferred. Camera scanning is progressive enhancement; manual entry always works.</p>
       <div class="admin-control-grid"><label><span>UPC / barcode</span><input data-barcode-entry inputmode="numeric" autocomplete="off" maxlength="24" aria-label="UPC or barcode"></label><button class="primary-button" type="button" data-barcode-lookup>Find Product</button><button class="secondary-button" type="button" data-barcode-camera>Scan with Camera</button></div>
       <video data-barcode-video playsinline muted hidden aria-label="Barcode camera preview"></video><div data-barcode-result class="message" aria-live="polite"></div>
-    </article>
-    <article class="admin-card compact-card">
+    </details>
+    <details class="admin-card compact-card admin-tool-drawer" data-product-tool="create">
+      <summary>Create a new product</summary>
       <h3>Create product</h3>
       <p class="field-help">${escapeHtml(productTools?.message || "Product tools coming next.")}</p>
       <div class="admin-control-grid" data-product-create>
         ${productFormFields({ status: "active" })}
         <button class="primary-button" type="button" data-create-product>Create product</button>
       </div>
-    </article>
-    <article class="admin-card compact-card">
+    </details>
+    <article class="admin-card compact-card" data-product-catalog>
       <div class="admin-panel-heading"><div><h3>Products</h3><p class="field-help">${Number(productTools?.missing_photo_count || 0)} products need primary photos.</p></div><div class="card-actions"><button class="secondary-button" type="button" data-product-filter="all">All products</button><button class="quiet-button" type="button" data-product-filter="missing">Missing photos</button></div></div>
+      <div class="catalog-table-head" aria-hidden="true"><span>Product</span><span>Category</span><span>Size</span><span>Status</span><span>Photo</span><span>UPC</span></div>
       ${products.length ? products.map((product) => `
-        <details class="technical-details product-admin-row" data-product-admin-card="${product.id}" data-missing-photo="${product.missing_primary_image && (product.status === "active" || product.approved_price_count > 0) ? "true" : "false"}">
+        <details class="technical-details product-admin-row" data-product-admin-card="${product.id}" data-product-status="${escapeHtml(product.status)}" data-product-search-text="${escapeHtml([product.display_name, product.brand_optional, product.category, product.upc].filter(Boolean).join(" ").toLowerCase())}" data-missing-photo="${product.missing_primary_image && (product.status === "active" || product.approved_price_count > 0) ? "true" : "false"}">
           <summary>
-            ${escapeHtml(product.display_name)}
-            <span class="badge confidence-${product.status === "active" ? "high" : "low"}">${escapeHtml(product.status)}</span>
-            <span>${product.approved_price_count} approved · ${product.pending_report_count} pending</span>
+            <span class="catalog-product-name">${product.primary_image ? `<img src="${escapeHtml(product.primary_image.image_url)}" alt="" loading="lazy">` : ""}<span><strong>${escapeHtml(product.display_name)}</strong><small>${escapeHtml(product.brand_optional || "Brand not set")}</small></span></span>
+            <span>${escapeHtml(titleCase(product.category || "other"))}</span>
+            <span>${escapeHtml(product.default_size_text || "Not set")}</span>
+            <span class="badge confidence-${product.status === "active" ? "high" : "low"}">${escapeHtml(titleCase(product.status))}</span>
+            <span>${product.primary_image ? "Ready" : "Missing"}</span>
+            <span>${escapeHtml(product.upc || "Not set")}</span>
           </summary>
           <dl class="details-list">
             <div><dt>Category</dt><dd>${escapeHtml(titleCase(product.category))}</dd></div>
@@ -3881,6 +3962,8 @@ function renderProductTools() {
         </details>
       `).join("") : '<div class="empty-state">No products yet. Create one here or from an unlinked report.</div>'}
     </article>
+    <details class="admin-card compact-card admin-tool-drawer" data-product-catalog-cleanup>
+      <summary>Catalog cleanup tools</summary>
     <article class="admin-card compact-card">
       <h3>Pending product candidates</h3>
       ${pendingProducts.length ? pendingProducts.map((product) => `
@@ -3925,14 +4008,36 @@ function renderProductTools() {
         ${reportEditControls(report, "approved")}
       </article>
     `).join("") : '<div class="empty-state">No approved reports need product info yet.</div>'}
+    </details>
   `;
 
   bindReportActions(productToolsContent);
 
+  const applyProductView = (view) => {
+    const query = String(productToolsContent.querySelector("[data-product-search]")?.value || "").trim().toLowerCase();
+    document.querySelectorAll("[data-product-view]").forEach((button) => button.classList.toggle("is-active", button.dataset.productView === view));
+    for (const card of productToolsContent.querySelectorAll("[data-product-admin-card]")) {
+      const matchesView = view === "all" || (view === "missing" && card.dataset.missingPhoto === "true") || (view === "drafts" && card.dataset.productStatus === "needs_review");
+      card.hidden = !matchesView || Boolean(query && !card.dataset.productSearchText.includes(query));
+    }
+    const importDrawer = document.querySelector("[data-product-import-tools]");
+    const importDirectory = document.querySelector("[data-product-import-directory]");
+    const catalog = productToolsContent.querySelector("[data-product-catalog]");
+    const cleanup = productToolsContent.querySelector("[data-product-catalog-cleanup]");
+    if (importDirectory) importDirectory.hidden = view !== "imports";
+    if (catalog) catalog.hidden = view === "imports";
+    if (cleanup) cleanup.hidden = view === "imports";
+    if (importDrawer && view !== "imports") importDrawer.open = false;
+  };
+  document.querySelectorAll("[data-product-view]").forEach((button) => { button.onclick = () => applyProductView(button.dataset.productView); });
+  productToolsContent.querySelector("[data-product-search]")?.addEventListener("input", () => applyProductView(document.querySelector("[data-product-view].is-active")?.dataset.productView || "all"));
+  productToolsContent.querySelectorAll("[data-open-product-tool]").forEach((button) => button.addEventListener("click", () => { const drawer = productToolsContent.querySelector(`[data-product-tool="${button.dataset.openProductTool}"]`); if (drawer) { drawer.open = true; drawer.scrollIntoView({ behavior: "smooth", block: "start" }); } }));
+  productToolsContent.querySelector("[data-product-view-link]")?.addEventListener("click", () => applyProductView("imports"));
+  const openBulkImages = document.querySelector("[data-open-bulk-images]");
+  if (openBulkImages) openBulkImages.onclick = () => { const drawer = document.querySelector("[data-product-import-tools]"); if (drawer) { drawer.open = true; drawer.scrollIntoView({ behavior: "smooth", block: "start" }); } };
+
   productToolsContent.querySelector("[data-barcode-lookup]")?.addEventListener("click", lookupProductBarcode);
   productToolsContent.querySelector("[data-barcode-camera]")?.addEventListener("click", startProductBarcodeCamera);
-  productToolsContent.querySelector("[data-product-url-analyze-form]")?.addEventListener("submit", analyzeProductUrl);
-
   productToolsContent.querySelector("[data-create-product]").addEventListener("click", createProduct);
 
   for (const button of productToolsContent.querySelectorAll("[data-save-product]")) {
@@ -3990,13 +4095,23 @@ function positiveImporterPrice(value) {
 function importerRowReadiness(row) {
   const values = collectImporterRowData(row);
   const reasons = [];
-  if (!String(values.name || "").trim()) reasons.push("name_required");
-  if (positiveImporterPrice(values.price) === null) reasons.push("price_required");
+  const name = String(values.name || "").replace(/\s+/g, " ").trim();
+  const price = positiveImporterPrice(values.price);
+  const regularPrice = positiveImporterPrice(values.regular_price);
+  if (!name) reasons.push("name_required");
+  else if (/^(?:home|menu|search|search results?|shop|products?|product details?|departments?|categories|weekly ad|sign in|account|cart|learn more|view all|next|previous)$/i.test(name)) reasons.push("name_suspicious");
+  if (price === null) reasons.push("price_required");
+  else if (price > 1000) reasons.push("price_suspicious");
+  if (price !== null && regularPrice !== null && regularPrice <= price) reasons.push("price_conflict");
+  const sizeInName = /\b\d+(?:\.\d+)?\s*(?:fl\s*oz|oz|lb|lbs|g|kg|ml|l|gal|gallon|qt|quart|pt|pint|ct|count|pack)\b/i.test(name);
+  const hasSize = Boolean(String(values.size_text || "").trim()) || (Number(values.item_size) > 0 && Boolean(String(values.unit || "").trim())) || (Number(values.quantity) > 0 && Boolean(String(values.unit || "").trim()));
+  if (sizeInName && !hasSize) reasons.push("size_required");
   if (!Number.isInteger(Number(values.store_id)) || Number(values.store_id) <= 0) reasons.push("store_required");
-  try { if (new URL(String(values.product_url || "")).protocol !== "https:") reasons.push("source_required"); }
+  try { if (new URL(String(values.product_url || values.source_url || "")).protocol !== "https:") reasons.push("source_required"); }
   catch { reasons.push("source_required"); }
+  if (row.dataset.retailerRecognized === "false") reasons.push("retailer_required");
   if (row.dataset.hasDuplicates === "true" && !["use_existing", "create_separate"].includes(values.duplicate_decision)) reasons.push("duplicate_decision_required");
-  return { ready: reasons.length === 0, reasons, imageRequired: false };
+  return { ready: reasons.length === 0, status: reasons.length === 0 ? "ready" : "needs_review", reasons, imageRequired: false };
 }
 
 function refreshImporterRowReadiness(row) {
@@ -4011,10 +4126,12 @@ function refreshImporterRowReadiness(row) {
   if (fetchDetails && !row.classList.contains("is-fetching-details")) fetchDetails.hidden = readiness.ready;
   const required = row.querySelector("[data-required-status]");
   if (required) {
-    const labels = { name_required: "Name required", price_required: "Price required", store_required: "Store required", source_required: "Source required", duplicate_decision_required: "Resolve duplicate" };
+    const labels = { name_required: "Missing product name", name_suspicious: "Product name looks suspicious", price_required: "Missing price", price_suspicious: "Price is unusually large", price_conflict: "Conflicting prices", size_required: "Package size needs review", store_required: "Missing retailer store", source_required: "Invalid product URL", retailer_required: "Unsupported retailer", duplicate_decision_required: "Resolve duplicate" };
     required.textContent = readiness.reasons.map((reason) => labels[reason]).filter(Boolean).join(" · ");
     required.hidden = readiness.ready;
   }
+  const status = row.querySelector("[data-import-status]");
+  if (status) { status.textContent = readiness.ready ? "Ready" : "Needs Review"; status.className = `badge ${readiness.ready ? "status-ready" : "confidence-low"}`; }
   return readiness;
 }
 
@@ -4092,7 +4209,7 @@ function importerField(name, label, value, confidence, options = {}) {
 }
 
 function renderProductUrlPreview(data) {
-  const preview = productToolsContent.querySelector("[data-product-url-preview]");
+  const preview = urlParserContent.querySelector("[data-product-url-preview]");
   const extraction = data.extraction || {};
   const fields = extraction.fields || {};
   const confidence = extraction.confidence || {};
@@ -4100,9 +4217,9 @@ function renderProductUrlPreview(data) {
   productUrlAnalysis = data;
   preview.hidden = false;
   preview.innerHTML = `
-    <div class="admin-panel-heading"><div><h4>Product found</h4><p class="field-help">Review every field. Low and Unknown fields need extra attention.</p></div>${confidenceBadge(extraction.overall_confidence)}</div>
+    <div class="admin-panel-heading"><div><h4>Product found</h4><p class="field-help">Review every field. Low and Unknown fields need extra attention.</p></div><span data-import-status class="badge ${extraction.readiness?.ready ? "status-ready" : "confidence-low"}">${extraction.readiness?.ready ? "Ready" : "Needs Review"}</span>${confidenceBadge(extraction.overall_confidence)}</div>
     <div class="importer-single-preview">${imagePreview ? `<div class="importer-thumb" data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"><img src="${escapeHtml(imagePreview)}" alt="Sanitized preview of ${escapeHtml(fields.name || "detected product")}" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button></div>` : '<div class="importer-thumb"><span class="importer-image-fallback is-visible">No image</span></div>'}<div><strong>${escapeHtml(fields.name || "Detected product")}</strong><span>${escapeHtml([fields.brand, fields.raw_size_text].filter(Boolean).join(" · "))}</span><b>${escapeHtml(importerPriceLabel(fields.price))}</b></div></div>
-    <form class="admin-control-grid" data-product-url-review-form data-import-key="${escapeHtml(importerRequestKey("single"))}">
+    <form class="admin-control-grid" data-product-url-review-form data-import-key="${escapeHtml(importerRequestKey("single"))}" data-retailer-recognized="${extraction.retailer?.recognized === true}">
       ${importerField("name", "Product name", fields.name, confidence.name, { maxlength: 120 })}
       ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
       ${importerField("variant", "Variant", fields.variant, confidence.variant, { maxlength: 80 })}
@@ -4124,22 +4241,33 @@ function renderProductUrlPreview(data) {
       ${importerField("sku", "Retailer SKU", fields.sku, confidence.sku, { maxlength: 100 })}
       ${importerField("availability", "Availability", fields.availability, confidence.availability, { maxlength: 120 })}
       <label><span>Price location confidence</span><select name="price_location_confidence"><option value="unknown" ${extraction.location?.confidence === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${extraction.location?.confidence === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville" ${extraction.location?.confidence === "confirmed_janesville" ? "selected" : ""}>Confirmed Janesville</option></select><small class="field-help">${escapeHtml(extraction.location?.evidence || "No location evidence detected.")}</small></label>
-      <label><span>Source URL</span><input name="source_url" type="url" readonly value="${escapeHtml(extraction.source_url || "")}"></label>
+      <label><span>Source URL</span><input name="source_url" type="url" readonly value="${escapeHtml(fields.product_url || extraction.source_url || "")}"></label>
       <label><span>Detected image source</span><input name="image_source_url" type="url" readonly value="${escapeHtml(fields.image_url || "")}"><small class="field-help">The preview is fetched and re-encoded by Grocery Radar; the browser never loads the retailer image directly.</small></label>
       <label><span>Image provenance</span><span><input name="use_image_source" type="checkbox" value="true" ${fields.image_url ? "checked" : "disabled"}> Import approved image</span><small class="field-help">On approval, Grocery Radar fetches, sanitizes, re-encodes, stores, and attaches this image.</small></label>
       <label><span>Admin notes</span><textarea name="notes" maxlength="500" placeholder="Corrections or review notes"></textarea></label>
-      <div class="card-actions"><button class="primary-button" type="submit">Approve product</button><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button></div>
+      <div class="importer-required-status" data-required-status ${extraction.readiness?.ready ? "hidden" : ""}>${escapeHtml((extraction.readiness?.reasons || []).map((reason) => reason.replace(/_/g, " ")).join(" · ") || "Complete required details")}</div>
+      <div class="card-actions"><button class="primary-button" type="submit" ${extraction.readiness?.ready ? "" : "disabled"}>${extraction.readiness?.ready ? "Approve product" : "Needs Review"}</button><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button></div>
     </form>
     <section class="technical-details"><h4>Source and confidence</h4><p><strong>Retailer:</strong> ${escapeHtml(extraction.retailer?.retailer_name || "Retailer not recognized")} · <strong>Domain:</strong> ${escapeHtml(extraction.retailer?.hostname || "Unknown")}</p><p><strong>Extraction:</strong> ${escapeHtml((extraction.methods_used || []).map(titleCase).join(", ") || "HTML heuristic only")}</p>${(extraction.warnings || []).map((warning) => `<p class="field-help">⚠ ${escapeHtml(warning)}</p>`).join("")}</section>
     <section><h4>Likely duplicates</h4>${(data.duplicate_candidates || []).length ? data.duplicate_candidates.map((candidate) => `<div class="mini-row"><strong>${escapeHtml(candidate.name || `Earlier import #${candidate.import_id}`)}</strong><span>${escapeHtml(titleCase(candidate.type))} · ${escapeHtml(titleCase(candidate.confidence))}</span></div>`).join("") : '<p class="field-help">No likely duplicate was detected. Admin review is still required.</p>'}</section>
   `;
   preview.querySelector("[data-product-url-review-form]")?.addEventListener("submit", saveProductUrlImport);
+  const reviewForm = preview.querySelector("[data-product-url-review-form]");
+  const refreshSingleReadiness = () => {
+    const readiness = refreshImporterRowReadiness(reviewForm);
+    const submit = reviewForm?.querySelector('button[type="submit"]');
+    if (submit) { submit.disabled = !readiness.ready; submit.textContent = readiness.ready ? "Approve product" : "Needs Review"; }
+    const status = preview.querySelector("[data-import-status]");
+    if (status) { status.textContent = readiness.ready ? "Ready" : "Needs Review"; status.className = `badge ${readiness.ready ? "status-ready" : "confidence-low"}`; }
+  };
+  reviewForm?.querySelectorAll("input,select").forEach((control) => control.addEventListener("input", refreshSingleReadiness));
+  refreshSingleReadiness();
   bindImporterPreviewImages(preview);
-  preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
+  preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.innerHTML = '<div class="empty-state"><strong>No results yet</strong><span>Analyze a retailer URL to review extracted products.</span></div>'; setUrlParserView("analyze"); });
 }
 
 function renderCategoryUrlPreview(data) {
-  const preview = productToolsContent.querySelector("[data-product-url-preview]");
+  const preview = urlParserContent.querySelector("[data-product-url-preview]");
   const category = data.category || {};
   productUrlAnalysis = data;
   preview.hidden = false;
@@ -4159,7 +4287,7 @@ function renderCategoryUrlPreview(data) {
     const storeSourceConfirmed = priceSource.type === "retailer_store_page" && priceSource.location_confirmation_method === "retailer_store_page";
     const initialReadiness = product.readiness || {};
     const needsCriticalDetails = positiveImporterPrice(fields.price) === null || !String(fields.name || "").trim();
-    return `<article class="importer-product-row ${selected ? "is-selected" : ""} ${needsCriticalDetails ? "needs-details" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}" data-has-duplicates="${duplicates.length > 0}" data-approval-ready="${initialReadiness.ready === true}" data-store-source-confirmed="${storeSourceConfirmed}">
+    return `<article class="importer-product-row ${selected ? "is-selected" : ""} ${needsCriticalDetails ? "needs-details" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}" data-has-duplicates="${duplicates.length > 0}" data-retailer-recognized="${category.retailer?.recognized === true}" data-approval-ready="${initialReadiness.ready === true}" data-store-source-confirmed="${storeSourceConfirmed}">
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
         <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
@@ -4169,12 +4297,12 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
         <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong>${priceSource.retailer_store_id ? `<span>Store #${escapeHtml(priceSource.retailer_store_id)}</span>` : ""}<span class="importer-location-badge location-${escapeHtml(storeSourceConfirmed ? "confirmed_store_source" : locationValue)}">${storeSourceConfirmed ? "Store source confirmed" : "Store not confirmed"}</span></div>
-        <div class="importer-confidence">${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
+        <div class="importer-confidence"><span data-import-status class="badge ${initialReadiness.ready === true ? "status-ready" : "confidence-low"}">${initialReadiness.ready === true ? "Ready" : "Needs Review"}</span>${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
         <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
         <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
         <div class="importer-row-actions"><button class="primary-button importer-approve-button" type="button" data-approve-import="${index}" ${initialReadiness.ready === true ? "" : "disabled"}>${initialReadiness.ready === true ? "Approve" : "Complete details"}</button>${needsCriticalDetails && fields.product_url ? `<button class="importer-icon-button importer-fetch-details" type="button" data-fetch-import-details="${index}">Fetch details</button>` : ""}${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
       </div>
-      <div class="importer-required-status" data-required-status ${initialReadiness.ready === true ? "hidden" : ""}>${positiveImporterPrice(fields.price) === null ? "Price required" : "Complete required details"}</div>
+      <div class="importer-required-status" data-required-status ${initialReadiness.ready === true ? "hidden" : ""}>${escapeHtml((initialReadiness.reasons || []).map((reason) => reason.replace(/_/g, " ")).join(" · ") || (positiveImporterPrice(fields.price) === null ? "Missing price" : "Complete required details"))}</div>
       <div class="importer-row-result" data-import-result hidden role="status" aria-live="polite"></div>
       <div class="importer-duplicate-resolution" data-duplicate-resolution hidden></div>
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
@@ -4279,14 +4407,14 @@ function renderCategoryUrlPreview(data) {
     refreshImporterRowReadiness(card);
   });
   preview.querySelector("[data-category-import-form]")?.addEventListener("submit", saveCategoryUrlImports);
-  preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.hidden = true; preview.innerHTML = ""; });
+  preview.querySelector("[data-product-url-cancel]")?.addEventListener("click", () => { productUrlAnalysis = null; preview.innerHTML = '<div class="empty-state"><strong>No results yet</strong><span>Analyze a retailer URL to review extracted products.</span></div>'; setUrlParserView("analyze"); });
   updateSummary();
 }
 
 async function analyzeProductUrl(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const message = urlParserContent.querySelector("[data-product-url-message]");
   const button = form.querySelector("[data-product-url-analyze]");
   const buttonLabel = button.querySelector("[data-analyze-label]");
   const urlValue = String(new FormData(form).get("url") || "");
@@ -4300,6 +4428,14 @@ async function analyzeProductUrl(event) {
     const formData = new FormData(form);
     const data = await fetchJson("/api/admin/product-url-imports/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: formData.get("url"), max_products: Number(formData.get("max_products")) }) });
     if (data.url_type === "category") renderCategoryUrlPreview(data); else renderProductUrlPreview(data);
+    const summary = urlParserResultSummary(data);
+    const retailer = data.category?.retailer || data.extraction?.retailer || {};
+    let domain = retailer.hostname || "";
+    try { domain ||= new URL(urlValue).hostname; } catch {}
+    urlParserSessionHistory.unshift({ createdAt: new Date().toISOString(), retailer: retailer.retailer_name || titleCase(retailerLabel), domain, ...summary });
+    const summaryRoot = urlParserContent.querySelector("[data-url-parser-summary]");
+    if (summaryRoot) summaryRoot.innerHTML = [["Analyzed", summary.analyzed], ["Ready", summary.ready], ["Needs Review", summary.review], ["Duplicates", summary.duplicates], ["Failed", summary.failed]].map(([label, value]) => `<article class="metric-card"><span>${label}</span><strong>${value}</strong></article>`).join("");
+    setUrlParserView("results");
     setMessage(message, data.message, "success");
   } catch (error) { setMessage(message, error.message, "error"); }
   finally { button.disabled = false; button.classList.remove("is-loading"); if (buttonLabel) buttonLabel.textContent = "Analyze URL"; }
@@ -4516,7 +4652,7 @@ async function approveCategoryImportCard(card, options = {}) {
   if (card.classList.contains("is-approved") || card.classList.contains("is-approving")) return true;
   const form = card.closest("[data-category-import-form]");
   const category = productUrlAnalysis?.category || {};
-  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const message = urlParserContent.querySelector("[data-product-url-message]");
   const readiness = refreshImporterRowReadiness(card);
   if (!readiness.ready) {
     const missingPrice = readiness.reasons.includes("price_required");
@@ -4574,7 +4710,7 @@ async function saveCategoryUrlImports(event) {
   const form = event.currentTarget;
   const category = productUrlAnalysis?.category || {};
   const selectedCards = [...form.querySelectorAll("[data-category-product]")].filter((card) => card.querySelector('input[name="selected"]')?.checked && !card.classList.contains("is-approved"));
-  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const message = urlParserContent.querySelector("[data-product-url-message]");
   if (!selectedCards.length) { setMessage(message, "Select at least one unapproved product.", "warning"); return; }
   const readyCards = selectedCards.filter((card) => importerRowReadiness(card).ready);
   const incomplete = selectedCards.filter((card) => !readyCards.includes(card));
@@ -4605,11 +4741,11 @@ async function saveCategoryUrlImports(event) {
 async function saveProductUrlImport(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const message = productToolsContent.querySelector("[data-product-url-message]");
+  const message = urlParserContent.querySelector("[data-product-url-message]");
   const values = Object.fromEntries(new FormData(form).entries());
   const extraction = productUrlAnalysis?.extraction || {};
-  if (positiveImporterPrice(values.price) === null) { setMessage(message, "Price unavailable — correct it before approval.", "warning"); return; }
-  if (!values.store_id) { setMessage(message, "Choose the exact Grocery Radar store before approval.", "warning"); return; }
+  const readiness = importerRowReadiness(form);
+  if (!readiness.ready) { refreshImporterRowReadiness(form); setMessage(message, "Needs Review — correct the listed product details before approval.", "warning"); return; }
   const candidates = productUrlAnalysis?.duplicate_candidates || [];
   let duplicateDecision = "";
   let existingProductId = "";
@@ -7267,6 +7403,11 @@ function setupAdminTabs() {
   for (const button of document.querySelectorAll("[data-jump-tab]")) {
     button.addEventListener("click", () => goToAdminTab(button.dataset.jumpTab));
   }
+  document.querySelector("[data-toggle-store-form]")?.addEventListener("click", (event) => {
+    adminStoreForm.hidden = !adminStoreForm.hidden;
+    event.currentTarget.textContent = adminStoreForm.hidden ? "Add Store" : "Close Form";
+    if (!adminStoreForm.hidden) adminStoreForm.querySelector("input")?.focus();
+  });
 }
 
 async function boot() {
@@ -7296,6 +7437,7 @@ function parseAdminRoute() {
     filter: params.get("filter") || "",
     priceImportBatchId: params.get("batch") || ""
   };
+  if (path === "/admin/legacy-users") return { tabId: "usersTab" };
   const attention = path.match(/^\/admin\/attention\/([^/]+)(?:\/(\d+))?$/);
   if (attention) return { tabId: "attentionCenterTab", filter: attentionKeyFromSlug(decodeURIComponent(attention[1])), attentionRecordId: attention[2] || "" };
   const proof = path.match(/^\/admin\/inbox\/(\d+)$/);

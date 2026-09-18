@@ -96,7 +96,10 @@ async function main() {
     const legacyAttention = await owner.get("/admin.html?tab=attentionCenterTab&filter=missing_photo");
     assert.equal(legacyAttention.response.status, 308);
     assert.equal(legacyAttention.response.headers.get("location"), "/admin/attention/missing-photo");
-    const adminPaths = ["/admin", "/admin/inbox", "/admin/attention", "/admin/attention/missing-photo", "/admin/attention/missing-current-price", "/admin/attention/missing-upc", "/admin/attention/stale-price", "/admin/attention/location-unresolved", "/admin/attention/family-missing", "/admin/attention/substitute-uncertain", "/admin/attention/reported-price/123", "/admin/products", "/admin/stores", "/admin/workers", "/admin/advanced"];
+    const legacyUrlParser = await owner.get("/admin.html?tab=urlParserTab");
+    assert.equal(legacyUrlParser.response.status, 308);
+    assert.equal(legacyUrlParser.response.headers.get("location"), "/admin/url-parser");
+    const adminPaths = ["/admin", "/admin/inbox", "/admin/attention", "/admin/attention/missing-photo", "/admin/attention/missing-current-price", "/admin/attention/missing-upc", "/admin/attention/stale-price", "/admin/attention/location-unresolved", "/admin/attention/family-missing", "/admin/attention/substitute-uncertain", "/admin/attention/reported-price/123", "/admin/products", "/admin/stores", "/admin/workers", "/admin/users", "/admin/url-parser", "/admin/settings", "/admin/advanced"];
     for (const pathname of adminPaths) {
       const result = await owner.get(pathname);
       assert.equal(result.response.status, 200, pathname);
@@ -116,10 +119,10 @@ async function main() {
     assert.match(adminSource, /attentionKeyFromSlug/);
     assert.match(adminSource, /attentionRecordId: attention\[2\] \|\| ""/);
     assert.match(adminSource, /normalizeLegacyAdminLocation\(\);\s*boot\(\)/, "Legacy Admin URL normalization must happen before asynchronous boot data loads.");
-    for (const [label, href] of [["Home", "/admin"], ["Inbox", "/admin/inbox"], ["Attention Center", "/admin/attention"], ["Products", "/admin/products"], ["Stores", "/admin/stores"]]) {
+    for (const [label, href] of [["Dashboard", "/admin"], ["Inbox", "/admin/inbox"], ["Attention Center", "/admin/attention"], ["Products", "/admin/products"], ["Stores", "/admin/stores"], ["Workers", "/admin/workers"], ["Users", "/admin/users"], ["URL Parser", "/admin/url-parser"], ["Settings", "/admin/settings"]]) {
       assert.match(adminHtml, new RegExp(`<a[^>]+href="${href.replaceAll("/", "\\/")}"[^>]*>${label}<\\/a>`), `${label} must be a semantic route link.`);
     }
-    assert.match(adminSource, /href="\$\{escapeHtml\(item\.href\)\}" data-load-attention/, "Attention cards must retain their canonical semantic href.");
+    assert.match(adminSource, /href="\$\{escapeHtml\(item\.href\)\}"[^>]+data-load-attention/, "Attention cards must retain their canonical semantic href.");
     assert.match(adminSource, /href="\$\{escapeHtml\(openHref\)\}" data-attention-open/, "Attention records must retain semantic record hrefs.");
     const routingStart = adminSource.indexOf("const adminTabPaths =");
     const routingEnd = adminSource.indexOf("function openAttentionQueue", routingStart);

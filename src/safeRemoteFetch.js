@@ -1,6 +1,7 @@
 const dns = require("dns").promises;
 const https = require("https");
 const net = require("net");
+const zlib = require("zlib");
 
 const DEFAULTS = Object.freeze({
   connectTimeoutMs: 5000,
@@ -120,7 +121,7 @@ function requestHttps(url, addresses, options) {
     const finish = (callback, value) => { if (!settled) { settled = true; callback(value); } };
     const request = https.request(url, {
       method: "GET",
-      headers: { "User-Agent": options.userAgent, Accept: "text/html,application/xhtml+xml", "Accept-Encoding": "identity" },
+      headers: { "User-Agent": options.userAgent, Accept: "text/html,application/xhtml+xml", "Accept-Encoding": "gzip, deflate, br" },
       lookup: (_hostname, lookupOptions, callback) => {
         const family = typeof lookupOptions === "object" ? lookupOptions.family : 0;
         const eligible = family ? addresses.filter((entry) => entry.family === family) : addresses;
@@ -139,12 +140,29 @@ function requestHttps(url, addresses, options) {
         }
         chunks.push(chunk);
       });
-      response.on("end", () => finish(resolve, { statusCode: response.statusCode || 0, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("end", () => finish(resolve, { statusCode: response.statusCode || 0, headers: response.headers, body: Buffer.concat(chunks) }));
     });
     request.setTimeout(options.connectTimeoutMs, () => request.destroy(new SafeFetchError("REQUEST_TIMEOUT", "The retailer did not respond in time.", 504)));
     request.on("error", (error) => finish(reject, error));
     request.end();
   });
+}
+
+function decodeHtmlBody(body, headers, maxBytes) {
+  if (!Buffer.isBuffer(body)) return String(body || "");
+  const encoding = String(headers?.["content-encoding"] || "").trim().toLowerCase();
+  try {
+    const options = { maxOutputLength: maxBytes };
+    const decoded = encoding === "gzip" ? zlib.gunzipSync(body, options)
+      : encoding === "deflate" ? zlib.inflateSync(body, options)
+        : encoding === "br" ? zlib.brotliDecompressSync(body, options) : body;
+    if (decoded.length > maxBytes) throw new SafeFetchError("RESPONSE_TOO_LARGE", "The retailer response exceeded the importer size limit.", 413);
+    return decoded.toString("utf8");
+  } catch (error) {
+    if (error instanceof SafeFetchError) throw error;
+    if (error?.code === "ERR_BUFFER_TOO_LARGE") throw new SafeFetchError("RESPONSE_TOO_LARGE", "The retailer response exceeded the importer size limit.", 413);
+    throw new SafeFetchError("INVALID_CONTENT_ENCODING", "The retailer returned an unreadable compressed response.", 422);
+  }
 }
 
 function requestHttpsBuffer(url, addresses, options) {
@@ -200,8 +218,9 @@ async function safeRemoteFetch(input, custom = {}) {
       if (result.statusCode < 200 || result.statusCode >= 300) throw new SafeFetchError("REMOTE_STATUS", `Retailer returned HTTP ${result.statusCode}.`, 502);
       const contentType = String(result.headers?.["content-type"] || "").toLowerCase();
       if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new SafeFetchError("UNSUPPORTED_CONTENT", "The URL did not return an HTML product page.", 422);
-      if (Buffer.byteLength(result.body || "") > options.maxBytes) throw new SafeFetchError("RESPONSE_TOO_LARGE", "The retailer response exceeded the importer size limit.", 413);
-      return { url: current.toString(), statusCode: result.statusCode, contentType, body: result.body || "" };
+      const body = decodeHtmlBody(result.body, result.headers, options.maxBytes);
+      if (Buffer.byteLength(body) > options.maxBytes) throw new SafeFetchError("RESPONSE_TOO_LARGE", "The retailer response exceeded the importer size limit.", 413);
+      return { url: current.toString(), statusCode: result.statusCode, contentType, body };
     }
     throw new SafeFetchError("TOO_MANY_REDIRECTS", "The retailer redirected too many times.", 502);
   };
@@ -211,6 +230,9 @@ async function safeRemoteFetch(input, custom = {}) {
       operation(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new SafeFetchError("REQUEST_TIMEOUT", "The retailer request exceeded the total time limit.", 504)), options.totalTimeoutMs); })
     ]);
+  } catch (error) {
+    if (error instanceof SafeFetchError) throw error;
+    throw new SafeFetchError("FETCH_FAILED", "Could not retrieve the retailer page.", 502);
   } finally { clearTimeout(timer); }
 }
 
@@ -258,7 +280,10 @@ async function safeRemoteBufferFetch(input, custom = {}) {
       operation(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new SafeFetchError("REQUEST_TIMEOUT", "The remote image request exceeded the total time limit.", 504)), options.totalTimeoutMs); })
     ]);
+  } catch (error) {
+    if (error instanceof SafeFetchError) throw error;
+    throw new SafeFetchError("FETCH_FAILED", "Could not retrieve the remote image.", 502);
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch };
+module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, decodeHtmlBody, safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch };

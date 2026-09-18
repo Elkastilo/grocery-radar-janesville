@@ -7,33 +7,32 @@
     <link rel="stylesheet" href="/style.css">
   </head>
   <body class="admin-body">
-    <header class="admin-header">
-      <div>
-        <span class="admin-only-badge">Admin only</span>
-        <h1>Grocery Radar Admin</h1>
-        <div id="adminSessionStatus" class="admin-session-status" aria-live="polite"></div>
-      </div>
-      <div class="admin-header-actions">
-        <button id="adminNotificationBell" class="notification-bell" type="button" aria-label="Open notifications" aria-expanded="false">🔔<span id="adminBellCount" class="tab-count-badge" hidden>0</span></button>
-        <a class="admin-link" href="/">Back to app</a>
-      </div>
-      <div id="adminV2NotificationPanel" class="admin-notification-panel" hidden aria-label="Admin notifications"></div>
-    </header>
-
     <main class="admin-shell">
       <aside class="admin-sidebar" aria-label="Admin sections">
-        <div class="admin-nav-group"><span>Work</span>
-          <a class="admin-tab is-active" href="/admin" data-admin-tab="dashboardTab">Home</a>
+        <a class="admin-brand" href="/admin" aria-label="Grocery Radar Admin home"><span class="admin-brand-mark" aria-hidden="true">GR</span><span><strong>Grocery Radar</strong><small>Admin</small></span></a>
+        <nav class="admin-nav-group" aria-label="Primary admin navigation">
+          <a class="admin-tab is-active" href="/admin" data-admin-tab="dashboardTab">Dashboard</a>
           <a class="admin-tab" href="/admin/inbox" data-admin-tab="inboxTab">Inbox</a>
           <a class="admin-tab" href="/admin/attention" data-admin-tab="attentionCenterTab" data-manager-only>Attention Center</a>
           <a class="admin-tab" href="/admin/products" data-admin-tab="productToolsTab" data-manager-only>Products</a>
           <a class="admin-tab" href="/admin/stores" data-admin-tab="storesTab" data-manager-only>Stores</a>
           <a id="workersNavButton" class="admin-tab" href="/admin/workers" data-admin-tab="workersTab">Workers</a>
-          <a class="admin-tab" href="/admin/advanced" data-admin-tab="advancedTab" data-manager-only>Advanced</a>
-        </div>
+          <a class="admin-tab" href="/admin/users" data-admin-tab="usersTab" data-manager-only>Users</a>
+          <a class="admin-tab" href="/admin/url-parser" data-admin-tab="urlParserTab" data-manager-only>URL Parser</a>
+          <a class="admin-tab" href="/admin/settings" data-admin-tab="settingsTab" data-manager-only>Settings</a>
+        </nav>
+        <div class="admin-sidebar-footer"><strong>Grocery Radar</strong><span>Better data. Healthier communities.</span></div>
       </aside>
 
       <section class="admin-workspace">
+        <header class="admin-header">
+          <div><p class="admin-context-label">Admin workspace</p><div id="adminSessionStatus" class="admin-session-status" aria-live="polite"></div></div>
+          <div class="admin-header-actions">
+            <button id="adminNotificationBell" class="notification-bell" type="button" aria-label="Open notifications" aria-expanded="false"><span aria-hidden="true">●</span><span id="adminBellCount" class="tab-count-badge" hidden>0</span></button>
+            <a class="admin-link" href="/">View shopper site</a>
+          </div>
+          <div id="adminV2NotificationPanel" class="admin-notification-panel" hidden aria-label="Admin notifications"></div>
+        </header>
         <form id="adminPinForm" class="admin-toolbar">
           <label>
             <span>Admin PIN fallback</span>
@@ -43,13 +42,9 @@
         </form>
 
         <div id="adminMessage" class="message" aria-live="polite"></div>
-        <div class="message info">
-          This page is private admin-only. Public app is at <a href="/" target="_blank" rel="noopener noreferrer">Grocery Radar Janesville</a>.
-        </div>
-
         <section id="dashboardTab" class="admin-panel is-active">
           <div class="admin-panel-heading">
-            <h2>Dashboard</h2>
+            <div><h2>Dashboard</h2><p class="field-help">A clean overview of store coverage, product health, and work that needs attention.</p></div>
           </div>
           <div id="adminNotifications" class="notification-grid"></div>
         </section>
@@ -60,7 +55,7 @@
         </section>
 
         <section id="attentionCenterTab" class="admin-panel" data-manager-only>
-          <div class="admin-panel-heading"><div><h2>Attention Center</h2><p class="field-help">Human decisions, cleanup work, waiting jobs, and system warnings are separated by urgency.</p></div><button id="attentionRefreshButton" class="secondary-button" type="button">Refresh</button></div>
+          <div class="admin-panel-heading"><div><h2>Attention Center</h2><p class="field-help">Review the highest-priority issues first.</p></div><button id="attentionRefreshButton" class="secondary-button" type="button">Refresh</button></div>
           <div id="attentionCenterMessage" class="message" aria-live="polite"></div>
           <div id="attentionCenterSummary" class="admin-list"></div>
           <section id="attentionQueueWorkspace" class="admin-card compact-card" aria-labelledby="attentionDetailTitle"><div class="admin-panel-heading"><div><h3 id="attentionDetailTitle" tabindex="-1">Select an issue</h3><p id="attentionQueueStatus" class="field-help" role="status" aria-live="polite">Every counter opens the matching work queue.</p></div><a id="attentionQueueBack" class="quiet-button" href="/admin/attention" hidden>All attention categories</a></div><div id="attentionCenterDetails" class="admin-list" aria-live="polite" aria-busy="false"></div></section>
@@ -94,20 +89,19 @@
           <div id="workersList" class="admin-list"></div>
         </section>
 
-        <section id="advancedTab" class="admin-panel" data-manager-only>
-          <div class="admin-panel-heading"><div><h2>Advanced</h2><p class="field-help">Occasional management, diagnostics, imports, and system tools.</p></div></div>
-          <div class="manage-grid">
-            <button class="attention-card" type="button" data-jump-tab="operationsTab" data-owner-only><strong>Operations</strong><span>Health, backups, audit, diagnostics</span></button>
-            <button class="attention-card" type="button" data-jump-tab="pricesTab"><strong>Prices</strong><span>Approved and disputed prices</span></button>
-            <button class="attention-card" type="button" data-jump-tab="reviewTab"><strong>Reports</strong><span>Legacy report queue</span></button>
-            <button class="attention-card" type="button" data-jump-tab="priceImporterTab"><strong>Importer Tools</strong><span>Manual and legacy intake</span></button>
-            <button class="attention-card" type="button" data-jump-tab="feedbackTab"><strong>Feedback</strong><span>Community messages</span></button>
-            <button class="attention-card" type="button" data-jump-tab="announcementsTab"><strong>Announcements</strong><span>Service messaging</span></button>
-            <button class="attention-card" type="button" data-jump-tab="analyticsTab"><strong>Analytics</strong><span>Aggregate usage</span></button>
-            <button class="attention-card" type="button" data-jump-tab="usersTab"><strong>Legacy / Historical Users</strong><span>Historical account administration</span></button>
-            <button class="attention-card" type="button" data-jump-tab="emailTab" data-owner-only><strong>Email</strong><span>Diagnostics and setup</span></button>
-            <button class="attention-card" type="button" data-jump-tab="settingsTab" data-owner-only><strong>Settings</strong><span>Owner controls</span></button>
+        <section id="urlParserTab" class="admin-panel" data-manager-only>
+          <div class="admin-panel-heading"><div><h2>URL Parser</h2><p class="field-help">Import retailer product or category URLs to analyze and create product records.</p></div></div>
+          <div class="segmented-tabs admin-section-tabs" role="tablist" aria-label="URL Parser sections">
+            <button class="is-active" type="button" data-url-parser-view="analyze">Analyze URL</button>
+            <button type="button" data-url-parser-view="results">Results</button>
+            <button type="button" data-url-parser-view="history">History</button>
+            <button type="button" data-url-parser-view="settings">Settings</button>
           </div>
+          <div id="urlParserContent"></div>
+        </section>
+
+        <section id="advancedTab" class="admin-panel" data-manager-only>
+          <div class="admin-panel-heading"><div><h2>Imports & AI</h2><p class="field-help">Specialized catalog import and AI processing controls.</p></div><button class="quiet-button" type="button" data-jump-tab="settingsTab">Back to Settings</button></div>
           <section class="admin-card" data-manager-only>
             <h3>Catalog Import</h3>
             <p class="field-help">Create product drafts from CSV or JSON. Nothing publishes automatically.</p>
@@ -745,9 +739,11 @@
 
         <section id="usersTab" class="admin-panel">
           <div class="admin-panel-heading">
-            <h2>Users</h2>
+            <div><h2>Users</h2><p class="field-help">Search accounts, review activity, and apply moderation actions.</p></div>
           </div>
-          <section class="admin-card compact-card">
+          <div class="catalog-toolbar"><label class="catalog-search"><span class="sr-only">Search users</span><input type="search" data-user-search placeholder="Search username or email"></label><label><span class="sr-only">Account status</span><select data-user-status><option value="all">All statuses</option><option value="active">Active</option><option value="warning">Warning</option><option value="suspended">Suspended</option><option value="banned">Banned</option><option value="deactivated">Deactivated</option></select></label></div>
+          <details class="admin-card compact-card admin-tool-drawer">
+            <summary>Username moderation</summary>
             <div class="card-topline">
               <h3>Username Moderation</h3>
               <span class="badge confidence-medium">Leaderboards</span>
@@ -767,8 +763,9 @@
               </div>
             </form>
             <div id="usernameBlockedPhrases" class="admin-list compact-list"></div>
-          </section>
-          <section class="admin-card compact-card">
+          </details>
+          <details class="admin-card compact-card admin-tool-drawer">
+            <summary>Admin access cleanup</summary>
             <div class="admin-panel-heading">
               <div>
                 <h3>Admin Access Cleanup</h3>
@@ -776,16 +773,17 @@
               </div>
             </div>
             <div id="adminAccessCleanup" class="admin-list compact-list"></div>
-          </section>
+          </details>
           <div id="adminUsers" class="admin-list"></div>
         </section>
 
         <section id="storesTab" class="admin-panel">
           <div class="admin-panel-heading">
-            <h2>Stores</h2>
+            <div><h2>Stores</h2><p class="field-help">Manage store coverage, status, and community requests.</p></div>
             <span id="storeRequestCount" class="admin-count"></span>
           </div>
-          <form id="adminStoreForm" class="admin-toolbar">
+          <div class="catalog-toolbar"><label class="catalog-search"><span class="sr-only">Search stores</span><input type="search" data-store-search placeholder="Search stores or cities"></label><label><span class="sr-only">Store status</span><select data-store-status><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select></label><button class="secondary-button" type="button" data-toggle-store-form>Add Store</button></div>
+          <form id="adminStoreForm" class="admin-toolbar" hidden>
             <label>
               <span>Store name</span>
               <input name="name" type="text" maxlength="120" required>
@@ -821,9 +819,12 @@
 
         <section id="productToolsTab" class="admin-panel">
           <div class="admin-panel-heading">
-            <h2>Cart / Product Tools</h2>
+            <div><h2>Products</h2><p class="field-help">Browse and maintain the Grocery Radar product catalog.</p></div>
           </div>
-          <section class="admin-card compact-card">
+          <div class="segmented-tabs admin-section-tabs" role="tablist" aria-label="Product sections"><button class="is-active" type="button" data-product-view="all">Catalog</button><button type="button" data-product-view="missing">Missing Photos</button><button type="button" data-product-view="drafts">Drafts</button><button type="button" data-product-view="imports">Imports</button></div>
+          <section class="settings-directory" data-product-import-directory hidden><button class="settings-link-card" type="button" data-jump-tab="advancedTab"><strong>Catalog CSV / JSON</strong><span>Create product drafts from a structured catalog file.</span></button><button class="settings-link-card" type="button" data-open-bulk-images><strong>Bulk Product Images</strong><span>Upload owned or authorized product photos.</span></button></section>
+          <details class="admin-card compact-card admin-tool-drawer" data-product-import-tools>
+            <summary>Bulk image import</summary>
             <div class="card-topline"><div><h3>Bulk Product Images</h3><p class="field-help">Upload owned or authorized product photos separately from private price evidence.</p></div><span class="badge confidence-medium">Private drafts</span></div>
             <form id="bulkProductImagesForm" class="form-grid" enctype="multipart/form-data">
               <label><span>Batch title</span><input name="title" maxlength="160"></label>
@@ -834,7 +835,7 @@
             </form>
             <div id="bulkProductImagesMessage" class="message" aria-live="polite"></div>
             <div id="bulkProductImagesResults" class="admin-list"></div>
-          </section>
+          </details>
           <div id="productToolsContent" class="admin-list"></div>
         </section>
 
@@ -950,10 +951,18 @@
 
         <section id="settingsTab" class="admin-panel">
           <div class="admin-panel-heading">
-            <h2>Settings</h2>
+            <div><h2>Settings</h2><p class="field-help">Manage access, notifications, imports, and system tools.</p></div>
+          </div>
+          <div class="settings-directory">
+            <button class="settings-link-card" type="button" data-jump-tab="usersTab"><strong>Admin Access</strong><span>Accounts, roles, and username moderation</span></button>
+            <button class="settings-link-card" type="button" data-jump-tab="announcementsTab"><strong>Notifications</strong><span>Service messages and announcements</span></button>
+            <button class="settings-link-card" type="button" data-jump-tab="advancedTab"><strong>AI Processing & Imports</strong><span>Catalog drafts and AI processing limits</span></button>
+            <button class="settings-link-card" type="button" data-jump-tab="priceImporterTab"><strong>Price Imports</strong><span>Manual and bulk price intake</span></button>
+            <button class="settings-link-card" type="button" data-jump-tab="operationsTab" data-owner-only><strong>System</strong><span>Health, backups, and audit tools</span></button>
+            <button class="settings-link-card" type="button" data-jump-tab="emailTab" data-owner-only><strong>Diagnostics</strong><span>Email setup and delivery diagnostics</span></button>
           </div>
           <div class="admin-card compact-card">
-            <h3>Safety settings</h3>
+            <h3>Data safety</h3>
             <p class="field-help">Admin approval remains required before user reports appear publicly. Pending stores, suggestions, and reports stay hidden until reviewed.</p>
             <div class="flag-row">
               <span>No fake data</span>

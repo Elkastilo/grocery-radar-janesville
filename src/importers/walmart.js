@@ -1,17 +1,13 @@
 "use strict";
 
-const { parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle } = require("../productImporter");
+const { parsePrice, normalizeRetailerText, normalizePackage, packageFromProductTitle, normalizeProductUrl, normalizeImageUrl } = require("../productImporter");
 
 function clean(value, limit = 500) {
   return normalizeRetailerText(value, limit);
 }
 
 function safeUrl(value, baseUrl) {
-  if (!String(value || "").trim()) return "";
-  try {
-    const url = new URL(String(value || ""), baseUrl);
-    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : "";
-  } catch { return ""; }
+  return normalizeProductUrl(value, baseUrl);
 }
 
 function firstWalmartPrice(candidates) {
@@ -55,6 +51,7 @@ function walmartPriceData(item) {
   return {
     current,
     regular: regular.value !== null && (current.value === null || regular.value > current.value) ? regular : { value: null, confidence: "unknown", source: "", raw: "" },
+    priceConflict: regular.value !== null && current.value !== null && regular.value <= current.value,
     unit
   };
 }
@@ -112,7 +109,7 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
   const retailerDescription = clean(item.shortDescription || item.description, 500);
   const productUrl = safeUrl(item.canonicalUrl || item.productUrl || item.productPageUrl || item.url, pageUrl);
   const image = item.imageInfo || {};
-  const imageSource = safeUrl(image.thumbnailUrl || image.imageUrl || image.allImages?.[0]?.url || item.imageUrl || item.image, pageUrl);
+  const imageSource = normalizeImageUrl(image.thumbnailUrl || image.imageUrl || image.allImages?.[0]?.url || item.imageUrl || item.image, pageUrl);
   const name = clean(item.name || item.title || item.productName, 200);
   if (!name) return null;
   return {
@@ -121,6 +118,7 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
       brand: clean(item.brand || item.brandName || item.brandInfo?.name, 100),
       price: currentPrice,
       regular_price: prices.regular.value,
+      price_conflict: prices.priceConflict,
       quantity: packageInfo.quantity,
       item_size: packageInfo.item_size,
       unit: packageInfo.unit,
@@ -165,7 +163,7 @@ function normalizeWalmartItem(item, pageUrl, relevance = "high", extractionMetho
     overall_confidence: currentPrice === null ? "medium" : "high",
     category_relevance: relevance,
     selected_by_default: relevance !== "low",
-    warnings: [currentPrice === null ? "Price was not present in the serialized listing item." : "", imageSource ? "" : "Image source was not present.", relevance === "medium" ? "This item came from a less-certain Walmart listing collection and needs category review." : ""].filter(Boolean)
+    warnings: [currentPrice === null ? "Price was not present in the serialized listing item." : "", prices.priceConflict ? "The source exposed conflicting current and regular prices." : "", imageSource ? "" : "Image source was not present.", relevance === "medium" ? "This item came from a less-certain Walmart listing collection and needs category review." : ""].filter(Boolean)
   };
 }
 
@@ -236,6 +234,36 @@ function extractWalmartCategory(jsonValues, context) {
   return products;
 }
 
+function extractWalmartProduct(jsonValues, pageUrl) {
+  let expectedId = "";
+  let expectedPath = "";
+  try {
+    const parsed = new URL(pageUrl);
+    expectedPath = parsed.pathname.replace(/\/$/, "");
+    expectedId = expectedPath.match(/\/ip\/(?:[^/]+\/)?(\d+)(?:\/|$)/i)?.[1] || "";
+  } catch {}
+  const candidates = [];
+  let visited = 0;
+  const walk = (value, depth = 0, excluded = false) => {
+    if (!value || typeof value !== "object" || depth > 28 || visited > 100000) return;
+    visited += 1;
+    if (!Array.isArray(value) && walmartShape(value) && !excludedListingItem(value)) {
+      const itemId = clean(value.usItemId || value.itemId || value.sku, 100);
+      let candidatePath = "";
+      try { candidatePath = new URL(value.canonicalUrl || value.productUrl || value.productPageUrl || value.url || "", pageUrl).pathname.replace(/\/$/, ""); } catch {}
+      const exactId = Boolean(expectedId && itemId === expectedId);
+      const exactPath = Boolean(expectedPath && candidatePath === expectedPath);
+      if (exactId || exactPath || (!expectedId && !excluded)) candidates.push({ value, exactId, exactPath });
+    }
+    if (Array.isArray(value)) value.forEach((entry) => walk(entry, depth + 1, excluded));
+    else for (const [key, entry] of Object.entries(value)) walk(entry, depth + 1, excluded || EXCLUDED_MODULE_PATTERN.test(key));
+  };
+  jsonValues.forEach((value) => walk(value));
+  const selected = candidates.sort((left, right) => Number(right.exactId) - Number(left.exactId) || Number(right.exactPath) - Number(left.exactPath))[0];
+  if (!selected || (expectedId && !selected.exactId && !selected.exactPath)) return null;
+  return normalizeWalmartItem(selected.value, pageUrl, "high", "walmart_product_state");
+}
+
 function parseWalmartStoreUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -290,4 +318,4 @@ function mergeWalmartStorePrices(discoveryProducts = [], storeProducts = [], sto
   });
 }
 
-module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, normalizeWalmartItem, walmartPriceData, walmartPackageData, walmartSellingData, findSearchResults, listingCollections, excludedListingItem, parseWalmartStoreUrl, walmartProductIdentity, exactWalmartProductMatch, mergeWalmartStorePrices };
+module.exports = { EXCLUDED_MODULE_PATTERN, extractWalmartCategory, extractWalmartProduct, normalizeWalmartItem, walmartPriceData, walmartPackageData, walmartSellingData, findSearchResults, listingCollections, excludedListingItem, parseWalmartStoreUrl, walmartProductIdentity, exactWalmartProductMatch, mergeWalmartStorePrices };
