@@ -8,6 +8,7 @@ const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, pac
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
 const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
+const { extractAldiCollection } = require("../src/importers/aldi");
 const { STATUS, retailerDefinition, classifyUrl, resolveAdapter, supportMatrix } = require("../src/importers/registry");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("../src/retailerStores");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
@@ -80,6 +81,14 @@ async function main() {
   assert.equal(aldi.fields.regular_price, 4.79);
   assert.equal(aldi.retailer.store_id, 2);
   assert.ok(aldi.warnings.some((warning) => warning.includes("malformed")));
+
+  const aldiCollection = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-werther", evergreenUrl: "aldi-werther-hard-caramel", name: "Werther's Original Hard Caramel", size: "8.1 oz", legacyId: "0001", brandName: "Werther's Original", viewSection: { itemImage: { url: "https://images.example.test/werther.jpg" } }, price: { viewSection: { itemCard: { priceString: "$3.05", fullPriceString: "reg. $3.85" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-price-drops", 10).products[0];
+  assert.equal(aldiCollection.fields.name, "Werther's Original Hard Caramel");
+  assert.equal(aldiCollection.fields.price, 3.05);
+  assert.equal(aldiCollection.fields.regular_price, 3.85);
+  assert.equal(aldiCollection.fields.raw_size_text, "8.1 oz");
+  assert.equal(aldiCollection.fields.image_url, "https://images.example.test/werther.jpg");
+  assert.equal(aldiCollection.fields.product_url, "https://www.aldi.us/store/aldi/products/aldi-werther-hard-caramel");
 
   const woodmans = extractProduct(fixture("woodmans-opengraph.html"), "https://shopwoodmans.com/store/eggs", stores);
   assert.equal(woodmans.fields.name, "Woodman's Large Eggs, 12 ct");

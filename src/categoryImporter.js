@@ -180,7 +180,7 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
   const maxProducts = CATEGORY_PRODUCT_CHOICES.includes(Number(requestedMax)) ? Number(requestedMax) : 25;
   const deadline = Date.now() + CATEGORY_PARSE_TIMEOUT_MS;
   const warnings = [];
-  const context = { pageUrl, maxProducts, deadline, timeoutError: () => new CategoryImportError("CATEGORY_PARSE_TIMEOUT", "Category page parsing exceeded the safety time limit."), aldiCollection: options.aldiCollection };
+  const context = { pageUrl, maxProducts, deadline, timeoutError: () => new CategoryImportError("CATEGORY_PARSE_TIMEOUT", "Category page parsing exceeded the safety time limit."), aldiCollection: options.aldiCollection, aldiContext: options.aldiContext || options.aldiCollection?.__aldiContext };
   const values = scriptJson(html, warnings, deadline);
   const resolution = resolveAdapter(pageUrl);
   const adapter = resolution.adapter;
@@ -199,12 +199,23 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
   if (Date.now() > deadline) throw context.timeoutError();
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
+  const aldiStore = adapter === "aldi" && context.aldiContext?.city && context.aldiContext.city.toLowerCase() === "janesville"
+    ? stores.find((store) => /aldi/i.test(String(store.name || "")) && String(store.city || "").toLowerCase() === "janesville")
+    : null;
+  if (aldiStore) {
+    retailer.store_id = aldiStore.id;
+    retailer.retailer_name = aldiStore.name;
+  }
   const walmartStore = parseWalmartStoreUrl(pageUrl);
-  const location = walmartStore ? { confidence: "confirmed_store_source", evidence: `The retailer URL establishes Walmart store #${walmartStore.retailer_store_id}.` } : categoryLocation(html, matchedStore);
+  const location = walmartStore
+    ? { confidence: "confirmed_store_source", evidence: `The retailer URL establishes Walmart store #${walmartStore.retailer_store_id}.` }
+    : adapter === "aldi" && aldiStore && context.aldiContext?.postalCode === "53546"
+      ? { confidence: "confirmed_janesville", evidence: `ALDI GraphQL storefront matched ${aldiStore.name} with postal code ${context.aldiContext.postalCode}.` }
+      : categoryLocation(html, matchedStore || aldiStore);
   products = products.map((item) => {
     const price = parsePrice(item.fields?.price);
     const priceSource = walmartStore && price !== null ? { type: "retailer_store_page", url: pageUrl, retailer_store_id: walmartStore.retailer_store_id, retailer_store_slug: walmartStore.retailer_store_slug, retrieved_at: new Date().toISOString(), location_confirmation_method: "retailer_store_page" } : null;
-    const readiness = productImportReadiness(item.fields, { storeId: retailer.store_id, retailerRecognized: retailer.recognized, categorySourceUrl: pageUrl, locationConfirmable: Boolean(retailer.store_id) });
+    const readiness = productImportReadiness(item.fields, { storeId: retailer.store_id, retailerRecognized: retailer.recognized, categorySourceUrl: pageUrl, locationConfirmable: location.confidence === "confirmed_janesville" || location.confidence === "confirmed_store_source" });
     return { ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, warnings: [...new Set([...(item.warnings || []), ...readiness.warnings])], readiness };
   });
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);

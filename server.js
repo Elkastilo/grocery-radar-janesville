@@ -17880,7 +17880,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       try {
         const request = aldiCollectionRequest(fetched.body, fetched.url, maxProducts, crypto.randomUUID());
         const apiResponse = await safeRemoteJsonFetch(request.url, { headers: { Cookie: responseCookies(fetched.headers), Referer: fetched.url } });
-        aldiCollection = JSON.parse(apiResponse.body);
+        aldiCollection = { ...JSON.parse(apiResponse.body), __aldiContext: request.context };
       } catch (error) {
         console.warn("product_importer_aldi_collection_unavailable", JSON.stringify({ host: new URL(fetched.url).hostname, stage: "collection_api", code: error.code || "FETCH_FAILED", status: error.statusCode || null }));
       }
