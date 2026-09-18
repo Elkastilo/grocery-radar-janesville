@@ -97,6 +97,25 @@ async function main() {
   assert.equal(aldiPerPound.fields.unit, "lb");
   assert.equal(aldiPerPound.fields.unit_price_unit, "lb");
 
+  const aldiRich = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-rich-beef", name: "Ground Beef", size: "per lb", department: "Fresh Meat", price: { viewSection: { badge: { offerLabelString: "10% off" }, itemCard: { priceString: "$11.69 /pkg (est.)", fullPriceString: "reg. $12.99", pricingUnitString: "$8.99 / lb", pricingUnitSecondaryString: "About 1.3 lb / package" }, itemDetails: { saleDisclaimerString: "Price Drop Ends Soon" } }, parWeightTotalEstimate: { viewSection: { parWeightString: "About 1.3 lb each" } } }, quantityAttributes: { parWeight: { quantity: 1.3, measurementUnit: { costUnit: "lb" } }, viewSection: { parWeightDisplayString: "About 1.3 lb / package" } }, availability: { available: true, stockLevel: "highlyInStock", viewSection: { stockLevelLabelString: "Many in stock" } }, viewSection: { trackingProperties: { product_category_name: "Ground Beef" } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
+  assert.equal(aldiRich.fields.price, 11.69);
+  assert.equal(aldiRich.fields.regular_price, 12.99);
+  assert.equal(aldiRich.fields.per_lb_price, 8.99);
+  assert.equal(aldiRich.fields.estimated_package_price, 11.69);
+  assert.equal(aldiRich.fields.package_weight, 1.3);
+  assert.equal(aldiRich.fields.package_weight_unit, "lb");
+  assert.equal(aldiRich.fields.discount_percent, 10);
+  assert.equal(aldiRich.fields.stock_status, "Many in stock");
+  assert.equal(aldiRich.fields.department, "Fresh Meat");
+  assert.equal(aldiRich.metadata.category, "Ground Beef");
+  assert.equal(aldiRich.metadata.subcategory, "Ground Beef");
+  assert.equal(aldiRich.metadata.product_type, "Ground Beef");
+  assert.equal(aldiRich.metadata.availability_note, "Price Drop Ends Soon");
+
+  const aldiCategoryOnly = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-ball-tip", name: "Ball Tip Steak", viewSection: { trackingProperties: { product_category_name: "Ball Tip Steak" } }, price: { viewSection: { itemCard: { priceString: "$9.99 / lb", pricePerUnitString: "$9.99 / lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
+  assert.equal(aldiCategoryOnly.fields.department, "");
+  assert.equal(aldiCategoryOnly.metadata.product_type, "Ball Tip Steak");
+
   const aldiCategory = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
     aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53546", city: "Janesville" } }
   });
