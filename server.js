@@ -9,13 +9,14 @@ const bcrypt = require("bcrypt");
 const session = require("express-session");
 const multer = require("multer");
 const { securityHeaders } = require("./src/securityHeaders");
-const { safeRemoteFetch, safeCategoryRemoteFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
+const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteJsonFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
 const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
 const { findDuplicateCandidates, parsePrice, normalizeRetailerText } = require("./src/productImporter");
 const { MAX_CATEGORY_PRODUCTS, CATEGORY_PRODUCT_CHOICES, CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, CategoryImportError, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, analyzePage, mergeWalmartStoreAnalysis } = require("./src/categoryImporter");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("./src/retailerStores");
 const { parseWalmartStoreUrl } = require("./src/importers/walmart");
 const { resolveAdapter, supportMatrix } = require("./src/importers/registry");
+const { aldiCollectionRequest } = require("./src/importers/aldi");
 let tesseract = null;
 let sharp = null;
 
@@ -25,6 +26,11 @@ function logImporterDiagnostic(analysis, fetched, status, errorCode = "") {
   const payload = { retailer: analysis?.retailer?.retailer || resolveAdapter(fetched?.url).retailer?.id || "unknown", adapter: analysis?.adapter || resolveAdapter(fetched?.url).adapter, page_type: analysis?.page_type || analysis?.url_type || "unsupported", status, final_host: finalUrl?.hostname || "", final_path: finalUrl?.pathname || "", response_bytes: Buffer.byteLength(fetched?.body || ""), collection_selected: analysis?.products?.[0]?.methods_used?.[0] || "", products_discovered: Number(analysis?.detected_count || analysis?.products?.length || 0), priced_count: Number(analysis?.priced_count || 0), enrichment_attempted: Number(analysis?.enrichment?.attempted || 0), enrichment_succeeded: Number(analysis?.enrichment?.updated || 0), enrichment_failed: Number(analysis?.enrichment?.failed || 0), error_code: errorCode };
   const method = status === "ok" ? "info" : "warn";
   console[method]("product_importer_analysis", JSON.stringify(payload));
+}
+
+function responseCookies(headers = {}) {
+  const values = headers["set-cookie"] || headers["Set-Cookie"] || [];
+  return (Array.isArray(values) ? values : [values]).map((value) => String(value).split(";", 1)[0]).filter(Boolean).join("; ");
 }
 
 try {
@@ -17869,7 +17875,17 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       response.status(400).json({ error: "The retailer redirected to an unsupported destination.", code: "UNSUPPORTED_REDIRECT" });
       return;
     }
-    const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts });
+    let aldiCollection = null;
+    if (finalResolution.adapter === "aldi" && hint === "category") {
+      try {
+        const request = aldiCollectionRequest(fetched.body, fetched.url, maxProducts, crypto.randomUUID());
+        const apiResponse = await safeRemoteJsonFetch(request.url, { headers: { Cookie: responseCookies(fetched.headers), Referer: fetched.url } });
+        aldiCollection = JSON.parse(apiResponse.body);
+      } catch (error) {
+        console.warn("product_importer_aldi_collection_unavailable", JSON.stringify({ host: new URL(fetched.url).hostname, stage: "collection_api", code: error.code || "FETCH_FAILED", status: error.statusCode || null }));
+      }
+    }
+    const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts, aldiCollection });
     const adapterResolution = resolveAdapter(fetched.url);
     if (analysis.url_type === "category") {
       const selectedStore = stores.find((store) => Number(store.id) === Number(analysis.retailer?.store_id));

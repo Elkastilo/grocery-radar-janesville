@@ -121,7 +121,7 @@ function requestHttps(url, addresses, options) {
     const finish = (callback, value) => { if (!settled) { settled = true; callback(value); } };
     const request = https.request(url, {
       method: "GET",
-      headers: { "User-Agent": options.userAgent, Accept: "text/html,application/xhtml+xml", "Accept-Encoding": "gzip, deflate, br" },
+      headers: { "User-Agent": options.userAgent, Accept: options.accept || "text/html,application/xhtml+xml", "Accept-Encoding": "gzip, deflate, br", ...(options.headers || {}) },
       lookup: (_hostname, lookupOptions, callback) => {
         const family = typeof lookupOptions === "object" ? lookupOptions.family : 0;
         const eligible = family ? addresses.filter((entry) => entry.family === family) : addresses;
@@ -217,10 +217,11 @@ async function safeRemoteFetch(input, custom = {}) {
       if ([401, 403, 429].includes(result.statusCode)) throw new SafeFetchError("RETAILER_BLOCKED", "Retailer blocked automated retrieval.", 422);
       if (result.statusCode < 200 || result.statusCode >= 300) throw new SafeFetchError("REMOTE_STATUS", `Retailer returned HTTP ${result.statusCode}.`, 502);
       const contentType = String(result.headers?.["content-type"] || "").toLowerCase();
-      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new SafeFetchError("UNSUPPORTED_CONTENT", "The URL did not return an HTML product page.", 422);
+      const allowedContentTypes = options.allowedContentTypes || ["text/html", "application/xhtml+xml"];
+      if (contentType && !allowedContentTypes.some((type) => contentType.includes(type))) throw new SafeFetchError("UNSUPPORTED_CONTENT", "The URL returned an unsupported response type.", 422);
       const body = decodeHtmlBody(result.body, result.headers, options.maxBytes);
       if (Buffer.byteLength(body) > options.maxBytes) throw new SafeFetchError("RESPONSE_TOO_LARGE", "The retailer response exceeded the importer size limit.", 413);
-      return { url: current.toString(), statusCode: result.statusCode, contentType, body };
+      return { url: current.toString(), statusCode: result.statusCode, contentType, headers: result.headers, body };
     }
     throw new SafeFetchError("TOO_MANY_REDIRECTS", "The retailer redirected too many times.", 502);
   };
@@ -238,6 +239,10 @@ async function safeRemoteFetch(input, custom = {}) {
 
 function safeCategoryRemoteFetch(input, custom = {}) {
   return safeRemoteFetch(input, { ...CATEGORY_DEFAULTS, ...custom });
+}
+
+function safeRemoteJsonFetch(input, custom = {}) {
+  return safeRemoteFetch(input, { ...CATEGORY_DEFAULTS, accept: "application/json", allowedContentTypes: ["application/json", "application/graphql-response+json", "text/json"], ...custom });
 }
 
 async function safeRemoteBufferFetch(input, custom = {}) {
@@ -286,4 +291,4 @@ async function safeRemoteBufferFetch(input, custom = {}) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, decodeHtmlBody, safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch };
+module.exports = { DEFAULTS, CATEGORY_DEFAULTS, SafeFetchError, isPublicAddress, validateRemoteUrl, resolveAndValidate, decodeHtmlBody, safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteJsonFetch, safeRemoteBufferFetch };

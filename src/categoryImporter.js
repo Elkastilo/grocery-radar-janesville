@@ -5,6 +5,7 @@ const { extractWalmartCategory, parseWalmartStoreUrl, mergeWalmartStorePrices } 
 const { resolveAdapter } = require("./importers/registry");
 const { extractGenericListing } = require("./importers/generic");
 const { extractFestivalListing } = require("./importers/festival");
+const { extractAldiCollection } = require("./importers/aldi");
 
 const MAX_CATEGORY_PRODUCTS = 50;
 const CATEGORY_PRODUCT_CHOICES = Object.freeze([10, 25, 50]);
@@ -174,18 +175,20 @@ function categoryLocation(html, matchedStore) {
   return { confidence: "unknown", evidence: matchedStore?.city?.toLowerCase() === "janesville" ? "A Janesville store can be selected, but the listing did not establish that its prices apply to that location." : "The listing did not establish a Janesville price location." };
 }
 
-function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25) {
+function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, options = {}) {
   const html = String(htmlInput || "");
   const maxProducts = CATEGORY_PRODUCT_CHOICES.includes(Number(requestedMax)) ? Number(requestedMax) : 25;
   const deadline = Date.now() + CATEGORY_PARSE_TIMEOUT_MS;
   const warnings = [];
-  const context = { pageUrl, maxProducts, deadline, timeoutError: () => new CategoryImportError("CATEGORY_PARSE_TIMEOUT", "Category page parsing exceeded the safety time limit.") };
+  const context = { pageUrl, maxProducts, deadline, timeoutError: () => new CategoryImportError("CATEGORY_PARSE_TIMEOUT", "Category page parsing exceeded the safety time limit."), aldiCollection: options.aldiCollection };
   const values = scriptJson(html, warnings, deadline);
   const resolution = resolveAdapter(pageUrl);
   const adapter = resolution.adapter;
   let products = [];
   if (adapter === "walmart") {
     products = extractWalmartCategory(values, context);
+  } else if (adapter === "aldi" && context.aldiCollection) {
+    products = extractAldiCollection(context.aldiCollection, pageUrl, maxProducts).products;
   } else if (adapter === "festival") {
     products = extractFestivalListing(html, context);
   } else {
@@ -227,10 +230,13 @@ function mergeWalmartStoreAnalysis(discovery, storeAnalysis, expectedStore) {
 
 function analyzePage(html, pageUrl, stores = [], options = {}) {
   const hint = categoryUrlHint(pageUrl);
-  if (hint === "category") return extractCategory(html, pageUrl, stores, options.maxProducts);
+  if (hint === "category") {
+    const categoryOptions = options.aldiCollection ? { aldiCollection: options.aldiCollection } : {};
+    return extractCategory(html, pageUrl, stores, options.maxProducts, categoryOptions);
+  }
   const product = extractProduct(html, pageUrl, stores);
   if (product.fields?.name && (product.fields.price !== undefined || product.fields.sku || product.fields.gtin)) return { url_type: "product", extraction: product };
-  const category = extractCategory(html, pageUrl, stores, options.maxProducts);
+  const category = extractCategory(html, pageUrl, stores, options.maxProducts, options.aldiCollection ? { aldiCollection: options.aldiCollection } : {});
   return category.products.length > 1 ? category : { url_type: "unsupported", source_url: pageUrl, warnings: [...(category.warnings || []), "The page was not recognized as an individual product or product listing."] };
 }
 

@@ -4,7 +4,7 @@ const STATUS = Object.freeze({ SUPPORTED: "SUPPORTED", PARTIAL: "PARTIAL", UNAVA
 
 const RETAILERS = Object.freeze([
   { id: "walmart", label: "Walmart", domains: ["walmart.com"], adapter: "walmart", capabilities: { product: STATUS.SUPPORTED, category: STATUS.SUPPORTED, search: STATUS.SUPPORTED, pagination: STATUS.SUPPORTED, store_price: STATUS.SUPPORTED } },
-  { id: "aldi", label: "ALDI", domains: ["aldi.us", "shop.aldi.us"], adapter: "generic", capabilities: { product: STATUS.PARTIAL, category: STATUS.PARTIAL, search: STATUS.PARTIAL, pagination: STATUS.PARTIAL, store_price: STATUS.UNAVAILABLE } },
+  { id: "aldi", label: "ALDI", domains: ["aldi.us", "shop.aldi.us"], adapter: "aldi", capabilities: { product: STATUS.PARTIAL, category: STATUS.SUPPORTED, search: STATUS.PARTIAL, pagination: STATUS.PARTIAL, store_price: STATUS.UNAVAILABLE } },
   { id: "woodmans", label: "Woodman's", domains: ["woodmans-food.com", "shopwoodmans.com"], adapter: "generic", capabilities: { product: STATUS.PARTIAL, category: STATUS.UNAVAILABLE, search: STATUS.UNAVAILABLE, pagination: STATUS.UNAVAILABLE, store_price: STATUS.UNAVAILABLE } },
   { id: "target", label: "Target", domains: ["target.com"], adapter: "generic", capabilities: { product: STATUS.PARTIAL, category: STATUS.UNAVAILABLE, search: STATUS.UNAVAILABLE, pagination: STATUS.UNAVAILABLE, store_price: STATUS.UNAVAILABLE } },
   { id: "festival", label: "Festival Foods", domains: ["festivalfoods.net", "cart.festivalfoods.net"], adapter: "festival", capabilities: { product: STATUS.PARTIAL, category: STATUS.SUPPORTED, search: STATUS.SUPPORTED, pagination: STATUS.SUPPORTED, store_price: STATUS.UNAVAILABLE } },
