@@ -106,6 +106,11 @@ function normalizeAldiItem(item, pageUrl) {
   const regularPrice = itemRegularPrice(item, price);
   const regularCandidate = itemRegularPriceCandidate(item);
   const priceConflict = regularCandidate !== null && price !== null && regularCandidate <= price;
+  const unitPriceText = item?.price?.viewSection?.itemCard?.pricePerUnitString || item?.price?.viewSection?.itemDetails?.pricePerUnitString || "";
+  const unitMatch = String(unitPriceText).match(/\/\s*(lb|lbs|oz|fl\s*oz|kg|g|ml|l|count|ct|each)\b/i);
+  const sourceUnit = unitMatch ? unitMatch[1].toLowerCase().replace(/\s+/g, " ").replace(/^lbs$/, "lb") : "";
+  const quantity = packageInfo.quantity ?? 1;
+  const unit = packageInfo.unit || sourceUnit || "each";
   const productId = normalizeRetailerText(item.productId || item.id, 100);
   const slug = normalizeRetailerText(item.evergreenUrl, 180);
   const slugSuffix = slug && slug.startsWith(`${productId}-`) ? slug.slice(productId.length + 1) : slug;
@@ -118,24 +123,24 @@ function normalizeAldiItem(item, pageUrl) {
       price,
       regular_price: regularPrice,
       price_conflict: priceConflict,
-      quantity: packageInfo.quantity,
+      quantity,
       item_size: packageInfo.item_size,
-      unit: packageInfo.unit,
+      unit,
       package_type: packageInfo.package_type,
       raw_size_text: packageInfo.raw_text,
       sell_quantity: null,
       sell_unit: "",
       retailer_description: "",
       raw_price_text: normalizeRetailerText(itemPrice(item), 120),
-      unit_price: parsePrice(item?.price?.viewSection?.itemCard?.pricePerUnitString || item?.price?.viewSection?.itemDetails?.pricePerUnitString),
-      unit_price_unit: "",
+      unit_price: parsePrice(unitPriceText),
+      unit_price_unit: sourceUnit || unit,
       image_url: image,
       product_url: productUrl,
       sku: productId,
       gtin: normalizeRetailerText(item.legacyId || item.legacyV3Id, 40),
       availability: normalizeRetailerText(item.availability?.available === false ? "out of stock" : "in stock", 40)
     },
-    confidence: { name: "high", brand: item.brandName ? "high" : "unknown", price: price === null ? "unknown" : "high", regular_price: regularPrice === null ? "unknown" : "high", raw_size_text: rawSize ? "high" : "unknown", quantity: rawSize ? "high" : "unknown", item_size: packageInfo.item_size !== null ? "high" : "unknown", unit: packageInfo.unit ? "high" : "unknown", package_type: packageInfo.package_type ? "high" : "unknown", image_url: image ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: productId ? "high" : "unknown", gtin: item.legacyId ? "medium" : "unknown" },
+    confidence: { name: "high", brand: item.brandName ? "high" : "unknown", price: price === null ? "unknown" : "high", regular_price: regularPrice === null ? "unknown" : "high", raw_size_text: rawSize ? "high" : "unknown", quantity: rawSize ? "high" : "medium", item_size: packageInfo.item_size !== null ? "high" : "unknown", unit: packageInfo.unit || sourceUnit ? "high" : "medium", package_type: packageInfo.package_type ? "high" : "unknown", image_url: image ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: productId ? "high" : "unknown", gtin: item.legacyId ? "medium" : "unknown" },
     field_origins: { name: "aldi_graphql_collection", brand: item.brandName ? "aldi_graphql_collection" : "", price: price === null ? "" : "aldi_graphql_collection", regular_price: regularPrice === null ? "" : "aldi_graphql_collection", raw_size_text: rawSize ? "aldi_graphql_collection" : "", image_url: image ? "aldi_graphql_collection" : "", product_url: "aldi_graphql_collection", sku: productId ? "aldi_graphql_collection" : "", gtin: item.legacyId ? "aldi_graphql_collection" : "" },
     methods_used: ["aldi_graphql_collection"], overall_confidence: price === null ? "medium" : "high", category_relevance: "high", selected_by_default: true,
     warnings: [price === null ? "Price was not present in the ALDI collection data." : "", priceConflict ? "The ALDI source exposed conflicting current and regular prices." : "", image ? "" : "Image source was not present."].filter(Boolean)

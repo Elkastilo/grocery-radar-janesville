@@ -199,7 +199,10 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
   if (Date.now() > deadline) throw context.timeoutError();
   const retailer = detectRetailer(pageUrl, "", stores);
   const matchedStore = stores.find((store) => String(store.id) === String(retailer.store_id));
-  const aldiStore = adapter === "aldi" && context.aldiContext?.city && context.aldiContext.city.toLowerCase() === "janesville"
+  const aldiContext = context.aldiContext || {};
+  const aldiPostalMatchesJanesville = String(aldiContext.postalCode || "") === "53546";
+  const aldiCityMatchesJanesville = !aldiContext.city || String(aldiContext.city).toLowerCase() === "janesville";
+  const aldiStore = adapter === "aldi" && aldiPostalMatchesJanesville && aldiCityMatchesJanesville
     ? stores.find((store) => /aldi/i.test(String(store.name || "")) && String(store.city || "").toLowerCase() === "janesville")
     : null;
   if (aldiStore) {
@@ -209,8 +212,8 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
   const walmartStore = parseWalmartStoreUrl(pageUrl);
   const location = walmartStore
     ? { confidence: "confirmed_store_source", evidence: `The retailer URL establishes Walmart store #${walmartStore.retailer_store_id}.` }
-    : adapter === "aldi" && aldiStore && context.aldiContext?.postalCode === "53546"
-      ? { confidence: "confirmed_janesville", evidence: `ALDI GraphQL storefront matched ${aldiStore.name} with postal code ${context.aldiContext.postalCode}.` }
+    : adapter === "aldi" && aldiStore && aldiPostalMatchesJanesville
+      ? { confidence: "confirmed_janesville", evidence: `ALDI GraphQL storefront matched ${aldiStore.name} with postal code ${aldiContext.postalCode}.` }
       : categoryLocation(html, matchedStore || aldiStore);
   products = products.map((item) => {
     const price = parsePrice(item.fields?.price);

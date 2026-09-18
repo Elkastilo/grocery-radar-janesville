@@ -87,8 +87,26 @@ async function main() {
   assert.equal(aldiCollection.fields.price, 3.05);
   assert.equal(aldiCollection.fields.regular_price, 3.85);
   assert.equal(aldiCollection.fields.raw_size_text, "8.1 oz");
+  assert.equal(aldiCollection.fields.quantity, 1, "ALDI package quantity defaults to one sell unit, never zero, when the source omits it.");
+  assert.equal(aldiCollection.fields.unit, "oz");
   assert.equal(aldiCollection.fields.image_url, "https://images.example.test/werther.jpg");
   assert.equal(aldiCollection.fields.product_url, "https://www.aldi.us/store/aldi/products/aldi-werther-hard-caramel");
+
+  const aldiPerPound = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", 10).products[0];
+  assert.equal(aldiPerPound.fields.quantity, 1, "ALDI per-pound products use one pound as the unit basis.");
+  assert.equal(aldiPerPound.fields.unit, "lb");
+  assert.equal(aldiPerPound.fields.unit_price_unit, "lb");
+
+  const aldiCategory = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
+    aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53546", city: "Janesville" } }
+  });
+  assert.equal(aldiCategory.location.confidence, "confirmed_janesville");
+  assert.equal(aldiCategory.retailer.store_id, 2);
+  assert.equal(aldiCategory.products[0].readiness.ready, true, "ALDI readiness must agree with confirmed store context and a valid per-pound basis.");
+  const aldiUnconfirmed = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
+    aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53703", city: "Madison" } }
+  });
+  assert.equal(aldiUnconfirmed.products[0].readiness.ready, false, "ALDI rows must not be ready when the storefront is not confirmed for Janesville.");
 
   const woodmans = extractProduct(fixture("woodmans-opengraph.html"), "https://shopwoodmans.com/store/eggs", stores);
   assert.equal(woodmans.fields.name, "Woodman's Large Eggs, 12 ct");

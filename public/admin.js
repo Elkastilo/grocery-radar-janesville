@@ -4110,6 +4110,7 @@ function importerRowReadiness(row) {
   try { if (new URL(String(values.product_url || values.source_url || "")).protocol !== "https:") reasons.push("source_required"); }
   catch { reasons.push("source_required"); }
   if (row.dataset.retailerRecognized === "false") reasons.push("retailer_required");
+  if (row.dataset.retailerId === "aldi" && row.dataset.storeSourceConfirmed !== "true") reasons.push("location_confirmation_required");
   if (row.dataset.hasDuplicates === "true" && !["use_existing", "create_separate"].includes(values.duplicate_decision)) reasons.push("duplicate_decision_required");
   return { ready: reasons.length === 0, status: reasons.length === 0 ? "ready" : "needs_review", reasons, imageRequired: false };
 }
@@ -4126,7 +4127,7 @@ function refreshImporterRowReadiness(row) {
   if (fetchDetails && !row.classList.contains("is-fetching-details")) fetchDetails.hidden = readiness.ready;
   const required = row.querySelector("[data-required-status]");
   if (required) {
-    const labels = { name_required: "Missing product name", name_suspicious: "Product name looks suspicious", price_required: "Missing price", price_suspicious: "Price is unusually large", price_conflict: "Conflicting prices", size_required: "Package size needs review", store_required: "Missing retailer store", source_required: "Invalid product URL", retailer_required: "Unsupported retailer", duplicate_decision_required: "Resolve duplicate" };
+    const labels = { name_required: "Missing product name", name_suspicious: "Product name looks suspicious", price_required: "Missing price", price_suspicious: "Price is unusually large", price_conflict: "Conflicting prices", size_required: "Package size needs review", store_required: "Missing retailer store", source_required: "Invalid product URL", retailer_required: "Unsupported retailer", location_confirmation_required: "Store not confirmed", duplicate_decision_required: "Resolve duplicate" };
     required.textContent = readiness.reasons.map((reason) => labels[reason]).filter(Boolean).join(" · ");
     required.hidden = readiness.ready;
   }
@@ -4285,9 +4286,11 @@ function renderCategoryUrlPreview(data) {
     const relevance = product.category_relevance || "medium";
     const priceSource = product.price_source || {};
     const storeSourceConfirmed = priceSource.type === "retailer_store_page" && priceSource.location_confirmation_method === "retailer_store_page";
+    const locationConfirmed = ["confirmed_janesville", "confirmed_store_source"].includes(product.location?.confidence || category.location?.confidence);
+    const storeConfirmed = storeSourceConfirmed || locationConfirmed;
     const initialReadiness = product.readiness || {};
     const needsCriticalDetails = positiveImporterPrice(fields.price) === null || !String(fields.name || "").trim();
-    return `<article class="importer-product-row ${selected ? "is-selected" : ""} ${needsCriticalDetails ? "needs-details" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}" data-has-duplicates="${duplicates.length > 0}" data-retailer-recognized="${category.retailer?.recognized === true}" data-approval-ready="${initialReadiness.ready === true}" data-store-source-confirmed="${storeSourceConfirmed}">
+    return `<article class="importer-product-row ${selected ? "is-selected" : ""} ${needsCriticalDetails ? "needs-details" : ""}" data-category-product="${index}" data-import-key="${escapeHtml(importerRequestKey(index))}" data-has-duplicates="${duplicates.length > 0}" data-retailer-recognized="${category.retailer?.recognized === true}" data-retailer-id="${escapeHtml(category.adapter || category.retailer?.retailer || "")}" data-approval-ready="${initialReadiness.ready === true}" data-store-source-confirmed="${storeConfirmed}">
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
         <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
@@ -4296,7 +4299,7 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
-        <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong>${priceSource.retailer_store_id ? `<span>Store #${escapeHtml(priceSource.retailer_store_id)}</span>` : ""}<span class="importer-location-badge location-${escapeHtml(storeSourceConfirmed ? "confirmed_store_source" : locationValue)}">${storeSourceConfirmed ? "Store source confirmed" : "Store not confirmed"}</span></div>
+        <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong>${priceSource.retailer_store_id ? `<span>Store #${escapeHtml(priceSource.retailer_store_id)}</span>` : ""}<span class="importer-location-badge location-${escapeHtml(storeSourceConfirmed ? "confirmed_store_source" : storeConfirmed ? "confirmed_janesville" : locationValue)}">${storeSourceConfirmed ? "Store source confirmed" : storeConfirmed ? "Store confirmed" : "Store not confirmed"}</span></div>
         <div class="importer-confidence"><span data-import-status class="badge ${initialReadiness.ready === true ? "status-ready" : "confidence-low"}">${initialReadiness.ready === true ? "Ready" : "Needs Review"}</span>${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
         <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
         <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
