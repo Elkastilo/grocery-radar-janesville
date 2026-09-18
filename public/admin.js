@@ -3848,6 +3848,7 @@ function renderSuggestions() {
 }
 
 function urlParserResultSummary(data = productUrlAnalysis) {
+  applyCategoryLocationReadiness(data);
   if (!data) return { analyzed: 0, ready: 0, review: 0, duplicates: 0, failed: 0 };
   if (data.url_type !== "category") {
     const ready = data.extraction?.readiness?.ready === true ? 1 : 0;
@@ -3861,6 +3862,24 @@ function urlParserResultSummary(data = productUrlAnalysis) {
     duplicates: products.filter((item) => (item.duplicate_candidates || []).length).length,
     failed: Number(data.category?.failed_count || 0)
   };
+}
+
+function applyCategoryLocationReadiness(data) {
+  data = data || {};
+  const category = data?.category;
+  if (!category || category.adapter !== "aldi") return data;
+  const confirmed = ["confirmed_janesville", "confirmed_store_source"].includes(category.location?.confidence);
+  if (!confirmed) return data;
+  category.products = (category.products || []).map((product) => {
+    if (!product?.readiness || !Array.isArray(product.readiness.reasons)) return product;
+    const reasons = product.readiness.reasons.filter((reason) => reason !== "location_confirmation_required");
+    return {
+      ...product,
+      location: category.location,
+      readiness: { ...product.readiness, ready: reasons.length === 0, status: reasons.length === 0 ? "ready" : "needs_review", reasons }
+    };
+  });
+  return data;
 }
 
 function renderUrlParserHistory() {
@@ -4268,6 +4287,7 @@ function renderProductUrlPreview(data) {
 }
 
 function renderCategoryUrlPreview(data) {
+  applyCategoryLocationReadiness(data);
   const preview = urlParserContent.querySelector("[data-product-url-preview]");
   const category = data.category || {};
   productUrlAnalysis = data;

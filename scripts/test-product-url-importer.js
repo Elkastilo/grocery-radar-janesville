@@ -579,6 +579,18 @@ async function main() {
     location_confirmation: "admin_confirmed"
   }, "Canonical importer state must retain edited price, package, store, duplicate, and location values.");
   const importerRowReadiness = Function(`"use strict"; ${namedFunctionSource(adminScript, "positiveImporterPrice")} ${namedFunctionSource(adminScript, "collectImporterRowData")} ${namedFunctionSource(adminScript, "importerRowReadiness")} return importerRowReadiness;`)();
+  const applyCategoryLocationReadiness = loadNamedFunction(adminScript, "applyCategoryLocationReadiness");
+  const urlParserResultSummary = Function(`"use strict"; ${namedFunctionSource(adminScript, "applyCategoryLocationReadiness")} ${namedFunctionSource(adminScript, "urlParserResultSummary")} return urlParserResultSummary;`)();
+  const confirmedAldiUiData = { url_type: "category", category: { adapter: "aldi", location: { confidence: "confirmed_janesville" }, products: [{ readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required"] } }, { readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required", "price_required"] } }] } };
+  applyCategoryLocationReadiness(confirmedAldiUiData);
+  assert.equal(confirmedAldiUiData.category.products[0].readiness.ready, true, "Confirmed ALDI rows become ready before UI summary calculation.");
+  assert.equal(urlParserResultSummary(confirmedAldiUiData).ready, 1, "URL Parser summary counts confirmed ALDI rows as Ready.");
+  assert.equal(urlParserResultSummary(confirmedAldiUiData).review, 1);
+  assert.match(adminScript, /Location confirmed\./, "Confirmed ALDI category results show a confirmed location banner.");
+  const unconfirmedAldiUiData = { url_type: "category", category: { adapter: "aldi", location: { confidence: "unknown" }, products: [{ readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required"] } }] } };
+  applyCategoryLocationReadiness(unconfirmedAldiUiData);
+  assert.equal(unconfirmedAldiUiData.category.products[0].readiness.ready, false, "Unconfirmed ALDI rows remain Needs Review.");
+  assert.equal(urlParserResultSummary(unconfirmedAldiUiData).ready, 0);
   const readinessControls = controls.map((control) => ({ ...control }));
   const readinessRow = { dataset: { hasDuplicates: "false" }, querySelectorAll(selector) { assert.equal(selector, "[name]"); return readinessControls; } };
   readinessControls.push({ name: "product_url", type: "url", value: "https://www.walmart.com/ip/fresh-strawberries/3002" });
