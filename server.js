@@ -17928,6 +17928,7 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
         const duplicateCandidates = findDuplicateCandidates(item.fields, products, priorImports, analysis.retailer.store_id);
         return {
           ...item,
+          location: analysis.adapter === "aldi" ? analysis.location : item.location,
           duplicate_candidates: duplicateCandidates,
           readiness: productImportReadiness(item.fields, { storeId: analysis.retailer.store_id, retailerRecognized: analysis.retailer.recognized, categorySourceUrl: analysis.source_url, hasDuplicates: duplicateCandidates.length > 0, locationConfirmable: analysis.location?.confidence === "confirmed_janesville" || analysis.location?.confidence === "confirmed_store_source" })
         };

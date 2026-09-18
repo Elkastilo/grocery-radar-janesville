@@ -121,6 +121,7 @@ async function main() {
   });
   assert.equal(aldiCategory.location.confidence, "confirmed_janesville");
   assert.equal(aldiCategory.retailer.store_id, 2);
+  assert.equal(aldiCategory.products[0].location.confidence, "confirmed_janesville");
   assert.equal(aldiCategory.products[0].readiness.ready, true, "ALDI readiness must agree with confirmed store context and a valid per-pound basis.");
   const aldiUnconfirmed = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
     aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53703", city: "Madison" } }
