@@ -9,6 +9,8 @@ import {
   Clock3,
   ExternalLink,
   FileCheck2,
+  Heart,
+  HelpCircle,
   Leaf,
   Loader2,
   LogIn,
@@ -18,8 +20,10 @@ import {
   Plus,
   ReceiptText,
   Search,
+  Send,
   ShieldCheck,
   ShoppingCart,
+  SlidersHorizontal,
   Star,
   Store,
   Tag,
@@ -340,7 +344,7 @@ function SectionHeader({ title, action, onAction }) {
 function SearchBox({ value, onChange, onFocus, compact = false }) {
   return (
     <div
-      className={`flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm transition focus-within:border-emerald-600 focus-within:ring-4 focus-within:ring-emerald-200/70 ${
+      className={`search-field-shell flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 transition focus-within:border-emerald-600 focus-within:ring-4 focus-within:ring-emerald-200/70 ${
         compact ? 'py-2.5' : 'py-3.5 sm:py-4'
       }`}
     >
@@ -422,7 +426,7 @@ function ApiError({ message, onRetry }) {
 
 function StoreCard({ store, onOpen }) {
   return (
-    <button type="button" onClick={() => onOpen?.(store.id)} className="surface-card local-store-card product-card min-w-0 overflow-hidden p-4 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-5">
+    <button type="button" onClick={() => onOpen?.(store.id)} className="surface-card local-store-card store-card-rich product-card min-w-0 overflow-hidden p-4 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-5">
       <div className="flex items-center gap-3">
         <StoreLogo store={store} />
         <div className="min-w-0">
@@ -440,15 +444,19 @@ function StoreCard({ store, onOpen }) {
 }
 
 function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
+  const [favorite, setFavorite] = useState(false)
   const card = productCardViewModel(product, bestReport)
   const safeProduct = card.product
   if (!card.renderable) return <article className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="font-black text-slate-700">Product unavailable</p><p className="mt-1 text-sm font-bold text-slate-500">This product card could not be displayed.</p></article>
   const hasPrice = card.hasCurrentPrice
   const storeName = bestReport?.store_name || safeProduct.best_store_name || ''
   const brand = productBrand(safeProduct, bestReport)
+  const regularPrice = numericPrice(bestReport?.regular_price)
+  const description = safeProduct.description || safeProduct.product_description || bestReport?.description || ''
 
   return (
-    <article className="surface-card product-card p-4 text-left sm:p-5">
+    <article className="surface-card product-card grocery-product-card relative p-4 text-left sm:p-5">
+      <button type="button" className={`product-favorite absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full ${favorite ? 'bg-rose-50 text-rose-600' : 'bg-white/90 text-slate-400'}`} aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={favorite} onClick={() => setFavorite((value) => !value)}><Heart className="h-5 w-5" fill={favorite ? 'currentColor' : 'none'} /></button>
       <button type="button" onClick={() => onOpen(safeProduct.id)} className="w-full rounded-xl text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
         <div className="flex items-start gap-4">
           <ProductImage item={safeProduct} label={card.displayName} size="lg" />
@@ -458,14 +466,16 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
             <p className="mt-1 text-sm font-medium text-slate-500">
               {[card.size, titleCase(card.category)].filter(Boolean).join(' · ')}
             </p>
+            {description ? <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-slate-600">{displayText(description)}</p> : null}
           </div>
         </div>
-        <div className="mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-4">
+        <div className="price-panel mt-4 flex items-end justify-between gap-3 border-t border-slate-100 py-1 pl-3 pt-4">
           <div className="min-w-0">
             <p className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500">{hasPrice ? 'Current package price' : 'Community price'}</p>
             <p className={`mt-0.5 font-extrabold tracking-tight ${hasPrice ? 'text-3xl text-emerald-700' : 'text-base text-slate-600'}`}>
               {hasPrice ? productPrice(safeProduct) : 'Price needed'}
             </p>
+            {hasPrice && regularPrice !== null && regularPrice > numericPrice(safeProduct.best_price) ? <p className="text-sm font-semibold text-slate-400 line-through">Regular {money(regularPrice)}</p> : null}
           </div>
           <div className="min-w-0 text-right">
             <p className="truncate text-sm font-bold text-slate-900">{storeName || 'Store pending'}</p>
@@ -488,7 +498,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
       </button>
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
         {bestReport?.source_url ? <a href={bestReport.source_url} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">View source <ExternalLink className="h-4 w-4" /></a> : null}
-        {onAddToCart ? <button type="button" onClick={() => onAddToCart(safeProduct)} className="btn-primary ml-auto min-h-11 px-4 py-2 text-sm"><Plus className="h-4 w-4" />Add to My List</button> : null}
+        {onAddToCart ? <button type="button" onClick={() => onAddToCart(safeProduct)} className="ml-auto flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg transition hover:scale-105 hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200" aria-label={`Add ${card.displayName} to My List`} title="Add to My List"><Plus className="h-7 w-7" /></button> : null}
       </div>
     </article>
   )
@@ -637,7 +647,7 @@ function ReportCard({ report, onOpenProduct, onAddToCart, compact = false }) {
 
 function SummaryCard({ icon: Icon, label, value, note }) {
   return (
-    <article className="surface-card min-w-0 p-4 sm:p-5">
+    <article className="surface-card summary-card min-w-0 p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <div className="rounded-2xl bg-emerald-100 p-3 text-emerald-800">
           <Icon className="h-6 w-6" />
@@ -1032,7 +1042,7 @@ function CatalogTile({ product, reports, openProduct }) {
   const storeName = report?.store_name || product.best_store_name || ''
 
   return (
-    <button type="button" onClick={() => openProduct(product.id)} className="surface-card product-card min-w-0 p-3 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
+    <button type="button" onClick={() => openProduct(product.id)} className="surface-card product-card grocery-product-card min-w-0 p-3 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
       <ProductImage item={product} label={product.display_name} size="tile" />
       <h3 className="mt-3 line-clamp-2 text-base font-extrabold leading-snug text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
       {product.default_size_text ? <p className="mt-1 truncate text-sm font-medium text-slate-500">{product.default_size_text}</p> : null}
@@ -1054,7 +1064,7 @@ function HomeScreen(props) {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-      <section className="seasonal-hero relative overflow-hidden rounded-3xl px-5 py-7 text-white shadow-md sm:px-8 sm:py-10">
+      <section className="seasonal-hero premium-hero relative overflow-hidden rounded-3xl px-5 py-7 text-white sm:px-8 sm:py-10">
         <Leaf className="seasonal-leaf seasonal-leaf-one" aria-hidden="true" />
         <Leaf className="seasonal-leaf seasonal-leaf-two" aria-hidden="true" />
         <div className="relative z-10 max-w-4xl">
@@ -1135,6 +1145,13 @@ function SearchScreen({
   setActiveFilter,
   activeCategory,
   setActiveCategory,
+  priceMode,
+  setPriceMode,
+  activeStoreId,
+  setActiveStoreId,
+  sortMode,
+  setSortMode,
+  stores,
   searchData,
   loading,
   error,
@@ -1145,20 +1162,26 @@ function SearchScreen({
   const approvedReports = (searchData.reports || []).filter(hasNumericApprovedReportPrice)
   const foodCategorySet = new Set(['meat', 'dairy', 'produce', 'pantry', 'frozen', 'drinks', 'snacks', 'bakery'])
   const filterFood = (item) => Boolean(item && typeof item === 'object') && (activeFilter !== 'food' || foodCategorySet.has(item.category))
+  const filterPrice = (item) => {
+    if (priceMode !== 'under10') return true
+    const value = numericPrice(item?.comparison_price ?? item?.best_price ?? item?.price)
+    return value !== null && value <= 10
+  }
   const reports = (activeFilter === 'deals'
     ? approvedReports.filter(isDealReport)
-    : approvedReports).filter(filterFood)
-  const products = (searchData.products || []).filter(filterFood)
+    : approvedReports).filter(filterFood).filter(filterPrice)
+  const products = (searchData.products || []).filter(filterFood).filter(filterPrice)
   const productSectionTitle = activeFilter === 'cheapest' ? 'Lowest approved prices' : 'Approved product matches'
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 pt-5 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl px-4 pt-8 sm:px-6 sm:pt-10">
       <ScreenTitle
-        eyebrow="Browse Janesville"
-        title="Search prices"
-        subtitle="Search approved local prices and add items to My List."
+        eyebrow="Products · Janesville, WI"
+        title="Fresh local picks for fall"
+        subtitle="Shop real products and current community-verified prices from stores around Janesville."
       />
-      <section className="sticky top-[65px] z-20 -mx-4 border-y border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:rounded-2xl sm:border sm:bg-white sm:p-4 sm:shadow-sm">
+      <div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-2xl font-extrabold tracking-tight text-slate-950">All Products</h2><span className="hidden items-center gap-2 text-sm font-semibold text-slate-500 sm:flex"><SlidersHorizontal className="h-4 w-4" /> Curated from Grocery Radar data</span></div>
+      <section className="browse-search-panel sticky top-[65px] z-20 -mx-4 border-y px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:rounded-2xl sm:border sm:p-4">
       <SearchBox value={searchTerm} onChange={setSearchTerm} compact />
       <div className="scrollbar-none -mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0" role="group" aria-label="Search result filters">
         {filters.map((filter) => (
@@ -1170,7 +1193,7 @@ function SearchScreen({
               setActiveCategory(filter === 'household' ? 'household' : '')
             }}
             aria-pressed={activeFilter === filter}
-            className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black capitalize shadow-sm ring-1 ${
+            className={`filter-chip shrink-0 rounded-full px-4 py-2.5 text-sm font-black capitalize shadow-sm ring-1 ${
               activeFilter === filter
                 ? 'bg-emerald-700 text-white ring-emerald-700'
                 : 'bg-white text-slate-800 ring-emerald-100'
@@ -1187,7 +1210,7 @@ function SearchScreen({
             type="button"
             onClick={() => setActiveCategory(activeCategory === category.value ? '' : category.value)}
             aria-pressed={activeCategory === category.value}
-            className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black shadow-sm ring-1 ${
+            className={`filter-chip shrink-0 rounded-full px-4 py-2.5 text-sm font-black shadow-sm ring-1 ${
               activeCategory === category.value
                 ? 'bg-emerald-100 text-emerald-900 ring-emerald-200'
                 : 'bg-white text-slate-700 ring-slate-100'
@@ -1196,6 +1219,12 @@ function SearchScreen({
             {category.label}
           </button>
         ))}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        <label className="filter-select-label">Category<select value={activeCategory} onChange={(event) => setActiveCategory(event.target.value)} className="filter-select"><option value="">All categories</option>{categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}</select></label>
+        <label className="filter-select-label">Store<select value={activeStoreId} onChange={(event) => setActiveStoreId(event.target.value)} className="filter-select"><option value="">All stores</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
+        <label className="filter-select-label">Price<select value={priceMode} onChange={(event) => setPriceMode(event.target.value)} className="filter-select"><option value="">Any price</option><option value="under10">Under $10</option></select></label>
+        <label className="filter-select-label">Sort<select value={sortMode} onChange={(event) => setSortMode(event.target.value)} className="filter-select"><option value="cheapest_unit_price">Lowest price</option><option value="newest_report">Recently verified</option><option value="highest_confidence">Most trusted</option></select></label>
       </div>
       </section>
 
@@ -1636,8 +1665,8 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
     {shoppingMatches.length ? <section className="mt-7 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="btn-secondary min-h-11 px-4 py-2 text-sm">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="shopping-plan-row"><ProductImage item={match.report} label={match.item.item_name || match.report.product_name} size="sm" /><div className="min-w-0 flex-1"><h3 className="font-extrabold leading-snug text-slate-950">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="mt-0.5 text-sm font-medium text-slate-500">{match.report.product_size_text || match.report.size_text || 'Package size varies'}</p><p className="mt-1 text-sm font-bold text-slate-700">{match.report.store_name}{Number(match.item.quantity || 1) > 1 ? ` · Qty ${match.item.quantity}` : ''}</p>{match.report.promotion_conditions ? <p className="mt-1 text-xs font-semibold text-amber-800">{match.report.promotion_conditions}</p> : null}<StoreProductLocation report={match.report} /></div><div className="shrink-0 text-right"><p className="text-2xl font-extrabold tracking-tight text-emerald-700">{money(match.line_total)}</p>{Number(match.item.quantity || 1) > 1 ? <p className="text-xs font-semibold text-slate-500">{money(match.item_price)} each</p> : null}</div></article>)}</section> : null}
     {comparison?.comparable_subset ? <p className="mt-4 text-sm font-bold text-slate-500">Comparable subset across every participating store: {comparison.comparable_subset.product_count} products. Partial store totals are never ranked as complete totals.</p> : null}
     <section className="surface-card mt-7 p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-extrabold">Save with substitutes</h2><p className="mt-1 font-medium text-slate-500">Different products are clearly labeled and only replace an item when you choose.</p></div><button type="button" onClick={findSubstitutes} disabled={substituteState.loading} className="btn-primary">{substituteState.loading ? 'Checking…' : 'Find cheaper substitutes'}</button></div>{substituteState.message ? <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{substituteState.message}</p> : null}<div className="mt-4 grid gap-3 sm:grid-cols-2">{substituteState.items.map(({ original, candidate }) => <article key={`${original.id}-${candidate.id}`} className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-100"><div className="flex gap-3"><ProductImage item={candidate.cheapest || candidate} label={candidate.product_name} size="sm" /><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-wide text-emerald-800">{candidate.substitution_type === 'alternative' ? 'Alternative product' : 'Very similar product'}</p><h3 className="mt-1 text-lg font-extrabold">{candidate.product_name}</h3><p className="text-sm font-semibold text-slate-600">{candidate.cheapest?.store_name} · {candidate.cheapest?.price_label || money(candidate.cheapest?.price)}</p></div></div><p className="mt-3 font-bold text-emerald-800">Potential savings {money(candidate.potential_savings)}</p><p className="mt-1 text-sm font-medium text-slate-600">Why suggested: {(candidate.reasons || []).join(' · ') || 'Human-confirmed comparable product family.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onUseSubstitute(original, candidate)} className="btn-primary min-h-11 px-4 py-2 text-sm">Use substitute</button><button type="button" onClick={() => setSubstituteState((current) => ({ ...current, items: current.items.filter((entry) => !(String(entry.original.id) === String(original.id) && Number(entry.candidate.id) === Number(candidate.id))) }))} className="btn-secondary min-h-11 px-4 py-2 text-sm">Keep original</button><button type="button" onClick={() => ignore(original.product_id)} className="btn-ghost text-sm">Don’t suggest again</button></div></article>)}</div></section>
-    <section className="surface-card mt-5 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-extrabold">My List Items</h2><button type="button" onClick={clearCart} className="btn-ghost text-slate-700"><Trash2 className="h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="list-item-row rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100"><div className="flex min-w-0 items-center gap-3"><ProductImage item={reportByProduct.get(Number(item.product_id)) || item} label={item.product_display_name || item.item_name} size="sm" /><div className="min-w-0"><p className="truncate font-extrabold">{item.product_display_name || item.item_name}</p><p className="text-sm font-medium text-slate-600">{item.size_preference || reportByProduct.get(Number(item.product_id))?.product_size_text || 'Catalog product'}</p></div></div><div className="list-item-controls" aria-label={`Quantity for ${item.item_name}`}><button type="button" className="quantity-button" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong className="min-w-6 text-center" aria-live="polite">{item.quantity_needed || 1}</strong><button type="button" className="quantity-button text-emerald-700" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="quantity-button text-slate-600" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add a product to start comparing current Janesville prices." icon={ShoppingCart} /> : null}</div></section>
-    <button type="button" onClick={() => openScreen('search')} className="mt-5 min-h-14 w-full rounded-2xl bg-emerald-700 px-5 text-lg font-black text-white">Add another item</button>
+    <section className="surface-card mt-5 p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-extrabold">My List Items</h2><button type="button" onClick={clearCart} className="btn-ghost text-slate-700"><Trash2 className="h-4 w-4" />Clear</button></div><div className="mt-3 space-y-2">{(cart?.items || []).map((item) => <div key={item.id} className="list-item-row list-item-rich rounded-2xl p-3 ring-1 ring-slate-100"><div className="flex min-w-0 items-center gap-3"><ProductImage item={reportByProduct.get(Number(item.product_id)) || item} label={item.product_display_name || item.item_name} size="sm" /><div className="min-w-0"><p className="truncate font-extrabold">{item.product_display_name || item.item_name}</p><p className="text-sm font-medium text-slate-600">{item.size_preference || reportByProduct.get(Number(item.product_id))?.product_size_text || 'Catalog product'}</p></div></div><div className="list-item-controls" aria-label={`Quantity for ${item.item_name}`}><button type="button" className="quantity-button" aria-label={`Decrease ${item.item_name}`} onClick={() => updateCartItem(item, Math.max(1, Number(item.quantity_needed || 1) - 1))}>−</button><strong className="min-w-6 text-center" aria-live="polite">{item.quantity_needed || 1}</strong><button type="button" className="quantity-button text-emerald-700" aria-label={`Increase ${item.item_name}`} onClick={() => updateCartItem(item, Number(item.quantity_needed || 1) + 1)}>+</button><button type="button" className="quantity-button text-slate-600" aria-label={`Remove ${item.item_name}`} onClick={() => removeCartItem(item.id)}><Trash2 className="mx-auto h-5 w-5" /></button></div></div>)}{!cart?.items?.length ? <EmptyState title="Your list is empty" body="Add a product to start comparing current Janesville prices." icon={ShoppingCart} /> : null}</div></section>
+    <button type="button" onClick={() => openScreen('search')} className="btn-primary mt-5 min-h-14 w-full rounded-2xl text-lg">Add another item</button>
   </div>
 }
 
@@ -2780,18 +2809,61 @@ function UpdatesScreen({ releases, version, markRead }) {
   </div>
 }
 
-function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false }) {
+const mapleFaqs = [
+  ['How do prices get added?', 'Prices come from community submissions and retailer sources, then are reviewed before they appear as verified.'],
+  ['How do I compare stores?', 'Add products to My List and open the list to compare current eligible prices across Janesville stores.'],
+  ['How do rewards work?', 'Submit useful grocery price proof and earn points when the community can use it.'],
+  ['How do I submit a price?', 'Choose Submit in the navigation, select a store and product, then add the price and supporting proof.'],
+  ['How does My List work?', 'Tap the green plus button on any product to save it, then use My List to plan and compare your trip.'],
+]
+
+function MapleAssistant({ open, setOpen, me, onToast }) {
+  const [faq, setFaq] = useState(null)
+  const [message, setMessage] = useState('')
+  const [status, setStatus] = useState({ loading: false, error: '', success: '' })
+  const submit = async () => {
+    const text = message.trim()
+    if (!text) return setStatus({ loading: false, error: 'Tell Maple what you need help with first.', success: '' })
+    if (text.length > 500) return setStatus({ loading: false, error: 'Please keep your message under 500 characters.', success: '' })
+    if (!me.loggedIn) return setStatus({ loading: false, error: 'Please sign in before sending a message to the Grocery Radar team.', success: '' })
+    setStatus({ loading: true, error: '', success: '' })
+    try {
+      await postJson('/api/feedback', { category: 'suggestion', title: 'Maple shopper question', message: text })
+      setMessage('')
+      setStatus({ loading: false, error: '', success: 'Sent to the Grocery Radar team. Thanks for helping us improve.' })
+      onToast?.('Maple sent your message to the Grocery Radar Inbox.')
+    } catch (error) {
+      setStatus({ loading: false, error: error.message, success: '' })
+    }
+  }
+
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 shadow-[0_1px_12px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+    <>
+      {open ? <aside className="maple-panel" aria-label="Ask Maple" role="dialog" aria-modal="false">
+        <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-amber-700">Grocery Radar helper</p><h2 className="mt-1 text-2xl font-extrabold text-slate-950">Ask Maple</h2><p className="mt-1 text-sm font-medium text-slate-600">I can help with common questions.</p></div><button type="button" onClick={() => setOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Close Ask Maple"><X className="h-5 w-5" /></button></div>
+        <div className="mt-5 space-y-2">{mapleFaqs.map(([question, answer]) => <div key={question} className="rounded-2xl border border-orange-100 bg-orange-50/50"><button type="button" onClick={() => setFaq(faq === question ? null : question)} className="flex w-full items-center gap-3 p-3 text-left text-sm font-extrabold text-slate-800"><HelpCircle className="h-5 w-5 shrink-0 text-amber-700" />{question}<span className="ml-auto text-lg text-amber-700">{faq === question ? '−' : '+'}</span></button>{faq === question ? <p className="px-3 pb-3 pl-11 text-sm font-medium leading-relaxed text-slate-600">{answer}</p> : null}</div>)}</div>
+        <div className="mt-6 border-t border-slate-100 pt-5"><p className="font-extrabold text-slate-950">Have a question or suggestion?</p><textarea value={message} onChange={(event) => setMessage(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder="Share a thought with the Grocery Radar team…" className="field mt-3 resize-none" aria-label="Question or suggestion" /><div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500"><span>{message.length}/500</span><button type="button" onClick={submit} disabled={status.loading || !message.trim()} className="btn-primary min-h-11 px-4 py-2 text-sm"><Send className="h-4 w-4" />{status.loading ? 'Sending…' : 'Send to Inbox'}</button></div>{status.error ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800" role="alert">{status.error}</p> : null}{status.success ? <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800" role="status">{status.success}</p> : null}</div>
+      </aside> : null}
+      {!open ? <button type="button" onClick={() => setOpen(true)} className="maple-fab" aria-label="Need help? Ask Maple!"><span className="maple-face" aria-hidden="true">🍁</span><span className="maple-tooltip">Need help? Ask Maple!</span></button> : null}
+    </>
+  )
+}
+
+function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false, active = '', listCount = 0 }) {
+  return (
+    <header className="shopper-header sticky top-0 z-30 border-b backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
         <button type="button" onClick={() => openScreen('home')} className="flex min-w-0 items-center gap-2.5 rounded-xl pr-2 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-700 text-white shadow-sm"><Search className="h-5 w-5" aria-hidden="true" /></span>
+          <span className="brand-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white"><Search className="h-5 w-5" aria-hidden="true" /></span>
           <span className="min-w-0"><span className="block truncate text-sm font-extrabold tracking-tight text-slate-950 min-[380px]:text-base">Grocery Radar</span>
           <span className="season-location mt-0.5 hidden w-fit items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold min-[430px]:flex sm:text-xs"><MapPin className="h-3.5 w-3.5 text-emerald-700" />Janesville, WI <Leaf className="h-3 w-3 text-amber-700" aria-hidden="true" /></span></span>
         </button>
+        <nav className="hidden items-center gap-1 lg:flex" aria-label="Shopper navigation">
+          {[['search', 'Products'], ['deals', 'Savings'], ['stores', 'Stores'], ['cart', 'My List']].map(([id, label]) => <a key={id} href={publicPathFor(id)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); openScreen(id) }} className={`header-nav-link ${active === id ? 'is-active' : ''}`}>{label}{id === 'cart' && listCount ? <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 text-[10px]">{listCount}</span> : null}</a>)}
+        </nav>
         <div className="flex shrink-0 gap-1.5 sm:gap-2">
           <button type="button" onClick={openUpdates} className="header-action sm:w-auto sm:px-3" aria-label="What's new"><FileCheck2 className="h-5 w-5" /><span className="ml-2 hidden text-sm font-bold sm:inline">What's new</span>{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-white" aria-label="New update available" /> : null}</button>
-          <button type="button" onClick={() => openScreen('profile')} className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100" aria-label="Open account and notifications">
+          <button type="button" onClick={() => openScreen('profile')} className="header-action header-action-brand" aria-label="Open account and notifications">
             <BellRing className="h-5 w-5" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
           </button>
@@ -2812,7 +2884,7 @@ function BottomNav({ active, openScreen }) {
   ]
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/[0.92] pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_32px_rgba(15,23,42,0.10)] backdrop-blur-xl sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(46rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-3xl sm:border sm:pb-0" aria-label="Primary navigation">
+    <nav className="shopper-bottom-nav fixed inset-x-0 bottom-0 z-40 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-xl sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(46rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-3xl sm:border sm:pb-0" aria-label="Primary navigation">
       <div className="mx-auto grid max-w-4xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-1 sm:p-2">
         {navItems.map((item) => {
           const Icon = item.icon
@@ -2827,11 +2899,11 @@ function BottomNav({ active, openScreen }) {
                 event.preventDefault()
                 openScreen(item.id)
               }}
-              className={`relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl px-0.5 text-center text-[11px] font-bold leading-tight transition sm:min-h-16 sm:text-xs ${
-                selected ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-500 hover:bg-emerald-50 hover:text-emerald-800'
+              className={`nav-item relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl px-0.5 text-center text-[11px] font-bold leading-tight sm:min-h-16 sm:text-xs ${
+                selected ? 'is-selected text-white' : 'text-slate-500 hover:bg-emerald-50 hover:text-emerald-800'
               }`}
             >
-              <span className="relative">
+              <span className="nav-icon relative">
                 <Icon className="h-6 w-6" />
               </span>
               {item.label}
@@ -2853,6 +2925,9 @@ function App() {
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [activeFilter, setActiveFilter] = useState('cheapest')
   const [activeCategory, setActiveCategory] = useState('')
+  const [priceMode, setPriceMode] = useState('')
+  const [activeStoreId, setActiveStoreId] = useState('')
+  const [sortMode, setSortMode] = useState('cheapest_unit_price')
   const [stores, setStores] = useState([])
   const [selectedStoreId, setSelectedStoreId] = useState(initialRouteRef.current.storeId || null)
   const [storeDetail, setStoreDetail] = useState(null)
@@ -2891,6 +2966,7 @@ function App() {
   const [profileState, setProfileState] = useState({ loading: false, error: '' })
   const [selectedProofId, setSelectedProofId] = useState(initialRouteRef.current.proofId || '')
   const [toast, setToast] = useState('')
+  const [mapleOpen, setMapleOpen] = useState(false)
 
   const applyRoute = useCallback((nextRoute, navigationType = 'push') => {
     navigationTypeRef.current = navigationType
@@ -3016,16 +3092,15 @@ function App() {
       const params = new URLSearchParams()
       if (debouncedSearchTerm.trim()) params.set('q', debouncedSearchTerm.trim())
       if (activeCategory) params.set('category', activeCategory)
-      if (activeFilter === 'verified') params.set('sort', 'highest_confidence')
-      if (activeFilter === 'cheapest') params.set('sort', 'cheapest_unit_price')
-      if (activeFilter === 'deals') params.set('sort', 'newest_report')
+      if (activeStoreId) params.set('store', activeStoreId)
+      params.set('sort', activeFilter === 'verified' ? 'highest_confidence' : activeFilter === 'deals' ? 'newest_report' : sortMode)
       const data = await getJson(`/api/search?${params.toString()}`)
       setSearchData({ products: data.products || [], reports: data.reports || [] })
       setSearchState({ loading: false, error: '' })
     } catch (error) {
       setSearchState({ loading: false, error: error.message })
     }
-  }, [activeCategory, activeFilter, debouncedSearchTerm])
+  }, [activeCategory, activeFilter, activeStoreId, debouncedSearchTerm, sortMode])
 
   const loadProductDetail = useCallback(async () => {
     if (!selectedProductId) return
@@ -3251,7 +3326,9 @@ function App() {
       const current = readLocalList()
       if (current.some((entry) => Number(entry.product_id) === productId)) setToast('Already in My List.')
       else {
-        writeLocalList([...current, { id: `local-${productId}`, product_id: productId, product_display_name: item.display_name || item.product_display_name || item.item_name, item_name: item.display_name || item.product_display_name || item.item_name, quantity_needed: '1', size_preference: item.default_size_text || item.size_text || '', category: item.category || '' }])
+        const next = [...current, { id: `local-${productId}`, product_id: productId, product_display_name: item.display_name || item.product_display_name || item.item_name, item_name: item.display_name || item.product_display_name || item.item_name, quantity_needed: '1', size_preference: item.default_size_text || item.size_text || '', category: item.category || '' }]
+        writeLocalList(next)
+        setCart({ items: next })
         setToast('Added to My List on this device.')
       }
       if (screen === 'cart') await loadCart()
@@ -3333,10 +3410,11 @@ function App() {
   }, [screen])
 
   const selectedProduct = productDetail?.product
+  const listCount = cart?.items?.length ?? readLocalList().length
 
   return (
     <div className={`shopper-shell season-${seasonalTheme.id} min-h-screen text-slate-950`} data-season={seasonalTheme.id}>
-      <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} />
+      <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} active={activeNav} listCount={listCount} />
       {toast ? (
         <button
           type="button"
@@ -3374,6 +3452,13 @@ function App() {
             setActiveFilter={setActiveFilter}
             activeCategory={activeCategory}
             setActiveCategory={setActiveCategory}
+            priceMode={priceMode}
+            setPriceMode={setPriceMode}
+            activeStoreId={activeStoreId}
+            setActiveStoreId={setActiveStoreId}
+            sortMode={sortMode}
+            setSortMode={setSortMode}
+            stores={stores}
             searchData={searchData}
             loading={searchState.loading}
             error={searchState.error}
@@ -3477,6 +3562,7 @@ function App() {
           />
         ) : null}
       </main>
+      <MapleAssistant open={mapleOpen} setOpen={setMapleOpen} me={me} onToast={setToast} />
       <footer className="pb-32 pt-12 text-center text-sm font-medium text-slate-600 sm:pb-36">
         <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
         <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy" onClick={(event) => { event.preventDefault(); openScreen('privacy') }}>Privacy</a><a className="underline" href="/terms" onClick={(event) => { event.preventDefault(); openScreen('terms') }}>Terms &amp; acceptable use</a></p>
