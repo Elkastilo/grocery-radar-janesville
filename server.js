@@ -17886,6 +17886,9 @@ app.post("/api/admin/product-url-imports/analyze", requireAdminAccess, requireLo
       }
     }
     const analysis = analyzePage(fetched.body, fetched.url, stores, { maxProducts, aldiCollection });
+    if (analysis.url_type === "category" && analysis.adapter === "aldi" && aldiCollection?.errors?.length) {
+      analysis.warnings.push("ALDI returned incomplete collection data. Rows without a verified price need manual review; retry if many prices are missing.");
+    }
     const adapterResolution = resolveAdapter(fetched.url);
     if (analysis.url_type === "category") {
       const selectedStore = stores.find((store) => Number(store.id) === Number(analysis.retailer?.store_id));

@@ -3882,6 +3882,29 @@ function applyCategoryLocationReadiness(data) {
   return data;
 }
 
+function setAdminCategoryLocationOverride(data, indexes, storeId, confirmed) {
+  const category = data?.category;
+  if (category?.adapter !== "aldi" || !Number.isInteger(Number(storeId)) || Number(storeId) <= 0) return 0;
+  let changed = 0;
+  for (const index of indexes) {
+    const product = category.products?.[index];
+    if (!product?.readiness || !Array.isArray(product.readiness.reasons)) continue;
+    if (confirmed) {
+      if (product.location?.confidence === "confirmed_janesville_admin" || !["confirmed_janesville", "confirmed_store_source"].includes(product.location?.confidence)) {
+        product.location = { confidence: "confirmed_janesville_admin", evidence: "Administrator confirmed the selected Janesville store for this row.", store_id: Number(storeId) };
+      }
+      product.readiness.reasons = product.readiness.reasons.filter((reason) => reason !== "location_confirmation_required");
+    } else if (product.location?.confidence === "confirmed_janesville_admin") {
+      product.location = category.location;
+      if (!product.readiness.reasons.includes("location_confirmation_required")) product.readiness.reasons.push("location_confirmation_required");
+    } else continue;
+    product.readiness.ready = product.readiness.reasons.length === 0;
+    product.readiness.status = product.readiness.ready ? "ready" : "needs_review";
+    changed += 1;
+  }
+  return changed;
+}
+
 function renderUrlParserHistory() {
   const history = urlParserContent?.querySelector("[data-url-parser-history]");
   if (!history) return;
@@ -4306,7 +4329,7 @@ function renderCategoryUrlPreview(data) {
     const relevance = product.category_relevance || "medium";
     const priceSource = product.price_source || {};
     const storeSourceConfirmed = priceSource.type === "retailer_store_page" && priceSource.location_confirmation_method === "retailer_store_page";
-    const locationConfirmed = [product.location?.confidence, category.location?.confidence].some((confidence) => ["confirmed_janesville", "confirmed_store_source"].includes(confidence));
+    const locationConfirmed = [product.location?.confidence, category.location?.confidence].some((confidence) => ["confirmed_janesville", "confirmed_store_source", "confirmed_janesville_admin"].includes(confidence));
     const storeConfirmed = storeSourceConfirmed || locationConfirmed;
     const initialReadiness = product.readiness || {};
     const needsCriticalDetails = positiveImporterPrice(fields.price) === null || !String(fields.name || "").trim();
@@ -4326,6 +4349,7 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-row-actions"><button class="primary-button importer-approve-button" type="button" data-approve-import="${index}" ${initialReadiness.ready === true ? "" : "disabled"}>${initialReadiness.ready === true ? "Approve" : "Complete details"}</button>${needsCriticalDetails && fields.product_url ? `<button class="importer-icon-button importer-fetch-details" type="button" data-fetch-import-details="${index}">Fetch details</button>` : ""}${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
       </div>
       <div class="importer-required-status" data-required-status ${initialReadiness.ready === true ? "hidden" : ""}>${escapeHtml((initialReadiness.reasons || []).map((reason) => reason.replace(/_/g, " ")).join(" · ") || (positiveImporterPrice(fields.price) === null ? "Missing price" : "Complete required details"))}</div>
+      ${fields.estimated_package_price && fields.per_lb_price ? `<div class="importer-location-note">${escapeHtml(`Retailer estimate: $${Number(fields.estimated_package_price).toFixed(2)} for about ${fields.package_weight || "?"} ${fields.package_weight_unit || "lb"}; ${positiveImporterPrice(fields.price) === null ? "per-pound price needs review" : `price shown is $${Number(fields.per_lb_price).toFixed(2)}/lb`}.`)}</div>` : ""}
       <div class="importer-row-result" data-import-result hidden role="status" aria-live="polite"></div>
       <div class="importer-duplicate-resolution" data-duplicate-resolution hidden></div>
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
@@ -4362,7 +4386,7 @@ function renderCategoryUrlPreview(data) {
   }).join("");
   preview.innerHTML = `
     <form class="importer-results" data-category-import-form>
-      <header class="importer-results-header"><div><p class="importer-eyebrow">${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</p><h4>Found ${Number(category.detected_count || 0)} products on this page</h4><p>Review and select the items you want to import.</p><p class="importer-adapter-summary">${escapeHtml(category.adapter_label || titleCase(category.adapter || "generic"))} adapter · ${escapeHtml(titleCase(category.page_type || "listing"))} · ${Number(category.priced_count || 0)} with prices</p></div><div class="importer-location-controls"><label><span>Grocery Radar store</span><select name="store_id">${storeOptionsWithEmpty(category.retailer?.recognized ? "Select exact store" : "Retailer not recognized", category.retailer?.store_id)}</select></label><label><span>Price location</span><select name="price_location_confidence"><option value="unknown" ${locationValue === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${locationValue === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville">Confirmed Janesville — admin verified</option></select></label></div></header>
+      <header class="importer-results-header"><div><p class="importer-eyebrow">${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</p><h4>Found ${Number(category.detected_count || 0)} products on this page</h4><p>Review and select the items you want to import.</p><p class="importer-adapter-summary">${escapeHtml(category.adapter_label || titleCase(category.adapter || "generic"))} adapter · ${escapeHtml(titleCase(category.page_type || "listing"))} · ${Number(category.priced_count || 0)} with prices</p></div><div class="importer-location-controls"><label><span>Grocery Radar store</span><select name="store_id">${storeOptionsWithEmpty(category.retailer?.recognized ? "Select exact store" : "Retailer not recognized", category.retailer?.store_id)}</select></label><label><span>Price location</span><select name="price_location_confidence"><option value="unknown" ${locationValue === "unknown" ? "selected" : ""}>Unknown</option><option value="likely_janesville" ${locationValue === "likely_janesville" ? "selected" : ""}>Likely Janesville</option><option value="confirmed_janesville" ${locationValue === "confirmed_janesville" ? "selected" : ""}>Confirmed Janesville — admin verified</option></select></label></div></header>
       <div class="importer-location-note"><strong>${locationValue === "confirmed_janesville" || locationValue === "confirmed_store_source" ? "Location confirmed." : "Location check required."}</strong> ${escapeHtml(category.location?.evidence || "This listing did not establish an exact store.")}</div>
       ${(category.warnings || []).length ? `<details class="importer-page-warnings"><summary>${category.warnings.length} page note${category.warnings.length === 1 ? "" : "s"}</summary>${category.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</details>` : ""}
       <div class="importer-bulk-toolbar"><div><button class="importer-link" type="button" data-category-select-all>Select all</button><button class="importer-link" type="button" data-category-select-none>Clear selection</button></div><button class="primary-button" type="submit" data-import-save-top>Approve selected</button></div>
@@ -4385,18 +4409,45 @@ function renderCategoryUrlPreview(data) {
     preview.querySelectorAll("[data-import-save-top],[data-import-save-bottom]").forEach((button) => { button.disabled = ready === 0; button.textContent = ready ? `Approve ${ready} ready` : "Approve selected"; });
     preview.querySelectorAll("[data-category-product]").forEach((card) => card.classList.toggle("is-selected", Boolean(card.querySelector('input[name="selected"]')?.checked)));
   };
-  preview.querySelector("[data-category-select-all]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = true; }); updateSummary(); });
+  preview.querySelector("[data-category-select-all]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = true; }); if (category.adapter === "aldi" && preview.querySelector('.importer-location-controls select[name="price_location_confidence"]')?.value === "confirmed_janesville") preview.querySelector('.importer-location-controls select[name="price_location_confidence"]').dispatchEvent(new Event("change")); else updateSummary(); });
   preview.querySelector("[data-category-select-none]")?.addEventListener("click", () => { preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => { input.checked = false; }); updateSummary(); });
-  preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => input.addEventListener("change", updateSummary));
+  preview.querySelectorAll('[data-category-product] input[name="selected"]').forEach((input) => input.addEventListener("change", () => {
+    if (input.checked && category.adapter === "aldi" && preview.querySelector('.importer-location-controls select[name="price_location_confidence"]')?.value === "confirmed_janesville" && input.closest("[data-category-product]")?.dataset.adminLocationOverride !== "true") {
+      preview.querySelector('.importer-location-controls select[name="price_location_confidence"]').dispatchEvent(new Event("change"));
+    } else updateSummary();
+  }));
   preview.querySelector('.importer-location-controls select[name="store_id"]')?.addEventListener("change", (event) => {
     preview.querySelectorAll("[data-row-store]").forEach((select) => {
       if (!select.dataset.manuallyChanged) select.value = event.currentTarget.value;
       const row = select.closest("[data-category-product]");
       if (row) refreshImporterRowReadiness(row);
     });
+    if (category.adapter === "aldi" && preview.querySelector('.importer-location-controls select[name="price_location_confidence"]')?.value === "confirmed_janesville") preview.querySelector('.importer-location-controls select[name="price_location_confidence"]').dispatchEvent(new Event("change"));
     preview.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change"));
   });
-  preview.querySelectorAll("[data-row-store]").forEach((select) => select.addEventListener("change", () => { select.dataset.manuallyChanged = "true"; refreshImporterRowReadiness(select.closest("[data-category-product]")); select.closest("[data-category-product]")?.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change")); }));
+  preview.querySelector('.importer-location-controls select[name="price_location_confidence"]')?.addEventListener("change", (event) => {
+    if (category.adapter !== "aldi") return;
+    const confirmed = event.currentTarget.value === "confirmed_janesville";
+    const selected = [...preview.querySelectorAll('[data-category-product]')].filter((card) => card.querySelector('input[name="selected"]')?.checked && !card.classList.contains("is-approved"));
+    for (const card of selected) {
+      const storeId = card.querySelector('[name="store_id"]')?.value;
+      if (!Number.isInteger(Number(storeId)) || Number(storeId) <= 0) continue;
+      setAdminCategoryLocationOverride(data, [Number(card.dataset.categoryProduct)], storeId, confirmed);
+      card.dataset.adminLocationOverride = String(confirmed);
+      card.dataset.storeSourceConfirmed = String(confirmed || ["confirmed_janesville", "confirmed_store_source"].includes(category.location?.confidence));
+      const badge = card.querySelector(".importer-location-badge");
+      if (badge) { badge.textContent = card.dataset.storeSourceConfirmed === "true" ? "Store confirmed" : "Store not confirmed"; badge.className = `importer-location-badge location-${confirmed ? "confirmed_janesville" : category.location?.confidence || "unknown"}`; }
+      refreshImporterRowReadiness(card);
+    }
+    const summary = urlParserResultSummary(data);
+    const metrics = urlParserContent.querySelector("[data-url-parser-summary]");
+    if (metrics) metrics.innerHTML = [["Analyzed", summary.analyzed], ["Ready", summary.ready], ["Needs Review", summary.review], ["Duplicates", summary.duplicates], ["Failed", summary.failed]].map(([label, value]) => `<article class="metric-card"><span>${label}</span><strong>${value}</strong></article>`).join("");
+    const locationNote = preview.querySelector(".importer-location-note strong");
+    if (locationNote && confirmed) locationNote.textContent = "Location confirmed by admin for selected rows.";
+    else if (locationNote) locationNote.textContent = "Location check required.";
+    updateSummary();
+  });
+  preview.querySelectorAll("[data-row-store]").forEach((select) => select.addEventListener("change", () => { select.dataset.manuallyChanged = "true"; refreshImporterRowReadiness(select.closest("[data-category-product]")); if (category.adapter === "aldi" && preview.querySelector('.importer-location-controls select[name="price_location_confidence"]')?.value === "confirmed_janesville") preview.querySelector('.importer-location-controls select[name="price_location_confidence"]').dispatchEvent(new Event("change")); else select.closest("[data-category-product]")?.querySelector('input[name="selected"]')?.dispatchEvent(new Event("change")); }));
   preview.querySelectorAll("[data-toggle-import-details]").forEach((button) => button.addEventListener("click", () => { const panel = preview.querySelector(`#import-details-${button.dataset.toggleImportDetails}`); const expanded = panel.hidden; panel.hidden = !expanded; button.setAttribute("aria-expanded", String(expanded)); button.closest("[data-category-product]")?.classList.toggle("is-expanded", expanded); }));
   preview.querySelectorAll("[data-approve-import]").forEach((button) => button.addEventListener("click", () => approveCategoryImportCard(button.closest("[data-category-product]"))));
   preview.querySelectorAll("[data-fetch-import-details]").forEach((button) => button.addEventListener("click", () => fetchImporterRowDetails(button.closest("[data-category-product]"))));
@@ -4695,13 +4746,13 @@ async function approveCategoryImportCard(card, options = {}) {
       if (!pending.imports?.[0]?.import_id) throw Object.assign(new Error(pending.failures?.[0]?.error || "The reviewed import could not be prepared."), { handled: true });
       card.dataset.importId = String(pending.imports[0].import_id);
     }
-    if (options.confirmLocation === true) card.dataset.locationConfirmation = "admin_confirmed";
+    if (options.confirmLocation === true || card.dataset.adminLocationOverride === "true") card.dataset.locationConfirmation = "admin_confirmed";
     const approve = async (confirmLocation) => {
       const values = collectImporterRowData(card);
       return fetchJson(`/api/admin/product-url-imports/${card.dataset.importId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm_location: confirmLocation, duplicate_decision: values.duplicate_decision, existing_product_id: values.existing_product_id }) });
     };
     let data;
-    try { data = await approve(options.confirmLocation === true); }
+    try { data = await approve(options.confirmLocation === true || card.dataset.adminLocationOverride === "true"); }
     catch (error) {
       if (error.data?.code === "LOCATION_CONFIRMATION_REQUIRED" && !options.bulk) {
         const confirmed = window.confirm(`${error.message}\n\nThis records your confirmation as the administrator; it does not claim the retailer proved the location.`);
@@ -4739,7 +4790,7 @@ async function saveCategoryUrlImports(event) {
   const incomplete = selectedCards.filter((card) => !readyCards.includes(card));
   if (!readyCards.length) { setMessage(message, `${incomplete.length} selected product${incomplete.length === 1 ? " needs" : "s need"} required details before approval.`, "warning"); return; }
   const selectedStoreNames = [...new Set(readyCards.map((card) => card.querySelector('[name="store_id"]')?.selectedOptions[0]?.textContent).filter(Boolean))];
-  const manualLocationCards = readyCards.filter((card) => card.dataset.storeSourceConfirmed !== "true");
+  const manualLocationCards = readyCards.filter((card) => card.dataset.retailerId === "aldi" ? card.dataset.adminLocationOverride !== "true" : card.dataset.storeSourceConfirmed !== "true");
   const confirmLocation = !manualLocationCards.length || window.confirm(`${selectedCards.length} selected\n\n${readyCards.length} ready for approval\n${incomplete.length} need product details\n\nConfirm ${manualLocationCards.length} price${manualLocationCards.length === 1 ? "" : "s"} without a verified store source apply to ${selectedStoreNames.join(", ") || "the selected store"}?\n\nThis records administrator confirmation; it does not claim the retailer proved the location.`);
   if (!confirmLocation) return;
   const progress = form.querySelector("[data-import-progress]");
@@ -4751,7 +4802,7 @@ async function saveCategoryUrlImports(event) {
   let failed = 0;
   for (const card of readyCards) {
     if (progressText) progressText.textContent = `${approved + failed} / ${readyCards.length} processed · ${card.querySelector('[name="name"]')?.value || "Product"}`;
-    const result = await approveCategoryImportCard(card, { confirmLocation: card.dataset.storeSourceConfirmed !== "true", bulk: true });
+    const result = await approveCategoryImportCard(card, { confirmLocation: card.dataset.retailerId === "aldi" || card.dataset.storeSourceConfirmed !== "true", bulk: true });
     if (result) approved += 1; else failed += 1;
   }
   if (progressText) progressText.textContent = `${approved} / ${readyCards.length} approved${failed ? ` · ${failed} need review` : ""}${incomplete.length ? ` · ${incomplete.length} still need details` : ""}.`;

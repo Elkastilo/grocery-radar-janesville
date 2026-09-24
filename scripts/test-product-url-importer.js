@@ -8,7 +8,7 @@ const { extractProduct, parsePrice, normalizeRetailerText, normalizePackage, pac
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteBufferFetch, CATEGORY_DEFAULTS, validateRemoteUrl, isPublicAddress, SafeFetchError } = require("../src/safeRemoteFetch");
 const { CATEGORY_ENRICHMENT_MAX_REQUESTS, CATEGORY_ENRICHMENT_CONCURRENCY, categoryUrlHint, productImportReadiness, mergeCategoryProductDetails, enrichCategoryAnalysis, extractCategory, analyzePage, mergeWalmartStoreAnalysis } = require("../src/categoryImporter");
 const { parseWalmartStoreUrl, exactWalmartProductMatch } = require("../src/importers/walmart");
-const { collectionContext, extractAldiCollection } = require("../src/importers/aldi");
+const { collectionContext, aldiCollectionRequest, extractAldiCollection } = require("../src/importers/aldi");
 const { STATUS, retailerDefinition, classifyUrl, resolveAdapter, supportMatrix } = require("../src/importers/registry");
 const { groceryStoreRetailerMetadata, walmartDepartmentForSource, walmartStoreDepartmentUrl } = require("../src/retailerStores");
 const { REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGE_MAX_DIMENSION, REMOTE_IMAGE_MAX_PIXELS, IMAGE_CONCURRENCY, RemoteImageError, magicType, sanitizeImageBuffer, fetchAndSanitizeRemoteImage, createProductImagePreviewHandler, storeSanitizedRemoteImage } = require("../src/remoteProductImage");
@@ -98,8 +98,8 @@ async function main() {
   assert.equal(aldiPerPound.fields.unit_price_unit, "lb");
 
   const aldiRich = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-rich-beef", name: "Ground Beef", size: "per lb", department: "Fresh Meat", price: { viewSection: { badge: { offerLabelString: "10% off" }, itemCard: { priceString: "$11.69 /pkg (est.)", fullPriceString: "reg. $12.99", pricingUnitString: "$8.99 / lb", pricingUnitSecondaryString: "About 1.3 lb / package" }, itemDetails: { saleDisclaimerString: "Price Drop Ends Soon" } }, parWeightTotalEstimate: { viewSection: { parWeightString: "About 1.3 lb each" } } }, quantityAttributes: { parWeight: { quantity: 1.3, measurementUnit: { costUnit: "lb" } }, viewSection: { parWeightDisplayString: "About 1.3 lb / package" } }, availability: { available: true, stockLevel: "highlyInStock", viewSection: { stockLevelLabelString: "Many in stock" } }, viewSection: { trackingProperties: { product_category_name: "Ground Beef" } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
-  assert.equal(aldiRich.fields.price, 11.69);
-  assert.equal(aldiRich.fields.regular_price, 12.99);
+  assert.equal(aldiRich.fields.price, 8.99, "Variable-weight ALDI meat uses its verified per-pound price, not the estimated package total.");
+  assert.equal(aldiRich.fields.regular_price, 9.99);
   assert.equal(aldiRich.fields.per_lb_price, 8.99);
   assert.equal(aldiRich.fields.estimated_package_price, 11.69);
   assert.equal(aldiRich.fields.package_weight, 1.3);
@@ -111,6 +111,19 @@ async function main() {
   assert.equal(aldiRich.metadata.subcategory, "Ground Beef");
   assert.equal(aldiRich.metadata.product_type, "Ground Beef");
   assert.equal(aldiRich.metadata.availability_note, "Price Drop Ends Soon");
+
+  const aldiBeef = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "17771077", name: "80% Lean Ground Beef", size: "1 per lb", price: { viewSection: { itemCard: { priceString: "$11.90 /pkg (est.)", fullPriceString: "reg. $13.93", pricingUnitString: "$5.29 / lb" } } }, quantityAttributes: { parWeight: { quantity: 2.25, measurementUnit: { costUnit: "lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", 10).products[0];
+  assert.equal(aldiBeef.fields.price, 5.29);
+  assert.equal(aldiBeef.fields.regular_price, 6.19);
+  assert.equal(aldiBeef.fields.estimated_package_price, 11.90);
+  assert.equal(aldiBeef.fields.package_weight, 2.25);
+  assert.equal(aldiBeef.fields.raw_price_text, "$11.90 /pkg (est.)");
+  const aldiMismatchedBeef = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "mismatch", name: "Ground Beef", price: { viewSection: { itemCard: { priceString: "$11.90 /pkg (est.)", pricingUnitString: "$7.29 / lb" } } }, quantityAttributes: { parWeight: { quantity: 2.25, measurementUnit: { costUnit: "lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", 10).products[0];
+  assert.equal(aldiMismatchedBeef.fields.price, null, "Conflicting package and pound prices cannot become an approved price.");
+  assert.equal(aldiMismatchedBeef.fields.estimated_package_price, 11.90);
+  assert.ok(aldiMismatchedBeef.warnings.some((warning) => /price basis/.test(warning)));
+  const unsafeDetail = mergeCategoryProductDetails(aldiMismatchedBeef, { fields: { price: 11.90, regular_price: 13.93 }, confidence: { price: "high", regular_price: "high" } });
+  assert.equal(unsafeDetail.fields.price, null, "Product-page enrichment must not restore an unverified package estimate as the per-pound price.");
 
   const aldiCategoryOnly = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-ball-tip", name: "Ball Tip Steak", viewSection: { trackingProperties: { product_category_name: "Ball Tip Steak" } }, price: { viewSection: { itemCard: { priceString: "$9.99 / lb", pricePerUnitString: "$9.99 / lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
   assert.equal(aldiCategoryOnly.fields.department, "");
@@ -132,6 +145,18 @@ async function main() {
   assert.equal(aldiAnalyzeUnconfirmed.location.confidence, "unknown", "ALDI without request storefront context must remain unconfirmed.");
   assert.equal(aldiAnalyzeUnconfirmed.products[0].readiness.ready, false);
   assert.equal(collectionContext("<html><title>ALDI Beef</title></html>", "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379").postalCode, "", "ALDI context must not default to Janesville.");
+  const aldiState = { SimplifiedCollectionHeaderQuery: { [JSON.stringify({ postalCode: "43215", shopId: "8475", slug: "rc-burgers-ground-beef-87379" })]: {} }, GetLastUserLocation: { "{}": { lastUserLocation: { postalCode: "43215", zoneId: "787" } } } };
+  const aldiStateHtml = `<script>${encodeURIComponent(JSON.stringify(aldiState))}</script>`;
+  assert.equal(collectionContext(aldiStateHtml, "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379").zoneId, "787", "Price requests require the zone from the matching storefront location.");
+  const aldiRequest = aldiCollectionRequest(aldiStateHtml, "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", 25, "test-view");
+  const aldiVariables = JSON.parse(new URL(aldiRequest.url).searchParams.get("variables"));
+  assert.equal(aldiVariables.postalCode, "53546");
+  assert.equal(aldiVariables.shopId, "31930");
+  assert.equal(aldiVariables.zoneId, "797");
+  assert.equal(aldiRequest.context.source, "configured_janesville", "An out-of-area server default must not supply Janesville prices.");
+  const aldiConfigured = analyzePage("<title>ALDI Beef</title>", "https://www.aldi.us/store/aldi/collections/rc-burgers-ground-beef-87379", stores, { maxProducts: 10, aldiCollection: { ...aldiAnalyzeCollection, __aldiContext: aldiRequest.context } });
+  assert.equal(aldiConfigured.location.confidence, "likely_janesville", "Configured catalog selection still needs an exact-store confirmation.");
+  assert.equal(aldiConfigured.products[0].readiness.ready, false);
   const aldiUnconfirmed = extractCategory("<html><title>ALDI Meat & Seafood</title></html>", "https://www.aldi.us/store/aldi/collections/rc-meat-seafood", stores, 10, {
     aldiCollection: { data: { collectionProducts: { items: [{ productId: "aldi-ground-beef", name: "Ground Beef", size: "", price: { viewSection: { itemCard: { priceString: "$8.99", pricePerUnitString: "$8.99 / lb" } } } }] } }, __aldiContext: { postalCode: "53703", city: "Madison" } }
   });
@@ -544,7 +569,7 @@ async function main() {
   assert.doesNotMatch(adminScript, /new FormData\(card\)/, "Importer product articles must never be passed to FormData.");
   assert.doesNotMatch(adminScript, /new FormData\((?:preview|result|container)\)/, "Bulk importer containers must never be passed to FormData.");
   assert.match(adminScript, /function collectImporterRowData\(/);
-  assert.match(adminScript, /approveCategoryImportCard\(card, \{ confirmLocation: card\.dataset\.storeSourceConfirmed !== "true", bulk: true \}\)/, "Bulk approval must reuse per-row approval logic while respecting verified store sources.");
+  assert.match(adminScript, /approveCategoryImportCard\(card, \{ confirmLocation: card\.dataset\.retailerId === "aldi" \|\| card\.dataset\.storeSourceConfirmed !== "true", bulk: true \}\)/, "Bulk approval must record administrator confirmation for ALDI prices, even when storefront context is present.");
   assert.match(adminScript, /data-store-source-confirmed/);
   assert.match(adminScript, /Store source confirmed/);
   const approvalFlowSource = adminScript.slice(adminScript.indexOf("async function approveCategoryImportCard("), adminScript.indexOf("async function saveCategoryUrlImports("));
@@ -589,6 +614,19 @@ async function main() {
   }, "Canonical importer state must retain edited price, package, store, duplicate, and location values.");
   const importerRowReadiness = Function(`"use strict"; ${namedFunctionSource(adminScript, "positiveImporterPrice")} ${namedFunctionSource(adminScript, "collectImporterRowData")} ${namedFunctionSource(adminScript, "importerRowReadiness")} return importerRowReadiness;`)();
   const applyCategoryLocationReadiness = loadNamedFunction(adminScript, "applyCategoryLocationReadiness");
+  const setAdminCategoryLocationOverride = loadNamedFunction(adminScript, "setAdminCategoryLocationOverride");
+  const overrideData = { category: { adapter: "aldi", location: { confidence: "unknown" }, products: [
+    { location: { confidence: "unknown" }, readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required"] } },
+    { location: { confidence: "unknown" }, readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required", "price_required"] } },
+    { location: { confidence: "unknown" }, readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required"] } }
+  ] } };
+  assert.equal(setAdminCategoryLocationOverride(overrideData, [0, 1], 2, true), 2);
+  assert.equal(overrideData.category.products[0].readiness.ready, true);
+  assert.deepEqual(overrideData.category.products[1].readiness.reasons, ["price_required"], "Location confirmation must not clear missing price.");
+  assert.equal(overrideData.category.products[2].readiness.ready, false, "Unselected rows stay unconfirmed.");
+  assert.equal(overrideData.category.products[0].location.store_id, 2);
+  setAdminCategoryLocationOverride(overrideData, [0], 2, false);
+  assert.deepEqual(overrideData.category.products[0].readiness.reasons, ["location_confirmation_required"]);
   const urlParserResultSummary = Function(`"use strict"; ${namedFunctionSource(adminScript, "applyCategoryLocationReadiness")} ${namedFunctionSource(adminScript, "urlParserResultSummary")} return urlParserResultSummary;`)();
   const confirmedAldiUiData = { url_type: "category", category: { adapter: "aldi", location: { confidence: "confirmed_janesville" }, products: [{ readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required"] } }, { readiness: { ready: false, status: "needs_review", reasons: ["location_confirmation_required", "price_required"] } }] } };
   applyCategoryLocationReadiness(confirmedAldiUiData);

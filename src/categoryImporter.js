@@ -72,8 +72,13 @@ function mergeCategoryProductDetails(categoryProduct = {}, detail = {}) {
   };
 
   replaceField("name", (value) => Boolean(clean(value, 120)));
-  replaceField("price", (value) => parsePrice(value) !== null);
-  replaceField("regular_price", (value) => parsePrice(value) !== null);
+  // Product-page structured data may expose the same estimated package total
+  // without its weight. Keep an unresolved ALDI variable-weight basis in review.
+  const unresolvedEstimatedBasis = categoryProduct.fields?.estimated_package_price != null && categoryPrice === null;
+  if (!unresolvedEstimatedBasis) {
+    replaceField("price", (value) => parsePrice(value) !== null);
+    replaceField("regular_price", (value) => parsePrice(value) !== null);
+  }
   replaceField("unit_price", (value) => parsePrice(value) !== null);
   for (const field of ["brand", "sku", "gtin", "availability"]) replaceField(field, (value) => Boolean(clean(value, 120)));
   replaceField("image_url", (value) => validHttpsSource(value));
@@ -212,7 +217,9 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
   const walmartStore = parseWalmartStoreUrl(pageUrl);
   const location = walmartStore
     ? { confidence: "confirmed_store_source", evidence: `The retailer URL establishes Walmart store #${walmartStore.retailer_store_id}.` }
-    : adapter === "aldi" && aldiStore && aldiPostalMatchesJanesville
+    : adapter === "aldi" && aldiStore && aldiPostalMatchesJanesville && aldiContext.source === "configured_janesville"
+      ? { confidence: "likely_janesville", evidence: "The ALDI Janesville catalog was requested. Confirm the exact store before approving its prices." }
+      : adapter === "aldi" && aldiStore && aldiPostalMatchesJanesville
       ? { confidence: "confirmed_janesville", evidence: `ALDI GraphQL storefront matched ${aldiStore.name} with postal code ${aldiContext.postalCode}.` }
       : categoryLocation(html, matchedStore || aldiStore);
   products = products.map((item) => {

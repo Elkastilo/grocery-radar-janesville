@@ -3,6 +3,9 @@
 const { parsePrice, normalizeRetailerText, normalizePackage, normalizeImageUrl, normalizeProductUrl } = require("../productImporter");
 
 const ALDI_GRAPHQL_HASH = "5573f6ef85bfad81463b431985396705328c5ac3283c4e183aa36c6aad1afafe";
+// Captured from the ALDI Janesville storefront. Keep the request scoped to this
+// city's catalog when ALDI's server chooses a different default postal code.
+const ALDI_JANESVILLE_CONTEXT = Object.freeze({ shopId: "31930", postalCode: "53546", zoneId: "797" });
 
 function encodedJsonScripts(html) {
   const values = [];
@@ -23,8 +26,10 @@ function encodedJsonScripts(html) {
 
 function collectionContext(html, pageUrl) {
   const fallback = { slug: new URL(pageUrl).pathname.split("/").filter(Boolean).pop() || "", shopId: "", postalCode: "", zoneId: "", retailerLocationId: "", city: "", state: "" };
+  const locationCandidates = [];
   const visit = (value, operationName = "") => {
     if (!value || typeof value !== "object") return;
+    if (value.lastUserLocation?.postalCode && value.lastUserLocation?.zoneId) locationCandidates.push(value.lastUserLocation);
     for (const [key, child] of Object.entries(value)) {
       const nextOperation = /^(SimplifiedCollectionHeaderQuery|ShopCollectionScoped)$/.test(key) ? key : operationName;
       const match = key.match(/^(?:SimplifiedCollectionHeaderQuery|ShopCollectionScoped)\.(\{.*\})$/) || (nextOperation && key.startsWith("{") ? ["", key] : null);
@@ -34,6 +39,7 @@ function collectionContext(html, pageUrl) {
           if (variables.slug) fallback.slug = String(variables.slug);
           if (variables.shopId) fallback.shopId = String(variables.shopId);
           if (variables.postalCode) fallback.postalCode = String(variables.postalCode);
+          if (variables.postalCode && variables.zoneId) locationCandidates.push(variables);
         } catch { /* Continue with the next serialized query key. */ }
       }
       if (typeof child === "string") {
@@ -45,11 +51,16 @@ function collectionContext(html, pageUrl) {
     }
   };
   for (const value of encodedJsonScripts(html)) visit(value);
+  const matchingLocation = locationCandidates.find((candidate) => String(candidate.postalCode) === fallback.postalCode && candidate.zoneId);
+  if (matchingLocation) fallback.zoneId = String(matchingLocation.zoneId);
   return fallback;
 }
 
 function aldiCollectionRequest(html, pageUrl, maxProducts, pageViewId) {
-  const context = collectionContext(html, pageUrl);
+  const pageContext = collectionContext(html, pageUrl);
+  const context = pageContext.postalCode === ALDI_JANESVILLE_CONTEXT.postalCode && pageContext.shopId && pageContext.zoneId
+    ? { ...pageContext, source: "retailer_page" }
+    : { ...pageContext, ...ALDI_JANESVILLE_CONTEXT, source: "configured_janesville" };
   const variables = {
     shopId: context.shopId,
     slug: context.slug,
@@ -125,10 +136,12 @@ function normalizeAldiItem(item, pageUrl) {
   if (!name) return null;
   const rawSize = normalizeRetailerText(item.size, 80);
   const packageInfo = normalizePackage(rawSize);
-  const price = parsePrice(itemPrice(item));
-  const regularPrice = itemRegularPrice(item, price);
+  const packagePrice = parsePrice(itemPrice(item));
+  const packageRegularPrice = itemRegularPrice(item, packagePrice);
   const regularCandidate = itemRegularPriceCandidate(item);
-  const priceConflict = regularCandidate !== null && price !== null && regularCandidate <= price;
+  let price = packagePrice;
+  let regularPrice = packageRegularPrice;
+  let priceConflict = regularCandidate !== null && packagePrice !== null && regularCandidate <= packagePrice;
   const unitPriceText = itemUnitPrice(item);
   const sourceUnit = unitFromPriceText(unitPriceText);
   const quantity = packageInfo.quantity ?? 1;
@@ -142,6 +155,25 @@ function normalizeAldiItem(item, pageUrl) {
   const packageWeightText = card.pricingUnitSecondaryString || details.pricingUnitSecondaryString || item?.quantityAttributes?.viewSection?.parWeightDisplayString || item?.price?.parWeightTotalEstimate?.viewSection?.parWeightString || "";
   const discount = itemDiscount(item);
   const estimatedPackage = /\/\s*pkg|per package|\best\.?\b/i.test(String(itemPrice(item) || ""));
+  const perLbPrice = sourceUnit === "lb" ? parsePrice(unitPriceText) : null;
+  const packageWeight = Number(parWeight?.quantity);
+  const weightInPounds = /^(?:lb|lbs|pound|pounds)$/i.test(String(parWeight?.measurementUnit?.costUnit || ""));
+  // A variable-weight item's displayed total is only an estimate. The
+  // comparable store price is the retailer's per-pound price, provided the
+  // estimated total and weight corroborate that it belongs to this item.
+  if (estimatedPackage) {
+    const matchedBasis = perLbPrice !== null && packagePrice !== null && weightInPounds && packageWeight > 0
+      && Math.abs(packagePrice - perLbPrice * packageWeight) <= Math.max(0.03, packageWeight * 0.015);
+    if (matchedBasis) {
+      price = perLbPrice;
+      regularPrice = packageRegularPrice === null ? null : Number((packageRegularPrice / packageWeight).toFixed(2));
+      priceConflict = priceConflict || (regularPrice !== null && regularPrice <= price);
+    } else {
+      price = null;
+      regularPrice = null;
+      priceConflict = true;
+    }
+  }
   const canonicalUrl = normalizeProductUrl(item?.productCanonicalUrl?.canonicalUrl, pageUrl);
   const productType = normalizeRetailerText(tracking.product_category_name, 100);
   const department = normalizeRetailerText(
@@ -154,11 +186,11 @@ function normalizeAldiItem(item, pageUrl) {
   const productUrl = canonicalUrl || normalizeProductUrl(`/store/aldi/products/${productId}${slugSuffix ? `-${slugSuffix}` : ""}`, pageUrl);
   const image = normalizeImageUrl(itemImage(item), pageUrl);
   const extra = {
-    package_price: price,
-    estimated_package_price: estimatedPackage ? price : null,
+    package_price: packagePrice,
+    estimated_package_price: estimatedPackage ? packagePrice : null,
     per_unit_price: parsePrice(unitPriceText),
     per_unit_price_unit: sourceUnit || "",
-    per_lb_price: sourceUnit === "lb" ? parsePrice(unitPriceText) : null,
+    per_lb_price: perLbPrice,
     package_weight: parWeight?.quantity ?? null,
     package_weight_unit: parWeight?.measurementUnit?.costUnit || "",
     package_weight_text: normalizeRetailerText(packageWeightText, 100),
@@ -207,11 +239,11 @@ function normalizeAldiItem(item, pageUrl) {
       gtin: normalizeRetailerText(item.legacyId || item.legacyV3Id, 40),
       availability: normalizeRetailerText(item.availability?.available === false ? "out of stock" : "in stock", 40)
     },
-    confidence: { name: "high", brand: item.brandName ? "high" : "unknown", price: price === null ? "unknown" : "high", regular_price: regularPrice === null ? "unknown" : "high", raw_size_text: rawSize ? "high" : "unknown", quantity: rawSize ? "high" : "medium", item_size: packageInfo.item_size !== null ? "high" : "unknown", unit: packageInfo.unit || sourceUnit ? "high" : "medium", package_type: packageInfo.package_type ? "high" : "unknown", image_url: image ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: productId ? "high" : "unknown", gtin: item.legacyId ? "medium" : "unknown" },
-    field_origins: { name: "aldi_graphql_collection", brand: item.brandName ? "aldi_graphql_collection" : "", price: price === null ? "" : "aldi_graphql_collection", regular_price: regularPrice === null ? "" : "aldi_graphql_collection", raw_size_text: rawSize ? "aldi_graphql_collection" : "", unit_price: unitPriceText ? "aldi_graphql_collection" : "", estimated_package_price: extra.estimated_package_price === null ? "" : "aldi_graphql_collection", per_lb_price: extra.per_lb_price === null ? "" : "aldi_graphql_collection", package_weight: extra.package_weight === null ? "" : "aldi_graphql_collection", discount_percent: extra.discount_percent === null ? "" : "aldi_graphql_collection", stock_status: extra.stock_status ? "aldi_graphql_collection" : "", department: extra.department ? "aldi_graphql_collection" : "", category: extra.category ? "aldi_graphql_collection" : "", subcategory: extra.subcategory ? "aldi_graphql_collection" : "", product_type: extra.product_type ? "aldi_graphql_collection" : "", image_url: image ? "aldi_graphql_collection" : "", product_url: "aldi_graphql_collection", sku: productId ? "aldi_graphql_collection" : "", gtin: item.legacyId ? "aldi_graphql_collection" : "" },
+    confidence: { name: "high", brand: item.brandName ? "high" : "unknown", price: price === null ? "unknown" : "high", regular_price: regularPrice === null ? "unknown" : "high", raw_size_text: packageInfo.raw_text ? "high" : "unknown", quantity: packageInfo.raw_text ? "high" : "medium", item_size: packageInfo.item_size !== null ? "high" : "unknown", unit: packageInfo.unit || sourceUnit ? "high" : "medium", package_type: packageInfo.package_type ? "high" : "unknown", image_url: image ? "high" : "unknown", product_url: productUrl ? "high" : "unknown", sku: productId ? "high" : "unknown", gtin: item.legacyId ? "medium" : "unknown" },
+    field_origins: { name: "aldi_graphql_collection", brand: item.brandName ? "aldi_graphql_collection" : "", price: price === null ? "" : estimatedPackage ? "aldi_graphql_collection:verified_per_lb" : "aldi_graphql_collection", regular_price: regularPrice === null ? "" : estimatedPackage ? "aldi_graphql_collection:package_regular_divided_by_weight" : "aldi_graphql_collection", raw_size_text: packageInfo.raw_text ? "aldi_graphql_collection" : "", unit_price: unitPriceText ? "aldi_graphql_collection" : "", estimated_package_price: extra.estimated_package_price === null ? "" : "aldi_graphql_collection", per_lb_price: extra.per_lb_price === null ? "" : "aldi_graphql_collection", package_weight: extra.package_weight === null ? "" : "aldi_graphql_collection", discount_percent: extra.discount_percent === null ? "" : "aldi_graphql_collection", stock_status: extra.stock_status ? "aldi_graphql_collection" : "", department: extra.department ? "aldi_graphql_collection" : "", category: extra.category ? "aldi_graphql_collection" : "", subcategory: extra.subcategory ? "aldi_graphql_collection" : "", product_type: extra.product_type ? "aldi_graphql_collection" : "", image_url: image ? "aldi_graphql_collection" : "", product_url: "aldi_graphql_collection", sku: productId ? "aldi_graphql_collection" : "", gtin: item.legacyId ? "aldi_graphql_collection" : "" },
     methods_used: ["aldi_graphql_collection"], overall_confidence: price === null ? "medium" : "high", category_relevance: "high", selected_by_default: true,
     metadata: extra,
-    warnings: [price === null ? "Price was not present in the ALDI collection data." : "", priceConflict ? "The ALDI source exposed conflicting current and regular prices." : "", image ? "" : "Image source was not present."].filter(Boolean)
+    warnings: [estimatedPackage && price === null ? "The estimated package total could not be verified against the per-pound price and weight; review the price basis." : price === null ? "Price was not present in the ALDI collection data." : "", priceConflict && price !== null ? "The ALDI source exposed conflicting current and regular prices." : "", image ? "" : "Image source was not present."].filter(Boolean)
   };
 }
 
@@ -228,4 +260,4 @@ function extractAldiCollection(data, pageUrl, maxProducts) {
   return { products, itemIds: Array.isArray(collection.itemIds) ? collection.itemIds.slice(0, maxProducts) : [], hasMore: Boolean(collection.hasMore), collection: collection.collection || null };
 }
 
-module.exports = { ALDI_GRAPHQL_HASH, collectionContext, aldiCollectionRequest, normalizeAldiItem, extractAldiCollection };
+module.exports = { ALDI_GRAPHQL_HASH, ALDI_JANESVILLE_CONTEXT, collectionContext, aldiCollectionRequest, normalizeAldiItem, extractAldiCollection };
