@@ -222,6 +222,7 @@ function normalizeAldiItem(item, pageUrl) {
       raw_price_text: normalizeRetailerText(itemPrice(item), 120),
       unit_price: parsePrice(unitPriceText),
       unit_price_unit: sourceUnit || unit,
+      is_estimated_package_price: estimatedPackage,
       estimated_package_price: extra.estimated_package_price,
       per_lb_price: extra.per_lb_price,
       package_weight: extra.package_weight,

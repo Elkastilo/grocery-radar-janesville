@@ -72,14 +72,15 @@ function mergeCategoryProductDetails(categoryProduct = {}, detail = {}) {
   };
 
   replaceField("name", (value) => Boolean(clean(value, 120)));
-  // Product-page structured data may expose the same estimated package total
-  // without its weight. Keep an unresolved ALDI variable-weight basis in review.
-  const unresolvedEstimatedBasis = categoryProduct.fields?.estimated_package_price != null && categoryPrice === null;
-  if (!unresolvedEstimatedBasis) {
+  // Detail-page prices may be package totals. Preserve the collection's
+  // per-pound basis, even when the estimated total has no usable amount.
+  const hasEstimatedPackageBasis = categoryProduct.fields?.is_estimated_package_price === true
+    || categoryProduct.fields?.estimated_package_price != null;
+  if (!hasEstimatedPackageBasis) {
     replaceField("price", (value) => parsePrice(value) !== null);
     replaceField("regular_price", (value) => parsePrice(value) !== null);
+    replaceField("unit_price", (value) => parsePrice(value) !== null);
   }
-  replaceField("unit_price", (value) => parsePrice(value) !== null);
   for (const field of ["brand", "sku", "gtin", "availability"]) replaceField(field, (value) => Boolean(clean(value, 120)));
   replaceField("image_url", (value) => validHttpsSource(value));
 
