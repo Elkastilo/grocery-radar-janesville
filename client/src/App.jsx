@@ -467,7 +467,7 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
             <p className="text-lg font-extrabold leading-snug text-slate-950 sm:text-xl">{displayText(card.displayName)}</p>
             {brand ? <p className="mt-1 text-sm font-semibold text-emerald-700">{displayText(brand)}</p> : null}
             <p className="mt-1 text-sm font-medium text-slate-500">
-              {[card.size, ...(safeProduct.meat_classification ? Object.values(safeProduct.meat_classification) : [titleCase(card.category)])].filter(Boolean).join(' · ')}
+              {[card.size, ...(safeProduct.catalog_facets ? Object.values(safeProduct.catalog_facets) : [titleCase(card.category)])].filter(Boolean).join(' · ')}
             </p>
             {description ? <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-slate-600">{displayText(description)}</p> : null}
           </div>
@@ -1163,14 +1163,15 @@ function SearchScreen({
   addToCart,
   reload,
 }) {
-  const [meatFilters, setMeatFilters] = useState({ animal: '', type: '', cut: '' })
+  const [catalogFilters, setCatalogFilters] = useState({ animal: '', type: '', cut: '' })
   const meatDepartment = activeCategory === 'meat'
+  const hasDepartmentFilters = Boolean(activeCategory && activeCategory !== 'other')
   useEffect(() => {
-    if (!meatDepartment) setMeatFilters({ animal: '', type: '', cut: '' })
-  }, [meatDepartment])
-  const meatLevels = [['animal', 'Animal'], ['type', 'Product type'], ['cut', 'Exact cut']]
-  const meatMatches = (item, levels = meatLevels) => !meatDepartment || (item.category === 'meat' && levels.every(([field]) => (
-    !meatFilters[field] || item.meat_classification?.[field] === meatFilters[field]
+    setCatalogFilters({ animal: '', type: '', cut: '' })
+  }, [activeCategory])
+  const catalogLevels = meatDepartment ? [['animal', 'Animal'], ['type', 'Product type'], ['cut', 'Exact cut']] : [['type', 'Product type'], ['cut', 'Variety']]
+  const catalogMatches = (item, levels = catalogLevels) => !hasDepartmentFilters || (item.category === activeCategory && levels.every(([field]) => (
+    !catalogFilters[field] || item.catalog_facets?.[field] === catalogFilters[field]
   )))
   const approvedReports = (searchData.reports || []).filter(hasNumericApprovedReportPrice)
   const foodCategorySet = new Set(['meat', 'dairy', 'produce', 'pantry', 'frozen', 'drinks', 'snacks', 'bakery'])
@@ -1182,8 +1183,8 @@ function SearchScreen({
   }
   const availableReports = (activeFilter === 'deals' ? approvedReports.filter(isDealReport) : approvedReports).filter(filterFood).filter(filterPrice)
   const availableProducts = (searchData.products || []).filter(filterFood).filter(filterPrice)
-  const reports = availableReports.filter((report) => meatMatches(report))
-  const products = availableProducts.filter((product) => meatMatches(product))
+  const reports = availableReports.filter((report) => catalogMatches(report))
+  const products = availableProducts.filter((product) => catalogMatches(product))
   const productSectionTitle = activeFilter === 'cheapest' ? 'Lowest approved prices' : 'Approved product matches'
 
   return (
@@ -1233,21 +1234,21 @@ function SearchScreen({
           </button>
         ))}
       </div>
-      {meatDepartment ? <div className="mt-3 space-y-2 rounded-xl border border-emerald-100 bg-white/80 p-3">
-        {meatLevels.map(([field, label], index) => {
+      {hasDepartmentFilters ? <div className="mt-3 space-y-2 rounded-xl border border-emerald-100 bg-white/80 p-3">
+        {catalogLevels.map(([field, label], index) => {
           const options = [...new Set([...availableProducts, ...availableReports]
-            .filter((item) => meatMatches(item, meatLevels.slice(0, index)))
-            .map((item) => item.meat_classification?.[field]).filter(Boolean))].sort()
-          if (!options.length && !meatFilters[field]) return null
+            .filter((item) => catalogMatches(item, catalogLevels.slice(0, index)))
+            .map((item) => item.catalog_facets?.[field]).filter(Boolean))].sort()
+          if (!options.length && !catalogFilters[field]) return null
           return <div key={field} className="flex flex-wrap items-center gap-2" role="group" aria-label={label}>
             <span className="w-full text-sm font-bold text-slate-700 sm:w-28">{label}</span>
-            {['', ...new Set([...options, ...[meatFilters[field]].filter(Boolean)])].map((option) => (
-              <button key={option} type="button" aria-pressed={meatFilters[field] === option}
-                onClick={() => setMeatFilters((previous) => Object.fromEntries(meatLevels.map(([key], level) => [
+            {['', ...new Set([...options, ...[catalogFilters[field]].filter(Boolean)])].map((option) => (
+              <button key={option} type="button" aria-pressed={catalogFilters[field] === option}
+                onClick={() => setCatalogFilters((previous) => Object.fromEntries(catalogLevels.map(([key], level) => [
                   key, level < index ? previous[key] : level === index ? option : ''
                 ])))}
-                className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${meatFilters[field] === option ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>
-                {option || (field === 'cut' ? 'All cuts' : 'All')}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${catalogFilters[field] === option ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-slate-200 bg-white text-slate-700'}`}>
+                {option || (field === 'cut' && meatDepartment ? 'All cuts' : 'All')}
               </button>
             ))}
           </div>

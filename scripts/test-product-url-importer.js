@@ -203,6 +203,12 @@ async function main() {
   assert.equal(classifyMeat("Beef and Pork Sausage"), null);
   assert.equal(classifyMeat("Imitation Crab"), null);
   assert.equal(classifyMeat("Tenderloin"), null);
+  const bison = analyzePage('<script type="application/ld+json">{"@type":"Product","name":"Bison Ribeye Steak","brand":{"name":"Prairie Farm"},"offers":{"@type":"Offer","price":"12.99"}}</script>', "https://www.aldi.us/product/bison-ribeye", stores);
+  assert.equal(bison.extraction.fields.brand, "Prairie Farm");
+  assert.deepEqual(bison.extraction.fields.catalog_facets, { animal: "Bison", type: "Steaks", cut: "Ribeye" });
+  const apples = analyzePage('<script type="application/ld+json">{"@type":"Product","name":"Honeycrisp Apples","category":"Fresh Produce > Apples > Honeycrisp","offers":{"@type":"Offer","price":"3.99"}}</script>', "https://www.aldi.us/product/honeycrisp", stores);
+  assert.equal(apples.extraction.fields.catalog_category, "produce");
+  assert.deepEqual(apples.extraction.fields.catalog_facets, { animal: "", type: "Apples", cut: "Honeycrisp" });
   const structuredCategory = analyzePage('<script type="application/ld+json">{"@type":"Product","name":"Milk","category":"Dairy & Eggs","offers":{"@type":"Offer","price":"2.49"}}</script>', "https://www.aldi.us/product/milk", stores);
   assert.equal(structuredCategory.extraction.fields.catalog_category, "dairy");
 

@@ -8,6 +8,7 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
 const multer = require("multer");
+const { cleanCatalogFacets } = require("./src/catalogFacets");
 const { classifyMeat } = require("./src/meatClassification");
 const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteJsonFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
@@ -536,6 +537,19 @@ function calculateConfidence(proofType, verificationCount, disputeCount) {
   return baseConfidence(proofType);
 }
 
+function publicCatalogFacets(row, name) {
+  const saved = parseMetadataJson(row.product_attributes_json).import_classification;
+  if (saved?.department === row.category) return cleanCatalogFacets(saved, row.category);
+  return row.category === "meat" ? classifyMeat(name) : null;
+}
+
+function pendingCatalogFacets(input, department) {
+  if (!["catalog_animal", "catalog_type", "catalog_cut"].some((key) => Object.hasOwn(input, key))) return null;
+  return JSON.stringify({ department, ...cleanCatalogFacets({
+    animal: input.catalog_animal, type: input.catalog_type, cut: input.catalog_cut
+  }, department) });
+}
+
 function formatReport(row) {
   const shopperImage = shopperProductImage(row, {
     idField: "product_image_id",
@@ -558,7 +572,8 @@ function formatReport(row) {
     product_image_alt_text: shopperImage.altText,
     username: row.username,
     category: row.category,
-    meat_classification: row.category === "meat" ? classifyMeat(row.product_display_name || row.item_name) : null,
+    catalog_facets: publicCatalogFacets(row, row.product_display_name || row.item_name),
+    meat_classification: row.category === "meat" ? publicCatalogFacets(row, row.product_display_name || row.item_name) : null,
     price: Number(row.price),
     price_label: row.display_offer_text || `$${Number(row.price).toFixed(2)}`,
     regular_price: row.regular_price === null ? null : Number(row.regular_price),
@@ -1828,7 +1843,8 @@ function formatProduct(row) {
     canonical_name: row.canonical_name,
     display_name: row.display_name,
     category: row.category,
-    meat_classification: row.category === "meat" ? classifyMeat(row.display_name) : null,
+    catalog_facets: publicCatalogFacets(row, row.display_name),
+    meat_classification: row.category === "meat" ? publicCatalogFacets(row, row.display_name) : null,
     default_size_text: row.default_size_text || "",
     default_quantity: row.default_quantity === null || row.default_quantity === undefined
       ? null
@@ -18108,7 +18124,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const itemSize = Number(input.item_size);
       const sellQuantity = Number(input.sell_quantity);
       const unitPriceValue = parsePrice(input.unit_price);
-      const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance,package_quantity,item_size,package_unit,package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20), Number.isFinite(packageQuantity) && packageQuantity > 0 ? packageQuantity : null, Number.isFinite(itemSize) && itemSize > 0 ? itemSize : null, cleanText(input.unit, 30), cleanText(input.package_type, 40), Number.isFinite(sellQuantity) && sellQuantity > 0 ? sellQuantity : null, cleanText(input.sell_unit, 30), unitPriceValue, cleanText(input.unit_price_unit, 30), retailerDescription, idempotencyKey || null]);
+      const imported = await run(`INSERT INTO product_url_imports (batch_id,row_id,source_url,source_domain,fetched_url,extraction_method,raw_price_text,raw_size_text,image_source_url,sku,gtin,availability,field_confidences_json,extraction_warnings_json,retailer_name,price_location_confidence,location_evidence_text,imported_by,imported_at,created_at,category_relevance,package_quantity,item_size,package_unit,package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key,catalog_facets_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [batch.lastID, row.lastID, itemSourceUrl, sourceDomain, categorySourceUrl, methods.join(","), cleanText(input.raw_price_text, 120), cleanText(input.raw_size_text, 120), imageSource, cleanText(input.sku, 100), cleanText(input.gtin, 40), cleanText(input.availability, 120), JSON.stringify(confidences).slice(0, 5000), JSON.stringify(warnings).slice(0, 5000), cleanText(request.body.retailer_name, 120), locationConfidence, cleanText(request.body.location_evidence_text, 500), request.adminUser.id, now, now, cleanText(input.category_relevance || "unknown", 20), Number.isFinite(packageQuantity) && packageQuantity > 0 ? packageQuantity : null, Number.isFinite(itemSize) && itemSize > 0 ? itemSize : null, cleanText(input.unit, 30), cleanText(input.package_type, 40), Number.isFinite(sellQuantity) && sellQuantity > 0 ? sellQuantity : null, cleanText(input.sell_unit, 30), unitPriceValue, cleanText(input.unit_price_unit, 30), retailerDescription, idempotencyKey || null, pendingCatalogFacets(input, draft.category)]);
       await run("UPDATE product_url_imports SET retailer_store_id=?,retailer_store_slug=?,price_source_type=?,price_source_url=?,price_source_store_id=?,price_retrieved_at=?,location_confirmation_method=? WHERE id=?", [verifiedStoreSource ? priceSourceStore.retailer_store_id : null, verifiedStoreSource ? priceSourceStore.retailer_store_slug : null, verifiedStoreSource ? "retailer_store_page" : cleanText(input.price_source_type || "generic_retailer_web", 40), priceSourceUrl || null, verifiedStoreSource ? priceSourceStore.retailer_store_id : null, cleanText(input.price_retrieved_at, 50) || null, verifiedStoreSource ? "retailer_store_page" : null, imported.lastID]);
       created.push({ input_index: itemIndex, name: draft.item_name, batch_id: batch.lastID, row_id: row.lastID, import_id: imported.lastID, duplicate_candidates: duplicates, requested_image_url: imageSource });
     } catch (error) {
@@ -18197,6 +18213,13 @@ app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requi
   if (forceProductId && CATEGORIES.includes(reviewedCategory) && reviewedCategory !== "other") {
     await run("UPDATE products SET category=?,updated_by=?,updated_at=? WHERE id=? AND status != 'merged' AND category != ?",
       [reviewedCategory, request.adminUser.id, new Date().toISOString(), forceProductId, reviewedCategory]);
+  }
+  if (imported.catalog_facets_json && reviewedCategory && reviewedCategory !== "other") {
+    await run(`UPDATE products SET product_attributes_json = json_set(
+      CASE WHEN json_valid(product_attributes_json) THEN product_attributes_json ELSE '{}' END,
+      '$.import_classification', json(?)), updated_by=?, updated_at=?
+      WHERE id=? AND status != 'merged' AND category=?`,
+    [imported.catalog_facets_json, request.adminUser.id, new Date().toISOString(), approval.product_id, reviewedCategory]);
   }
   const approvedAt = new Date().toISOString();
   const ownsNewReport = Number(approval.report_id) > 0 && Number((await get("SELECT source_import_row_id FROM price_reports WHERE id=?", [approval.report_id]))?.source_import_row_id) === Number(imported.row_id);
@@ -18345,8 +18368,8 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
         raw_size_text, image_source_url, sku, gtin, availability, field_confidences_json,
         extraction_warnings_json, retailer_name, price_location_confidence, location_evidence_text,
         imported_by, imported_at, created_at, category_relevance, package_quantity,item_size,package_unit,
-        package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        package_type,sell_quantity,sell_unit,unit_price,unit_price_unit,retailer_description,idempotency_key,catalog_facets_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       batchId, rowId, draft.source_url, sourceDomain, cleanText(request.body.fetched_url || draft.source_url, 2000),
       extractionMethods.join(","), cleanText(request.body.raw_price_text, 120), cleanText(request.body.raw_size_text, 120),
@@ -18357,7 +18380,7 @@ app.post("/api/admin/product-url-imports", requireAdminAccess, requireLoggedInAd
       Number(request.body.quantity) > 0 ? Number(request.body.quantity) : null, Number(request.body.item_size) > 0 ? Number(request.body.item_size) : null,
       cleanText(request.body.unit, 30), cleanText(request.body.package_type, 40), Number(request.body.sell_quantity) > 0 ? Number(request.body.sell_quantity) : null,
       cleanText(request.body.sell_unit, 30), parsePrice(request.body.unit_price), cleanText(request.body.unit_price_unit, 30), retailerDescription,
-      idempotencyKey || null
+      idempotencyKey || null, pendingCatalogFacets(request.body, draft.category)
     ]);
     importId = imported.lastID;
   } catch (error) {

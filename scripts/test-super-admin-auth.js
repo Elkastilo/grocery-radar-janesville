@@ -745,12 +745,15 @@ async function main() {
       retailer_name: "ALDI", store_id: walmartJanesvilleStore.id,
       items: [{
         name: "Petite Sirloin Steak Estimate Fixture", category: "frozen",
+        catalog_type: "  Beef Roasts ", catalog_cut: " rib eye ",
         price: 9.99, quantity: 1, unit: "lb", unit_price: 9.99, unit_price_unit: "lb",
         estimated_item_price: 13.99, approximate_item_weight: 1.4, approximate_item_weight_unit: "lb",
         product_url: "https://www.aldi.us/store/aldi/products/sirloin-estimate-fixture"
       }]
     });
     assert.equal(updatedWeight.response.status, 201, JSON.stringify(updatedWeight.body));
+    const beforeApproval = await ownerClient.get("/api/products?category=frozen&q=petite%20sirloin");
+    assert.equal(beforeApproval.body.products.some((product) => product.id === weightedProduct.id), false);
     const updatedApproval = await ownerClient.post(
       `/api/admin/product-url-imports/${updatedWeight.body.imports[0].import_id}/approve`,
       { confirm_location: true, duplicate_decision: "use_existing", existing_product_id: weightedProduct.id }
@@ -761,6 +764,7 @@ async function main() {
     const updatedBrowse = await ownerClient.get("/api/products?category=frozen&q=petite%20sirloin");
     const updatedProduct = updatedBrowse.body.products.find((product) => product.id === weightedProduct.id);
     assert.equal(updatedProduct.best_estimated_item_price, 13.99);
+    assert.deepEqual(updatedProduct.catalog_facets, { animal: "", type: "Beef Roasts", cut: "Ribeye" });
 
     const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",

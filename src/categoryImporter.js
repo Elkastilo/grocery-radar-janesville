@@ -6,7 +6,7 @@ const { resolveAdapter } = require("./importers/registry");
 const { extractGenericListing } = require("./importers/generic");
 const { extractFestivalListing } = require("./importers/festival");
 const { extractAldiCollection } = require("./importers/aldi");
-const { classifyMeat } = require("./meatClassification");
+const { suggestCatalogFacets } = require("./catalogFacets");
 const { CATEGORIES } = require("./validation");
 
 const MAX_CATEGORY_PRODUCTS = 50;
@@ -188,21 +188,29 @@ const IMPORT_CATEGORY_ALIASES = new Map([
   ["meat & seafood", "meat"], ["fresh meat", "meat"], ["fresh seafood", "meat"],
   ["meat & poultry", "meat"], ["ground beef", "meat"], ["beef", "meat"], ["seafood", "meat"],
   ["dairy & eggs", "dairy"], ["frozen foods", "frozen"], ["beverages", "drinks"],
+  ["bakery & bread", "bakery"], ["pantry essentials", "pantry"], ["snacks & candy", "snacks"],
+  ["household essentials", "household"], ["deli", "prepared food"],
+  ["baby care", "baby"], ["pet supplies", "pet"],
   ["health & personal care", "health / personal care"]
 ]);
 
+function categoryFromRetailerLabel(value) {
+  const label = clean(value, 100).toLowerCase().replace(/\band\b/g, "&");
+  const category = IMPORT_CATEGORY_ALIASES.get(label) || label;
+  return category !== "other" && CATEGORIES.includes(category) ? category : "";
+}
+
 function importedProductCategory(fields = {}, adapter) {
-  for (const value of [fields.department, fields.category]) {
-    const label = clean(value, 100).toLowerCase().replace(/\band\b/g, "&");
-    const category = IMPORT_CATEGORY_ALIASES.get(label) || label;
-    if (category !== "other" && CATEGORIES.includes(category)) return category;
+  for (const value of [fields.department, ...String(fields.category || "").split(/\s*[>›|]\s*/)]) {
+    const category = categoryFromRetailerLabel(value);
+    if (category) return category;
   }
   // ALDI can supply a broad product type while naming the cut in the title.
   const name = fields.name || "";
   const meatCut = /\b(?:steaks?|ground beef|(?:bottom round|top round|eye of round|sirloin(?: tip)?|chuck|rump|ribeye|prime rib) roasts?)\b/i;
   const excluded = /\b(?:sauce|seasoning|chips|pizza|sandwich|jerky|frozen|plant.based|vegan|vegetarian|style|flavou?red|fries|tomato|mushroom|dinner|meal|soup|gravy)\b/i;
   if (adapter === "aldi" && !excluded.test(name)) {
-    const classification = classifyMeat(name);
+    const classification = suggestCatalogFacets(fields, "meat");
     if (classification?.cut || classification?.type || meatCut.test(name) || meatCut.test(fields.product_type || "")) return "meat";
   }
   return "other";
@@ -210,7 +218,10 @@ function importedProductCategory(fields = {}, adapter) {
 
 function catalogClassification(fields, adapter) {
   const category = importedProductCategory(fields, adapter);
-  return { ...fields, catalog_category: category, meat_classification: category === "meat" ? classifyMeat(fields.name) : null };
+  const retailerPath = String(fields.category || "").split(/\s*[>›|]\s*/);
+  if (categoryFromRetailerLabel(retailerPath[0]) === category) retailerPath.shift();
+  const catalog_facets = suggestCatalogFacets({ ...fields, category: retailerPath.join(" > ") }, category);
+  return { ...fields, catalog_category: category, catalog_facets, meat_classification: category === "meat" ? catalog_facets : null };
 }
 
 function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, options = {}) {

@@ -863,6 +863,7 @@ async function initDb() {
   await addColumnIfMissing("product_url_imports", "unit_price", "REAL");
   await addColumnIfMissing("product_url_imports", "unit_price_unit", "TEXT");
   await addColumnIfMissing("product_url_imports", "retailer_description", "TEXT");
+  await addColumnIfMissing("product_url_imports", "catalog_facets_json", "TEXT");
   await addColumnIfMissing("product_url_imports", "idempotency_key", "TEXT");
   await addColumnIfMissing("product_url_imports", "approval_status", "TEXT NOT NULL DEFAULT 'pending'");
   await addColumnIfMissing("product_url_imports", "approved_product_id", "INTEGER");
