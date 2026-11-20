@@ -733,6 +733,7 @@ async function main() {
     assert.equal(meatBrowse.response.status, 200);
     const weightedProduct = meatBrowse.body.products.find((product) => product.id === weightedApproval.body.product_id);
     assert.ok(weightedProduct, "The approved steak should appear in the Meat category.");
+    assert.deepEqual(weightedProduct.meat_classification, { animal: "Beef", type: "Steaks", cut: "Petite Sirloin" });
     assert.equal(weightedProduct.best_price, 9.99);
     assert.equal(weightedProduct.best_price_unit, "lb");
     assert.equal(weightedProduct.best_estimated_item_price, 12.99);

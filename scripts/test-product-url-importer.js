@@ -162,6 +162,47 @@ async function main() {
     })) } } }
   });
   assert.deepEqual(mixedAldi.products.map((item) => item.fields.catalog_category), ["meat", "other", "other"]);
+  const roastCategoryCases = [
+    ["USDA Choice Black Angus Bottom Round Roast", "Roasts", "meat"],
+    ["USDA Choice Black Angus Sirloin Tip Roast", "Beef Cuts", "meat"],
+    ["USDA Choice Steakhouse Seasoned Chuck Roast", "Seasoned Meat", "meat"],
+    ["Chuck Roast Seasoning", "Roasts", "other"],
+    ["Beef Pot Roast Dinner", "Roasts", "other"],
+    ["Plant-Based Steak", "Steaks", "other"],
+    ["Boneless Pork Tenderloin", "Pork Cuts", "meat"],
+    ["Chicken Leg Quarters", "Poultry", "meat"],
+    ["Lamb Loin Chops", "Lamb Cuts", "meat"],
+    ["Atlantic Salmon Center-Cut Fillets", "Fish", "meat"],
+    ["Frozen Chicken Breast", "Frozen Foods", "frozen"],
+    ["Roast Coffee", "Coffee", "other"]
+  ];
+  const aldiRoasts = analyzePage("<title>ALDI Price Drops</title>", mixedAldi.source_url, stores, {
+    aldiCollection: { data: { collectionProducts: { items: roastCategoryCases.map(([name, type], index) => ({
+      productId: String(index + 1), name, viewSection: { trackingProperties: { product_category_name: type } },
+      price: { viewSection: { itemCard: { priceString: "$6.49" } } }
+    })) } } }
+  });
+  assert.deepEqual(aldiRoasts.products.map((item) => item.fields.catalog_category), roastCategoryCases.map(([, , expected]) => expected));
+  assert.deepEqual(aldiRoasts.products[0].fields.meat_classification, { animal: "Beef", type: "Roasts", cut: "Bottom Round" });
+  assert.deepEqual(aldiRoasts.products[2].fields.meat_classification, { animal: "Beef", type: "Roasts", cut: "Chuck" });
+  assert.equal(aldiRoasts.products[3].fields.meat_classification, null);
+  const { classifyMeat } = require("../src/meatClassification");
+  for (const [name, animal, type, cut] of [
+    ["Boneless Pork Tenderloin", "Pork", "Cuts", "Tenderloin"],
+    ["Pork Baby Back Ribs", "Pork", "Ribs", "Baby Back Ribs"],
+    ["Chicken Leg Quarters", "Chicken", "Cuts", "Leg Quarter"],
+    ["Ground Turkey Breast", "Turkey", "Ground Meat", "Breast"],
+    ["Turkey Bacon", "Turkey", "Bacon", ""],
+    ["Duck Breast", "Duck", "Cuts", "Breast"],
+    ["Lamb Loin Chops", "Lamb", "Chops", "Loin"],
+    ["Boneless Leg of Lamb", "Lamb", "Cuts", "Leg"],
+    ["Atlantic Salmon Center-Cut Fillets", "Salmon", "Fillets", "Center Cut"],
+    ["Raw Peeled and Deveined Shrimp", "Shrimp", "Cuts", "Peeled & Deveined"],
+    ["Lobster Tails", "Lobster", "Cuts", "Tail"]
+  ]) assert.deepEqual(classifyMeat(name), { animal, type, cut }, name);
+  assert.equal(classifyMeat("Beef and Pork Sausage"), null);
+  assert.equal(classifyMeat("Imitation Crab"), null);
+  assert.equal(classifyMeat("Tenderloin"), null);
   const structuredCategory = analyzePage('<script type="application/ld+json">{"@type":"Product","name":"Milk","category":"Dairy & Eggs","offers":{"@type":"Offer","price":"2.49"}}</script>', "https://www.aldi.us/product/milk", stores);
   assert.equal(structuredCategory.extraction.fields.catalog_category, "dairy");
 

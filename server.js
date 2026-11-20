@@ -8,6 +8,7 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
 const multer = require("multer");
+const { classifyMeat } = require("./src/meatClassification");
 const { securityHeaders } = require("./src/securityHeaders");
 const { safeRemoteFetch, safeCategoryRemoteFetch, safeRemoteJsonFetch, CATEGORY_DEFAULTS, validateRemoteUrl, SafeFetchError } = require("./src/safeRemoteFetch");
 const { createProductImagePreviewHandler, storeSanitizedRemoteImage, RemoteImageError } = require("./src/remoteProductImage");
@@ -557,6 +558,7 @@ function formatReport(row) {
     product_image_alt_text: shopperImage.altText,
     username: row.username,
     category: row.category,
+    meat_classification: row.category === "meat" ? classifyMeat(row.product_display_name || row.item_name) : null,
     price: Number(row.price),
     price_label: row.display_offer_text || `$${Number(row.price).toFixed(2)}`,
     regular_price: row.regular_price === null ? null : Number(row.regular_price),
@@ -1826,6 +1828,7 @@ function formatProduct(row) {
     canonical_name: row.canonical_name,
     display_name: row.display_name,
     category: row.category,
+    meat_classification: row.category === "meat" ? classifyMeat(row.display_name) : null,
     default_size_text: row.default_size_text || "",
     default_quantity: row.default_quantity === null || row.default_quantity === undefined
       ? null
