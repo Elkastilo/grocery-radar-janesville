@@ -739,6 +739,28 @@ async function main() {
     assert.equal(weightedProduct.best_approximate_item_weight, 1.3);
     assert.equal(weightedProduct.best_approximate_item_weight_unit, "lb");
 
+    const updatedWeight = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.aldi.us/store/aldi/collections/rc-steaks-92525",
+      retailer_name: "ALDI", store_id: walmartJanesvilleStore.id,
+      items: [{
+        name: "Petite Sirloin Steak Estimate Fixture", category: "frozen",
+        price: 9.99, quantity: 1, unit: "lb", unit_price: 9.99, unit_price_unit: "lb",
+        estimated_item_price: 13.99, approximate_item_weight: 1.4, approximate_item_weight_unit: "lb",
+        product_url: "https://www.aldi.us/store/aldi/products/sirloin-estimate-fixture"
+      }]
+    });
+    assert.equal(updatedWeight.response.status, 201, JSON.stringify(updatedWeight.body));
+    const updatedApproval = await ownerClient.post(
+      `/api/admin/product-url-imports/${updatedWeight.body.imports[0].import_id}/approve`,
+      { confirm_location: true, duplicate_decision: "use_existing", existing_product_id: weightedProduct.id }
+    );
+    assert.equal(updatedApproval.response.status, 200, JSON.stringify(updatedApproval.body));
+    assert.equal(updatedApproval.body.product_id, weightedProduct.id);
+    assert.notEqual(updatedApproval.body.report_id, weightedApproval.body.report_id);
+    const updatedBrowse = await ownerClient.get("/api/products?category=frozen&q=petite%20sirloin");
+    const updatedProduct = updatedBrowse.body.products.find((product) => product.id === weightedProduct.id);
+    assert.equal(updatedProduct.best_estimated_item_price, 13.99);
+
     const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",
       items: [{ idempotency_key: "missing-price-approval-fixture", name: "Missing Price Approval Fixture", price: "", quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/missing-price-fixture", overall_confidence: "low" }]

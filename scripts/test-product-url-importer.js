@@ -618,6 +618,13 @@ async function main() {
   assert.match(bulkFlowSource, /for \(const card of readyCards\)[\s\S]*await approveCategoryImportCard\(/, "Bulk approval must process rows through the shared approval function.");
   assert.match(bulkFlowSource, /if \(result\) approved \+= 1; else failed \+= 1;/, "A failed row must not abort remaining bulk approvals.");
   assert.match(adminScript, /Could not prepare this product for approval\. Please try again\./);
+  const exactImporterMatch = loadNamedFunction(adminScript, "exactImporterMatch");
+  const exactMatch = { type: "canonical_url", confidence: "high", product_id: 42 };
+  assert.equal(exactImporterMatch([exactMatch, { type: "gtin", confidence: "high", product_id: 42 }]), exactMatch);
+  assert.equal(exactImporterMatch([exactMatch, { type: "name_brand_size", confidence: "medium", product_id: 43 }]), null);
+  assert.equal(exactImporterMatch([{ type: "canonical_url", confidence: "high", import_id: 7 }]), null);
+  assert.equal(exactImporterMatch([{ type: "name_brand_size", confidence: "medium", product_id: 42 }]), null);
+  assert.match(adminScript, /class="importer-category-choice"><span>Category<\/span><select name="category"/);
   const collectImporterRowData = loadNamedFunction(adminScript, "collectImporterRowData");
   const categoryImportPayload = Function("productUrlAnalysis", "collectImporterRowData", "positiveImporterPrice",
     `${namedFunctionSource(adminScript, "categoryImportPayload")}; return categoryImportPayload;`)({ category: { ...mixedAldi, products: [...mixedAldi.products, aldiRich] } }, collectImporterRowData, loadNamedFunction(adminScript, "positiveImporterPrice"));

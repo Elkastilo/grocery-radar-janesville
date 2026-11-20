@@ -791,6 +791,7 @@ async function loadAdminData() {
 }
 
 function renderDashboard(notifications = {}, home = null) {
+  adminNotifications.classList.toggle("notification-grid", !home);
   if (home) {
     const attention = home.needs_attention || {};
     const role = home.role || "reviewer";
@@ -4341,15 +4342,13 @@ function renderCategoryUrlPreview(data) {
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
         <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
-        <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
+        <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<label class="importer-category-choice"><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label><span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
         <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong><span data-price-required ${positiveImporterPrice(fields.price) === null ? "" : "hidden"}>Required</span></div>
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
         <div class="importer-unit-price"><strong>${escapeHtml(unitPriceLabel)}</strong><span>Unit price</span></div>
-        <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong>${priceSource.retailer_store_id ? `<span>Store #${escapeHtml(priceSource.retailer_store_id)}</span>` : ""}<span class="importer-location-badge location-${escapeHtml(storeSourceConfirmed ? "confirmed_store_source" : storeConfirmed ? "confirmed_janesville" : locationValue)}">${storeSourceConfirmed ? "Store source confirmed" : storeConfirmed ? "Store confirmed" : "Store not confirmed"}</span></div>
-        <div class="importer-confidence"><span data-import-status class="badge ${initialReadiness.ready === true ? "status-ready" : "confidence-low"}">${initialReadiness.ready === true ? "Ready" : "Needs Review"}</span>${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
+        <div class="importer-store"><strong>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</strong>${priceSource.retailer_store_id ? `<span>Store #${escapeHtml(priceSource.retailer_store_id)}</span>` : ""}<span class="importer-location-badge location-${escapeHtml(storeSourceConfirmed ? "confirmed_store_source" : storeConfirmed ? "confirmed_janesville" : "unknown")}">${storeSourceConfirmed ? "Store source confirmed" : storeConfirmed ? "Store confirmed" : "Store not confirmed"}</span></div>
         <div class="importer-duplicate">${duplicates.length ? `<span class="duplicate-warning">⚠ Possible duplicate</span>${duplicates[0].product_id ? `<button class="importer-link" type="button" data-view-match="${duplicates[0].product_id}">View match</button>` : `<span>${escapeHtml(duplicates[0].name || "Prior import")}</span>`}` : '<span class="duplicate-clear">✓ No match</span>'}</div>
-        <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
         <div class="importer-row-actions"><button class="primary-button importer-approve-button" type="button" data-approve-import="${index}" ${initialReadiness.ready === true ? "" : "disabled"}>${initialReadiness.ready === true ? "Approve" : "Complete details"}</button>${needsCriticalDetails && fields.product_url ? `<button class="importer-icon-button importer-fetch-details" type="button" data-fetch-import-details="${index}">Fetch details</button>` : ""}${fields.product_url ? `<a class="importer-icon-button" href="${escapeHtml(fields.product_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open source product page">Source</a>` : ""}<button class="importer-icon-button" type="button" data-toggle-import-details="${index}" aria-expanded="false" aria-controls="import-details-${index}">Edit <span aria-hidden="true">⌄</span></button></div>
       </div>
       <div class="importer-required-status" data-required-status ${initialReadiness.ready === true ? "hidden" : ""}>${escapeHtml((initialReadiness.reasons || []).map((reason) => reason.replace(/_/g, " ")).join(" · ") || (positiveImporterPrice(fields.price) === null ? "Missing price" : "Complete required details"))}</div>
@@ -4359,9 +4358,10 @@ function renderCategoryUrlPreview(data) {
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
         <div class="importer-edit-heading"><div><strong>Product details</strong><span>Correct extracted values before saving.</span></div><span>${escapeHtml((product.methods_used || []).map(titleCase).join(", ") || "Structured product data")}</span></div>
         <div class="importer-edit-grid">
+        <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
+        <div class="importer-confidence"><span data-import-status class="badge ${initialReadiness.ready === true ? "status-ready" : "confidence-low"}">${initialReadiness.ready === true ? "Ready" : "Needs Review"}</span>${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
           ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}
           ${importerField("brand", "Brand", fields.brand, product.confidence?.brand, { maxlength: 80 })}
-          <label><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>
           ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0.01, step: "0.01" })}
           ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0.01, step: "0.01" })}
           ${importerField("quantity", "Quantity", fields.quantity, product.confidence?.quantity, { type: "number", min: 0, step: "0.01" })}
@@ -4395,16 +4395,18 @@ function renderCategoryUrlPreview(data) {
       <div class="importer-location-note"><strong>${locationValue === "confirmed_janesville" || locationValue === "confirmed_store_source" ? "Location confirmed." : "Location check required."}</strong> ${escapeHtml(category.location?.evidence || "This listing did not establish an exact store.")}</div>
       ${(category.warnings || []).length ? `<details class="importer-page-warnings"><summary>${category.warnings.length} page note${category.warnings.length === 1 ? "" : "s"}</summary>${category.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</details>` : ""}
       <div class="importer-bulk-toolbar"><div><button class="importer-link" type="button" data-category-select-all>Select all</button><button class="importer-link" type="button" data-category-select-none>Clear selection</button></div><button class="primary-button" type="submit" data-import-save-top>Approve selected</button></div>
-      <div class="importer-table-head" aria-hidden="true"><span></span><span>Image</span><span>Product</span><span>Current price</span><span>Regular</span><span>Size / quantity</span><span>Unit price</span><span>Store & location</span><span>Confidence</span><span>Duplicate</span><span>Image / source</span><span>Actions</span></div>
+      <div class="importer-table-head" aria-hidden="true"><span></span><span>Image</span><span>Product</span><span>Current price</span><span>Store & location</span><span>Duplicate</span><span>Actions</span></div>
       <div class="importer-product-list" data-category-products>${productRows || '<div class="empty-state">No listing products were detected.</div>'}</div>
-      <div class="importer-save-bar"><div class="importer-save-summary" aria-live="polite"><strong><span data-selected-count>0</span> selected</strong><span>Ready: <b data-ready-count>0</b></span><span>Needs details: <b data-needs-details-count>0</b></span><span>Possible duplicates: <b data-duplicate-count>0</b></span><span>Images ready: <b data-image-ready-count>0</b></span></div><div class="importer-save-actions"><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button><button class="primary-button" type="submit" data-import-save-bottom>Approve selected</button></div></div>
+      <div class="importer-save-bar"><div class="importer-save-summary" aria-live="polite"><strong><span data-selected-count>0</span> selected</strong><span>Ready: <b data-ready-count>0</b></span><span>Needs details: <b data-needs-details-count>0</b></span><span>Confirm store: <b data-needs-store-count>0</b></span><span>Possible duplicates: <b data-duplicate-count>0</b></span><span>Images ready: <b data-image-ready-count>0</b></span></div><div class="importer-save-actions"><button class="quiet-button" type="button" data-product-url-cancel>Cancel</button><button class="primary-button" type="submit" data-import-save-bottom>Approve selected</button></div></div>
       <div class="importer-progress" data-import-progress hidden role="status" aria-live="polite"><span class="importer-spinner" aria-hidden="true"></span><div><strong>Approving products…</strong><span data-import-progress-text>Preparing selected products and safe images.</span></div></div>
     </form>`;
   const updateSummary = () => {
     const selectedCards = [...preview.querySelectorAll("[data-category-product]")].filter((card) => card.querySelector('input[name="selected"]')?.checked);
     const duplicates = selectedCards.filter((card) => card.querySelector(".duplicate-warning")).length;
     const ready = selectedCards.filter((card) => importerRowReadiness(card).ready).length;
-    const needsDetails = selectedCards.length - ready;
+    const needsDetails = selectedCards.filter((card) => importerRowReadiness(card).reasons.some((reason) => !["location_confirmation_required", "duplicate_decision_required"].includes(reason))).length;
+    const needsStore = selectedCards.filter((card) => importerRowReadiness(card).reasons.includes("location_confirmation_required")).length;
+    preview.querySelectorAll("[data-needs-store-count]").forEach((node) => { node.textContent = String(needsStore); });
     const imagesReady = selectedCards.filter((card) => card.querySelector("[data-image-status]")?.textContent === "Image ready").length;
     preview.querySelectorAll("[data-selected-count]").forEach((node) => { node.textContent = String(selectedCards.length); });
     preview.querySelectorAll("[data-ready-count]").forEach((node) => { node.textContent = String(ready); });
@@ -4441,7 +4443,7 @@ function renderCategoryUrlPreview(data) {
       card.dataset.adminLocationOverride = String(confirmed);
       card.dataset.storeSourceConfirmed = String(confirmed || ["confirmed_janesville", "confirmed_store_source"].includes(category.location?.confidence));
       const badge = card.querySelector(".importer-location-badge");
-      if (badge) { badge.textContent = card.dataset.storeSourceConfirmed === "true" ? "Store confirmed" : "Store not confirmed"; badge.className = `importer-location-badge location-${confirmed ? "confirmed_janesville" : category.location?.confidence || "unknown"}`; }
+      if (badge) { badge.textContent = card.dataset.storeSourceConfirmed === "true" ? "Store confirmed" : "Store not confirmed"; badge.className = `importer-location-badge location-${card.dataset.storeSourceConfirmed === "true" ? "confirmed_janesville" : "unknown"}`; }
       refreshImporterRowReadiness(card);
     }
     const summary = urlParserResultSummary(data);
@@ -4692,12 +4694,33 @@ function categoryImportPayload(card) {
   };
 }
 
-function renderImporterDuplicateDecision(card, candidates = []) {
+function exactImporterMatch(candidates) {
+  const productIds = new Set(candidates.map((candidate) => Number(candidate.product_id)).filter((id) => Number.isSafeInteger(id) && id > 0));
+  if (productIds.size !== 1) return null;
+  return candidates.find((candidate) => productIds.has(Number(candidate.product_id))
+    && candidate.confidence === "high" && ["gtin", "canonical_url", "sku_retailer"].includes(candidate.type)) || null;
+}
+
+function renderImporterDuplicateDecision(card, candidates = [], allowAutoMatch = true) {
   const panel = card.querySelector("[data-duplicate-resolution]");
   if (!panel) return;
-  const productCandidates = candidates.filter((candidate) => candidate.product_id || candidate.id);
+  const productCandidates = [...new Map(candidates.filter((candidate) => candidate.product_id).map((candidate) => [Number(candidate.product_id), candidate])).values()];
+  const automaticMatch = allowAutoMatch && exactImporterMatch(candidates);
+  if (card.dataset.duplicateDecision === "use_existing" && !productCandidates.some((candidate) => Number(candidate.product_id) === Number(card.dataset.existingProductId))) {
+    delete card.dataset.duplicateDecision;
+    delete card.dataset.existingProductId;
+  }
+  if (!card.dataset.duplicateDecision && automaticMatch) {
+    card.dataset.duplicateDecision = "use_existing";
+    card.dataset.existingProductId = String(automaticMatch.product_id);
+  }
+  const choice = card.dataset.duplicateDecision;
+  const message = choice === "use_existing" ? "Existing product selected. Approve to update its listing and price."
+    : choice === "create_separate" ? "Separate product selected. Approve to create it."
+    : productCandidates.length ? "Select the matching product or create a separate listing."
+    : "A previous import was found without a linked catalog product.";
   panel.hidden = false;
-  panel.innerHTML = `<strong>⚠ Possible duplicate</strong><p>Choose deliberately before approval. Nothing will be merged automatically.</p>${productCandidates.map((candidate) => `<label class="importer-existing-choice"><input type="radio" name="duplicate-choice-${card.dataset.categoryProduct}" value="${Number(candidate.product_id || candidate.id)}"> <span><b>${escapeHtml(candidate.name || `Product #${candidate.product_id || candidate.id}`)}</b>${candidate.size ? `<small>${escapeHtml(candidate.size)}</small>` : ""}</span></label>`).join("")}<div class="card-actions"><button type="button" class="secondary-button" data-use-existing>Use existing product</button><button type="button" class="quiet-button" data-create-separate>Create separate product</button></div>`;
+  panel.innerHTML = `<strong>Possible duplicate</strong><p>${message}</p>${productCandidates.map((candidate) => `<label class="importer-existing-choice"><input type="radio" name="duplicate-choice-${card.dataset.categoryProduct}" value="${Number(candidate.product_id)}" ${Number(candidate.product_id) === Number(card.dataset.existingProductId) ? "checked" : ""}> <span><b>${escapeHtml(candidate.name || `Product #${candidate.product_id}`)}</b>${candidate.size ? `<small>${escapeHtml(candidate.size)}</small>` : ""}</span></label>`).join("")}<div class="card-actions">${productCandidates.length ? '<button type="button" class="secondary-button" data-use-existing>Update existing product</button>' : ""}<button type="button" class="quiet-button" data-create-separate>Create separate product</button></div>`;
   panel.querySelector("[data-use-existing]")?.addEventListener("click", () => {
     const selected = panel.querySelector("input[type=radio]:checked");
     if (!selected) { panel.querySelector("p").textContent = "Select the matching Grocery Radar product first."; return; }
@@ -4774,7 +4797,9 @@ async function approveCategoryImportCard(card, options = {}) {
         card.dataset.locationConfirmation = "admin_confirmed";
         data = await approve(true);
       } else if (error.data?.code === "DUPLICATE_DECISION_REQUIRED" || error.data?.code === "DUPLICATE_SELECTION_REQUIRED") {
-        renderImporterDuplicateDecision(card, error.data.duplicate_candidates || []);
+        delete card.dataset.duplicateDecision;
+        delete card.dataset.existingProductId;
+        renderImporterDuplicateDecision(card, error.data.duplicate_candidates || [], false);
         throw Object.assign(new Error("Possible duplicate — choose how to resolve it, then click Approve again."), { handled: true });
       } else throw error;
     }
