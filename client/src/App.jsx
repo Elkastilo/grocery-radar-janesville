@@ -449,6 +449,9 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
   const safeProduct = card.product
   if (!card.renderable) return <article className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100"><p className="font-black text-slate-700">Product unavailable</p><p className="mt-1 text-sm font-bold text-slate-500">This product card could not be displayed.</p></article>
   const hasPrice = card.hasCurrentPrice
+  const packageEstimate = numericPrice(safeProduct.best_estimated_item_price)
+  const packageWeight = numericPrice(safeProduct.best_approximate_item_weight)
+  const hasPackageEstimate = hasPrice && packageEstimate !== null && safeProduct.best_price_unit === 'lb'
   const storeName = bestReport?.store_name || safeProduct.best_store_name || ''
   const brand = productBrand(safeProduct, bestReport)
   const regularPrice = numericPrice(bestReport?.regular_price)
@@ -471,10 +474,11 @@ function ProductCard({ product, bestReport, onOpen, onAddToCart }) {
         </div>
         <div className="price-panel mt-4 flex items-end justify-between gap-3 border-t border-slate-100 py-1 pl-3 pt-4">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500">{hasPrice ? 'Current package price' : 'Community price'}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500">{hasPackageEstimate ? 'Price per pound' : hasPrice ? 'Current package price' : 'Community price'}</p>
             <p className={`mt-0.5 font-extrabold tracking-tight ${hasPrice ? 'text-3xl text-emerald-700' : 'text-base text-slate-600'}`}>
-              {hasPrice ? productPrice(safeProduct) : 'Price needed'}
+              {hasPackageEstimate ? `${productPrice(safeProduct)}/lb` : hasPrice ? productPrice(safeProduct) : 'Price needed'}
             </p>
+            {hasPackageEstimate ? <p className="text-sm font-semibold text-slate-600">{money(packageEstimate)} estimated per package{packageWeight !== null && safeProduct.best_approximate_item_weight_unit === 'lb' ? ` · About ${packageWeight} lb per package` : ''}</p> : null}
             {hasPrice && regularPrice !== null && regularPrice > numericPrice(safeProduct.best_price) ? <p className="text-sm font-semibold text-slate-400 line-through">Regular {money(regularPrice)}</p> : null}
           </div>
           <div className="min-w-0 text-right">

@@ -155,6 +155,16 @@ async function main() {
   assert.equal(enrichedAldi.fields.regular_price, null, "A package regular price must not be paired with a per-pound current price.");
   assert.equal(enrichedAldi.fields.unit_price, 5.29, "Enrichment must preserve the per-pound comparison price.");
 
+  const uncategorizedAldiItems = ["USDA Choice Black Angus Top Sirloin Steak, Per Lb", "Steak Sauce", "Chocolate Cookies"];
+  const mixedAldi = analyzePage("<title>ALDI Price Drops</title>", "https://www.aldi.us/store/aldi/collections/rc-price-drops", stores, {
+    aldiCollection: { data: { collectionProducts: { items: uncategorizedAldiItems.map((name, index) => ({
+      productId: String(index + 1), name, price: { viewSection: { itemCard: { priceString: "$7.99" } } }
+    })) } } }
+  });
+  assert.deepEqual(mixedAldi.products.map((item) => item.fields.catalog_category), ["meat", "other", "other"]);
+  const structuredCategory = analyzePage('<script type="application/ld+json">{"@type":"Product","name":"Milk","category":"Dairy & Eggs","offers":{"@type":"Offer","price":"2.49"}}</script>', "https://www.aldi.us/product/milk", stores);
+  assert.equal(structuredCategory.extraction.fields.catalog_category, "dairy");
+
   const aldiCategoryOnly = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-ball-tip", name: "Ball Tip Steak", viewSection: { trackingProperties: { product_category_name: "Ball Tip Steak" } }, price: { viewSection: { itemCard: { priceString: "$9.99 / lb", pricePerUnitString: "$9.99 / lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
   assert.equal(aldiCategoryOnly.fields.department, "");
   assert.equal(aldiCategoryOnly.metadata.product_type, "Ball Tip Steak");
@@ -609,6 +619,19 @@ async function main() {
   assert.match(bulkFlowSource, /if \(result\) approved \+= 1; else failed \+= 1;/, "A failed row must not abort remaining bulk approvals.");
   assert.match(adminScript, /Could not prepare this product for approval\. Please try again\./);
   const collectImporterRowData = loadNamedFunction(adminScript, "collectImporterRowData");
+  const categoryImportPayload = Function("productUrlAnalysis", "collectImporterRowData", "positiveImporterPrice",
+    `${namedFunctionSource(adminScript, "categoryImportPayload")}; return categoryImportPayload;`)({ category: { ...mixedAldi, products: [...mixedAldi.products, aldiRich] } }, collectImporterRowData, loadNamedFunction(adminScript, "positiveImporterPrice"));
+  const categoryCard = { dataset: { categoryProduct: "0" }, querySelectorAll: () => [] };
+  assert.equal(categoryImportPayload(categoryCard).category, "meat");
+  categoryCard.querySelectorAll = () => [{ name: "category", type: "select-one", value: "frozen" }];
+  assert.equal(categoryImportPayload(categoryCard).category, "frozen", "An admin's category edit must reach the pending import.");
+  categoryCard.dataset.categoryProduct = "3";
+  const estimateControls = [{ name: "price", value: "8.99" }, { name: "unit_price_unit", value: "lb" }];
+  categoryCard.querySelectorAll = () => estimateControls;
+  assert.equal(categoryImportPayload(categoryCard).estimated_item_price, 11.69);
+  assert.equal(categoryImportPayload(categoryCard).approximate_item_weight, 1.3);
+  estimateControls[0].value = "10.99";
+  assert.equal(categoryImportPayload(categoryCard).estimated_item_price, undefined, "A price edit must not carry a stale estimate.");
   const controls = [
     { name: "selected", type: "checkbox", checked: true, value: "on" },
     { name: "name", type: "text", value: "Fresh Strawberries — edited" },

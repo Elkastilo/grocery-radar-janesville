@@ -712,6 +712,33 @@ async function main() {
       assert.equal(publicReport.primary_price_label, `$${expected.price.toFixed(2)}`);
     });
 
+    const weightedSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
+      category_source_url: "https://www.aldi.us/store/aldi/collections/rc-steaks-92525",
+      retailer_name: "ALDI",
+      store_id: walmartJanesvilleStore.id,
+      items: [{
+        name: "Petite Sirloin Steak Estimate Fixture", category: "meat",
+        price: 9.99, quantity: 1, unit: "lb", unit_price: 9.99, unit_price_unit: "lb",
+        estimated_item_price: 12.99, approximate_item_weight: 1.3, approximate_item_weight_unit: "lb",
+        product_url: "https://www.aldi.us/store/aldi/products/sirloin-estimate-fixture"
+      }]
+    });
+    assert.equal(weightedSave.response.status, 201, JSON.stringify(weightedSave.body));
+    const weightedApproval = await ownerClient.post(
+      `/api/admin/product-url-imports/${weightedSave.body.imports[0].import_id}/approve`,
+      { confirm_location: true }
+    );
+    assert.equal(weightedApproval.response.status, 200, JSON.stringify(weightedApproval.body));
+    const meatBrowse = await ownerClient.get("/api/products?category=meat&q=petite%20sirloin");
+    assert.equal(meatBrowse.response.status, 200);
+    const weightedProduct = meatBrowse.body.products.find((product) => product.id === weightedApproval.body.product_id);
+    assert.ok(weightedProduct, "The approved steak should appear in the Meat category.");
+    assert.equal(weightedProduct.best_price, 9.99);
+    assert.equal(weightedProduct.best_price_unit, "lb");
+    assert.equal(weightedProduct.best_estimated_item_price, 12.99);
+    assert.equal(weightedProduct.best_approximate_item_weight, 1.3);
+    assert.equal(weightedProduct.best_approximate_item_weight_unit, "lb");
+
     const missingPriceSave = await ownerClient.post("/api/admin/product-url-imports/batch", {
       category_source_url: "https://www.walmart.com/browse/food/missing-price", retailer_name: "Walmart", store_id: proofStore.id, price_location_confidence: "confirmed_janesville",
       items: [{ idempotency_key: "missing-price-approval-fixture", name: "Missing Price Approval Fixture", price: "", quantity: 1, unit: "each", size_text: "Each", product_url: "https://www.walmart.com/ip/missing-price-fixture", overall_confidence: "low" }]
