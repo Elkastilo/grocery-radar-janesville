@@ -74,7 +74,7 @@
 .importer-link { min-height: 44px; padding: 6px 2px; border: 0; background: transparent; color: #196a3f; font: inherit; font-size: .84rem; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .importer-link:focus-visible, .importer-icon-button:focus-visible { outline: 3px solid rgba(33, 126, 76, .32); outline-offset: 2px; }
 
-.importer-table-head, .importer-product-main { display: grid; grid-template-columns: 42px 72px minmax(180px, 1.7fr) 96px 78px 106px 90px 124px 98px 124px 106px 94px; align-items: center; gap: 10px; }
+.importer-table-head, .importer-product-main { display: grid; grid-template-columns: 36px 68px minmax(0, 2fr) minmax(0, .8fr) minmax(0, 1fr) minmax(0, 1fr) minmax(96px, .9fr); align-items: center; gap: 10px; }
 .importer-table-head { padding: 11px 24px; border-bottom: 1px solid #dfe7e1; color: #65736a; font-size: .67rem; font-weight: 800; letter-spacing: .045em; text-transform: uppercase; }
 .importer-product-row { border-bottom: 1px solid #e3eae6; background: #fff; transition: background-color .15s ease, box-shadow .15s ease; }
 .importer-product-row.is-selected { background: #fbfefc; box-shadow: inset 3px 0 #3a9461; }
@@ -161,19 +161,12 @@
 .importer-single-preview > div:last-child { display: flex; flex-direction: column; gap: 4px; }
 .importer-single-preview b { color: #17683e; font-size: 1.08rem; }
 
-@media (max-width: 1280px) {
-  .importer-table-head, .importer-product-main { grid-template-columns: 42px 58px minmax(140px, 1.7fr) 80px 88px 98px 78px 100px 72px; gap: 8px; }
-  .importer-table-head > :nth-child(5), .importer-table-head > :nth-child(7), .importer-table-head > :nth-child(11),
-  .importer-regular, .importer-unit-price, .importer-source-status { display: none; }
-}
-
-@container (max-width: 1250px) {
-  .importer-table-head, .importer-product-main { grid-template-columns: 42px 58px minmax(140px, 1.7fr) 80px 88px 98px 78px 100px 72px; gap: 8px; }
-  .importer-table-head > :nth-child(5), .importer-table-head > :nth-child(7), .importer-table-head > :nth-child(11),
-  .importer-regular, .importer-unit-price, .importer-source-status { display: none; }
-  .importer-product-main { padding-inline: 20px; }
-  .importer-thumb { width: 58px; height: 58px; }
-}
+.importer-product-main > :is(.importer-package, .importer-regular, .importer-unit-price) { display: none; }
+.importer-product-main .importer-mobile-package { display: block; }
+.importer-category-choice { display: grid; gap: 3px; margin: 4px 0; font-size: .76rem; }
+.importer-category-choice select { width: 100%; min-width: 0; }
+.importer-product-main .importer-location-badge.location-unknown { background: #fff1df; color: #7a531a; }
+.importer-product-main :is(.importer-store, .importer-duplicate) { overflow-wrap: anywhere; }
 
 @media (max-width: 1100px) {
   .importer-analysis-card { grid-template-columns: minmax(0, 1fr) 130px; }
@@ -181,7 +174,7 @@
   .importer-results-header { align-items: stretch; flex-direction: column; }
   .importer-location-controls { width: 100%; }
   .importer-table-head { display: none; }
-  .importer-product-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; background: #f3f6f4; }
+  .importer-product-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px; background: #f3f6f4; }
   .importer-product-row { overflow: hidden; border: 1px solid #dbe5de; border-radius: 12px; box-shadow: 0 3px 12px rgba(29, 57, 39, .04); }
   .importer-product-main { grid-template-columns: 44px 78px minmax(0, 1fr); grid-template-rows: auto auto auto auto; gap: 8px 10px; min-height: 0; padding: 13px; }
   .importer-select { grid-area: 1 / 1 / 2 / 2; }
@@ -191,8 +184,7 @@
   .importer-store { grid-area: 3 / 1 / 4 / 3; }
   .importer-confidence { grid-area: 3 / 3 / 4 / 4; align-items: flex-start; }
   .importer-duplicate { grid-area: 4 / 1 / 5 / 3; }
-  .importer-row-actions { grid-area: 4 / 3 / 5 / 4; flex-direction: row; justify-content: flex-end; }
-  .importer-package, .importer-regular, .importer-unit-price, .importer-source-status { display: none; }
+  .importer-row-actions { grid-area: 4 / 3 / 5 / 4; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
   .importer-mobile-package { display: block !important; }
   .importer-mobile-meta { display: none; }
   .importer-edit-panel { padding: 16px; }
@@ -6374,10 +6366,15 @@ body {
 }
 .admin-context-label { margin: 0 0 2px; color: var(--admin-muted); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
 .admin-body .admin-session-status { display: flex; align-items: center; gap: 8px; color: var(--admin-ink); }
-.admin-body .admin-header-actions { display: flex; align-items: center; gap: 10px; }
+.admin-body .admin-header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }
 .admin-body .admin-link { color: var(--admin-green-dark); font-size: .82rem; font-weight: 650; }
-.admin-body .notification-bell { position: relative; width: 38px; min-height: 38px; border: 1px solid var(--admin-border); border-radius: 10px; color: var(--admin-green); background: #fff; }
+.admin-body .notification-bell { position: relative; justify-content: center; min-width: 38px; min-height: 38px; border: 1px solid var(--admin-border); border-radius: 10px; color: var(--admin-green); background: #fff; }
 .admin-body .admin-notification-panel { right: 36px; top: 62px; }
+.admin-body #adminBellCount[hidden] { display: none; }
+
+@media (min-width: 761px) {
+  html:has(.admin-body) { scroll-padding-top: 90px; }
+}
 
 .admin-body #adminPinForm { margin: 0 0 18px; }
 .admin-body #adminPinForm:has(input:placeholder-shown) { display: none; }
@@ -6411,14 +6408,14 @@ body {
 .admin-body :is(button, a, input, select, textarea):focus-visible { outline: 3px solid rgba(22,120,74,.24); outline-offset: 2px; }
 .admin-body :is(input, select, textarea) { border-color: #cfd9d2; border-radius: 9px; background: #fff; }
 
-.dashboard-metrics,
 .product-metrics,
 .url-parser-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.dashboard-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 132px), 1fr)); gap: 12px; margin-bottom: 20px; }
 .metric-card { display: grid; gap: 7px; min-width: 0; padding: 17px 18px; border: 1px solid var(--admin-border); border-radius: 13px; background: #fff; }
 .metric-card span { color: var(--admin-muted); font-size: .77rem; }
 .metric-card strong { color: var(--admin-ink); font-size: 1.55rem; letter-spacing: -.035em; }
-.dashboard-two-column { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .9fr); gap: 18px; margin-bottom: 18px; }
-.dashboard-card { min-height: 220px; }
+.dashboard-two-column { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); align-items: start; gap: 18px; margin-bottom: 18px; }
+.dashboard-card { min-width: 0; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .section-heading h3, .dashboard-card > h3 { margin: 0 0 5px; }
 .section-heading p { margin: 0; color: var(--admin-muted); font-size: .78rem; }
@@ -6476,7 +6473,7 @@ body {
   .admin-body .admin-shell { grid-template-columns: 205px minmax(0, 1fr); }
   .admin-body .admin-workspace { padding-inline: 22px; }
   .admin-body .admin-header { margin-inline: -22px; padding-inline: 22px; }
-  .dashboard-metrics, .product-metrics, .url-parser-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .product-metrics, .url-parser-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .settings-directory { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -6490,8 +6487,8 @@ body {
   .admin-body .admin-workspace { padding: 0 14px 40px; }
   .admin-body .admin-header { position: static; min-height: 58px; margin: 0 -14px 22px; padding: 0 14px; }
   .admin-body .admin-link { display: none; }
-  .dashboard-metrics, .product-metrics, .url-parser-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dashboard-two-column, .settings-directory { grid-template-columns: 1fr; }
+  .product-metrics, .url-parser-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-directory { grid-template-columns: 1fr; }
   .catalog-toolbar { align-items: stretch; flex-direction: column; }
   .catalog-search { flex-basis: auto; max-width: none; }
   .product-admin-row > summary { grid-template-columns: minmax(0, 1fr); gap: 6px; }

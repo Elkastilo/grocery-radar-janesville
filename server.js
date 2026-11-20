@@ -12097,6 +12097,12 @@ async function approvedEquivalentReportForDraft(draft, options = {}) {
     params.push(sizeText);
   }
 
+  if (options.matchUrlImportDetails) {
+    filters.push("pr.product_id = ?", "pr.category = ?", "pr.regular_price IS ?", "pr.estimated_item_price IS ?", "pr.approximate_item_weight IS ?", "COALESCE(pr.approximate_item_weight_unit, '') = ?");
+    params.push(productId, draft.category, draft.regular_price ?? null, draft.estimated_item_price ?? null,
+      draft.approximate_item_weight ?? null, draft.approximate_item_weight_unit || "");
+  }
+
   if (options.excludeReportId) {
     filters.push("pr.id != ?");
     params.push(options.excludeReportId);
@@ -12757,7 +12763,7 @@ async function approvePriceImportRow(rowId, adminUser, options = {}) {
       price: cleanReport.price,
       size_text: cleanReport.size_text
     },
-    { productId }
+    { productId, matchUrlImportDetails: options.matchUrlImportDetails }
   );
 
   if (equivalentReport) {
@@ -18183,7 +18189,12 @@ app.post("/api/admin/product-url-imports/:id/approve", requireAdminAccess, requi
     await run("UPDATE product_url_imports SET price_location_confidence='confirmed_janesville',location_confirmation_method='admin_confirmed',location_confirmed_by=?,location_confirmed_at=? WHERE id=?", [request.adminUser.id, locationConfirmedAt, importId]);
   }
 
-  const approval = await approvePriceImportRow(imported.row_id, request.adminUser, { forceProductId, forceNewProduct });
+  const approval = await approvePriceImportRow(imported.row_id, request.adminUser, { forceProductId, forceNewProduct, matchUrlImportDetails: Boolean(forceProductId) });
+  const reviewedCategory = approval.row?.category;
+  if (forceProductId && CATEGORIES.includes(reviewedCategory) && reviewedCategory !== "other") {
+    await run("UPDATE products SET category=?,updated_by=?,updated_at=? WHERE id=? AND status != 'merged' AND category != ?",
+      [reviewedCategory, request.adminUser.id, new Date().toISOString(), forceProductId, reviewedCategory]);
+  }
   const approvedAt = new Date().toISOString();
   const ownsNewReport = Number(approval.report_id) > 0 && Number((await get("SELECT source_import_row_id FROM price_reports WHERE id=?", [approval.report_id]))?.source_import_row_id) === Number(imported.row_id);
   if (ownsNewReport) await run("UPDATE price_reports SET verification_source='admin_import',verified_by=?,verified_at=? WHERE id=?", [request.adminUser.id, approvedAt, approval.report_id]);
