@@ -4129,6 +4129,15 @@ function confidenceBadge(value) {
   return `<span class="badge confidence-${confidence}">${escapeHtml(titleCase(value || "unknown"))}</span>`;
 }
 
+function importerCatalogFields(fields) {
+  const facets = fields.catalog_facets || {};
+  return [
+    importerField("catalog_animal", "Animal or species", facets.animal, "", { maxlength: 56 }),
+    importerField("catalog_type", "Product type", facets.type, "", { maxlength: 56 }),
+    importerField("catalog_cut", "Cut or variety", facets.cut, "", { maxlength: 56 })
+  ].join("");
+}
+
 function importerCategoryOptions(selected) {
   return optionRows([...categories, "prepared food", "health / personal care"], selected || "other");
 }
@@ -4272,6 +4281,7 @@ function renderProductUrlPreview(data) {
       ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
       ${importerField("variant", "Variant", fields.variant, confidence.variant, { maxlength: 80 })}
       <label><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>
+      ${importerCatalogFields(fields)}
       ${importerField("price", "Current price", fields.price, confidence.price, { type: "number", min: 0.01, step: "0.01" })}
       ${importerField("regular_price", "Regular/original price", fields.regular_price, confidence.regular_price, { type: "number", min: 0.01, step: "0.01" })}
       <label><span>Sale price?</span><select name="sale_price"><option value="false">No / unclear</option><option value="true" ${fields.regular_price && fields.price < fields.regular_price ? "selected" : ""}>Yes</option></select></label>
@@ -4342,7 +4352,7 @@ function renderCategoryUrlPreview(data) {
       <div class="importer-product-main">
         <label class="importer-select" aria-label="Include ${escapeHtml(fields.name || `product ${index + 1}`)}"><input type="checkbox" name="selected" ${selected ? "checked" : ""}><span></span></label>
         <div class="importer-thumb" ${fields.image_url ? `data-import-image-frame data-import-image-url="${escapeHtml(fields.image_url)}"` : ""}>${imagePreview ? `<img src="${escapeHtml(imagePreview)}" alt="Sanitized product preview for ${escapeHtml(fields.name || "detected product")}" loading="lazy" decoding="async" data-import-image><span class="importer-image-fallback">Image unavailable</span><button class="importer-image-retry" type="button" data-retry-import-image hidden>Retry</button>` : '<span class="importer-image-fallback is-visible">No image</span>'}</div>
-        <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<label class="importer-category-choice"><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>${fields.meat_classification ? `<span>${escapeHtml(Object.values(fields.meat_classification).filter(Boolean).join(" · "))}</span>` : ""}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
+        <div class="importer-product-identity"><strong data-display="name">${escapeHtml(fields.name || "Unnamed product")}</strong>${fields.brand ? `<span data-display="brand">${escapeHtml(fields.brand)}</span>` : '<span data-display="brand" hidden></span>'}<label class="importer-category-choice"><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>${fields.catalog_facets ? `<span>${escapeHtml(Object.values(fields.catalog_facets).filter(Boolean).join(" · "))}</span>` : ""}<span class="importer-mobile-package" data-display="package">${escapeHtml(packageLabel)}</span><div class="importer-mobile-meta"><span>${escapeHtml(category.retailer?.retailer_name || "Retailer not recognized")}</span>${confidenceBadge(product.overall_confidence)}</div></div>
         <div class="importer-price"><strong data-display="price">${escapeHtml(priceLabel)}</strong><span data-price-required ${positiveImporterPrice(fields.price) === null ? "" : "hidden"}>Required</span></div>
         <div class="importer-regular"><span>Regular</span><strong data-display="regular_price">${escapeHtml(regularLabel)}</strong></div>
         <div class="importer-package"><strong data-display="package">${escapeHtml(packageLabel)}</strong></div>
@@ -4358,6 +4368,7 @@ function renderCategoryUrlPreview(data) {
       <section class="importer-edit-panel" id="import-details-${index}" hidden>
         <div class="importer-edit-heading"><div><strong>Product details</strong><span>Correct extracted values before saving.</span></div><span>${escapeHtml((product.methods_used || []).map(titleCase).join(", ") || "Structured product data")}</span></div>
         <div class="importer-edit-grid">
+          ${importerCatalogFields(fields)}
         <div class="importer-source-status"><span data-image-status>${fields.image_url ? "Downloading preview…" : "Image unavailable"}</span><span>${fields.image_url ? "Saved after approval" : "Import continues without it"}</span></div>
         <div class="importer-confidence"><span data-import-status class="badge ${initialReadiness.ready === true ? "status-ready" : "confidence-low"}">${initialReadiness.ready === true ? "Ready" : "Needs Review"}</span>${confidenceBadge(product.overall_confidence)}<span class="importer-field-confidence">Price: ${escapeHtml(titleCase(product.confidence?.price || "unknown"))}</span><span class="relevance-${escapeHtml(relevance)}">${escapeHtml(titleCase(relevance))} relevance</span></div>
           ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}

@@ -35,6 +35,7 @@ const LOIN_CUTS = [
 
 const CUTS_BY_ANIMAL = {
   Beef: [...BEEF_CUTS, ...LOIN_CUTS],
+  Bison: [...BEEF_CUTS, ...LOIN_CUTS],
   Veal: [...LOIN_CUTS, [/\bshanks?\b/i, "Shank"], [/\bcutlets?\b/i, "Cutlet"]],
   Pork: [
     ...LOIN_CUTS,
@@ -60,7 +61,7 @@ const CUTS_BY_ANIMAL = {
 };
 
 const LIVESTOCK = [
-  [/\b(?:beef|angus)\b/i, "Beef"], [/\bveal\b/i, "Veal"],
+  [/\b(?:beef|angus)\b/i, "Beef"], [/\bbison\b/i, "Bison"], [/\bveal\b/i, "Veal"],
   [/\bpork\b/i, "Pork"], [/\bchicken\b/i, "Chicken"],
   [/\bturkey\b/i, "Turkey"], [/\blamb\b/i, "Lamb"], [/\bduck\b/i, "Duck"]
 ];
