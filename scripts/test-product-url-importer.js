@@ -125,6 +125,36 @@ async function main() {
   const unsafeDetail = mergeCategoryProductDetails(aldiMismatchedBeef, { fields: { price: 11.90, regular_price: 13.93 }, confidence: { price: "high", regular_price: "high" } });
   assert.equal(unsafeDetail.fields.price, null, "Product-page enrichment must not restore an unverified package estimate as the per-pound price.");
 
+  const partialAldiUrl = "https://www.aldi.us/store/aldi/collections/rc-fresh-meat";
+  const partialAldi = analyzePage("<title>Fresh Meat</title>", partialAldiUrl, stores, {
+    aldiCollection: {
+      __aldiContext: { postalCode: "53546", source: "configured_janesville" },
+      data: { collectionProducts: { items: [{
+        productId: "aldi-partial-beef", name: "Ground Beef",
+        price: { viewSection: { itemCard: { priceString: "Est. /pkg", pricingUnitString: "$5.29 / lb" } } }
+      }] } }
+    }
+  });
+  assert.equal(partialAldi.products[0].fields.estimated_package_price, null);
+  await enrichCategoryAnalysis(partialAldi, { stores, fetchProductPage: async (url) => ({
+    url,
+    body: '<script type="application/ld+json">{"@type":"Product","name":"Ground Beef","brand":"ALDI","offers":{"@type":"Offer","price":"11.90"}}</script>'
+  }) });
+  assert.equal(partialAldi.products[0].fields.price, null, "An estimate without an amount still has an unresolved price basis.");
+  assert.equal(partialAldi.products[0].fields.brand, "ALDI", "Non-price details remain available.");
+  assert.equal(partialAldi.priced_count, 0);
+  assert.equal(partialAldi.location.confidence, "likely_janesville");
+  assert.equal(partialAldi.products[0].enrichment.status, "incomplete");
+
+  const aldiWithoutRegular = { ...aldiBeef, fields: { ...aldiBeef.fields, regular_price: null } };
+  const enrichedAldi = mergeCategoryProductDetails(aldiWithoutRegular, {
+    fields: { price: 11.90, regular_price: 13.93, unit_price: 11.90 },
+    confidence: { price: "high", regular_price: "high", unit_price: "high" }
+  });
+  assert.equal(enrichedAldi.fields.price, 5.29);
+  assert.equal(enrichedAldi.fields.regular_price, null, "A package regular price must not be paired with a per-pound current price.");
+  assert.equal(enrichedAldi.fields.unit_price, 5.29, "Enrichment must preserve the per-pound comparison price.");
+
   const aldiCategoryOnly = extractAldiCollection({ data: { collectionProducts: { items: [{ productId: "aldi-ball-tip", name: "Ball Tip Steak", viewSection: { trackingProperties: { product_category_name: "Ball Tip Steak" } }, price: { viewSection: { itemCard: { priceString: "$9.99 / lb", pricePerUnitString: "$9.99 / lb" } } } }] } } }, "https://www.aldi.us/store/aldi/collections/rc-fresh-meat", 10).products[0];
   assert.equal(aldiCategoryOnly.fields.department, "");
   assert.equal(aldiCategoryOnly.metadata.product_type, "Ball Tip Steak");
