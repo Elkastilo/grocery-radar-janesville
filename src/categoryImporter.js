@@ -6,6 +6,7 @@ const { resolveAdapter } = require("./importers/registry");
 const { extractGenericListing } = require("./importers/generic");
 const { extractFestivalListing } = require("./importers/festival");
 const { extractAldiCollection } = require("./importers/aldi");
+const { CATEGORIES } = require("./validation");
 
 const MAX_CATEGORY_PRODUCTS = 50;
 const CATEGORY_PRODUCT_CHOICES = Object.freeze([10, 25, 50]);
@@ -181,6 +182,26 @@ function categoryLocation(html, matchedStore) {
   return { confidence: "unknown", evidence: matchedStore?.city?.toLowerCase() === "janesville" ? "A Janesville store can be selected, but the listing did not establish that its prices apply to that location." : "The listing did not establish a Janesville price location." };
 }
 
+const IMPORT_CATEGORY_ALIASES = new Map([
+  ["fresh produce", "produce"], ["fruits & vegetables", "produce"],
+  ["meat & seafood", "meat"], ["fresh meat", "meat"], ["fresh seafood", "meat"],
+  ["meat & poultry", "meat"], ["ground beef", "meat"], ["beef", "meat"], ["seafood", "meat"],
+  ["dairy & eggs", "dairy"], ["frozen foods", "frozen"], ["beverages", "drinks"],
+  ["health & personal care", "health / personal care"]
+]);
+
+function importedProductCategory(fields = {}, adapter) {
+  for (const value of [fields.department, fields.category]) {
+    const label = clean(value, 100).toLowerCase().replace(/\band\b/g, "&");
+    const category = IMPORT_CATEGORY_ALIASES.get(label) || label;
+    if (category !== "other" && CATEGORIES.includes(category)) return category;
+  }
+  // ALDI sometimes returns only a specific cut, with no department.
+  if (adapter === "aldi" && /\b(?:steaks?|ground beef)\b/i.test(fields.product_type || fields.name || "")
+      && !/\b(?:sauce|seasoning|chips|pizza|sandwich|jerky|frozen|plant.based|vegan|vegetarian|style|flavou?red|fries|tomato|mushroom)\b/i.test(fields.name || "")) return "meat";
+  return "other";
+}
+
 function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, options = {}) {
   const html = String(htmlInput || "");
   const maxProducts = CATEGORY_PRODUCT_CHOICES.includes(Number(requestedMax)) ? Number(requestedMax) : 25;
@@ -227,7 +248,7 @@ function extractCategory(htmlInput, pageUrl, stores = [], requestedMax = 25, opt
     const price = parsePrice(item.fields?.price);
     const priceSource = walmartStore && price !== null ? { type: "retailer_store_page", url: pageUrl, retailer_store_id: walmartStore.retailer_store_id, retailer_store_slug: walmartStore.retailer_store_slug, retrieved_at: new Date().toISOString(), location_confirmation_method: "retailer_store_page" } : null;
     const readiness = productImportReadiness(item.fields, { storeId: retailer.store_id, retailerRecognized: retailer.recognized, categorySourceUrl: pageUrl, locationConfirmable: location.confidence === "confirmed_janesville" || location.confidence === "confirmed_store_source" });
-    return { ...item, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, warnings: [...new Set([...(item.warnings || []), ...readiness.warnings])], readiness };
+    return { ...item, fields: { ...item.fields, catalog_category: importedProductCategory(item.fields, adapter) }, category_relevance: item.category_relevance || "medium", selected_by_default: item.selected_by_default !== false && item.category_relevance !== "low", retailer, location, price_source: priceSource || item.price_source, warnings: [...new Set([...(item.warnings || []), ...readiness.warnings])], readiness };
   });
   const paginationLikely = /(?:[?&](?:page|p)=\d+|rel=["']next["']|pagination|load more|next page)/i.test(html);
   if (paginationLikely) warnings.push("Additional products may exist on other pages. Only the supplied page was analyzed.");
@@ -257,7 +278,7 @@ function analyzePage(html, pageUrl, stores = [], options = {}) {
     return extractCategory(html, pageUrl, stores, options.maxProducts, categoryOptions);
   }
   const product = extractProduct(html, pageUrl, stores);
-  if (product.fields?.name && (product.fields.price !== undefined || product.fields.sku || product.fields.gtin)) return { url_type: "product", extraction: product };
+  if (product.fields?.name && (product.fields.price !== undefined || product.fields.sku || product.fields.gtin)) return { url_type: "product", extraction: { ...product, fields: { ...product.fields, catalog_category: importedProductCategory(product.fields, resolveAdapter(pageUrl).adapter) } } };
   const category = extractCategory(html, pageUrl, stores, options.maxProducts, options.aldiCollection ? { aldiCollection: options.aldiCollection, aldiContext: options.aldiContext || options.aldiCollection.__aldiContext } : {});
   return category.products.length > 1 ? category : { url_type: "unsupported", source_url: pageUrl, warnings: [...(category.warnings || []), "The page was not recognized as an individual product or product listing."] };
 }

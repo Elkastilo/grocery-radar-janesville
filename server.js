@@ -1859,6 +1859,9 @@ function formatProduct(row) {
     has_current_price: hasCurrentPrice,
     best_price: hasCurrentPrice ? Number(row.best_price) : null,
     best_price_unit: hasCurrentPrice ? normalizePriceUnit(row.best_price_unit || "") : null,
+    best_estimated_item_price: hasCurrentPrice ? parsePrice(row.best_estimated_item_price) : null,
+    best_approximate_item_weight: hasCurrentPrice ? parseImportNumber(row.best_approximate_item_weight) : null,
+    best_approximate_item_weight_unit: hasCurrentPrice ? normalizePriceUnit(row.best_approximate_item_weight_unit || "") : "",
     best_price_size_text: hasCurrentPrice ? (row.best_price_size_text || "") : null,
     best_price_label: hasCurrentPrice ? `$${Number(row.best_price).toFixed(2)}` : "Price needed",
     best_store_name: hasCurrentPrice ? (row.best_store_name || "") : null,
@@ -1933,7 +1936,12 @@ function productSelectColumns(alias = "products") {
     AND (NULLIF(${alias}.default_unit, '') IS NULL OR lower(price_reports.unit) = lower(${alias}.default_unit))
     AND (lower(price_reports.unit) NOT IN ('each', 'package') OR NULLIF(${alias}.default_size_text, '') IS NULL OR NULLIF(price_reports.size_text, '') IS NULL OR lower(price_reports.size_text) = lower(${alias}.default_size_text))`;
   const activeUser = "COALESCE(users.account_status, 'active') NOT IN ('suspended', 'banned', 'deleted', 'deactivated')";
-  const order = `COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price) ASC, price_reports.submitted_at DESC`;
+  const order = `COALESCE(price_reports.comparison_price, price_reports.unit_price, price_reports.price) ASC, price_reports.submitted_at DESC, price_reports.id DESC`;
+  const bestReportColumn = (column) => `(
+      SELECT price_reports.${column} FROM price_reports JOIN users ON users.id = price_reports.user_id
+      WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
+      ORDER BY ${order} LIMIT 1
+    ) AS best_${column}`;
   return `
     ${alias}.*,
     ${approvedShopperImageSelect(`${alias}.id`)},
@@ -1978,6 +1986,9 @@ function productSelectColumns(alias = "products") {
       WHERE price_reports.product_id = ${alias}.id AND ${eligible} AND ${activeUser}
       ORDER BY ${order} LIMIT 1
     ) AS best_price_size_text,
+    ${bestReportColumn("estimated_item_price")},
+    ${bestReportColumn("approximate_item_weight")},
+    ${bestReportColumn("approximate_item_weight_unit")},
     (
       SELECT stores.name
       FROM price_reports
@@ -18079,7 +18090,7 @@ app.post("/api/admin/product-url-imports/batch", requireAdminAccess, requireLogg
       const sourceDomain = sourceDomainFromUrl(itemSourceUrl);
       const batch = await run(`INSERT INTO price_import_batches (source_type, proof_type, photo_path, status, source_url, source_title, source_domain, source_checked_at, default_store_id, batch_title, observed_at, source_text, notes, created_by, location_verification_status, applicable_store_id, location_evidence_text, review_status, created_at, updated_at) VALUES ('website','no_photo','','ready_for_review',?,?,?,?,?,?,?,'','Category URL import. Human approval is required before publication.',?,?,?,?,'waiting',?,?)`, [itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, itemStore.id, `Category URL import: ${draft.item_name}`, now, request.adminUser.id, verifiedStoreSource ? "verified_exact_store" : "legacy_unknown", verifiedStoreSource ? itemStore.id : null, verifiedStoreSource ? `Walmart store page established store #${priceSourceStore.retailer_store_id}.` : cleanText(request.body.location_evidence_text, 500), now, now]);
       currentBatchId = batch.lastID;
-      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, itemStore.id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
+      const row = await run(`INSERT INTO price_import_rows (batch_id, store_id, item_name, brand, variant, category, price, regular_price, sale_price, size_text, quantity, unit, price_basis, comparison_price, comparison_unit, estimated_item_price, approximate_item_weight, approximate_item_weight_unit, proof_type, observed_at, source_url, source_title, source_domain, source_checked_at, raw_receipt_line, extracted_item_name, extracted_price, extracted_quantity, extracted_weight, extracted_unit, extraction_confidence, extraction_notes, duplicate_warning, notes, status, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'no_photo',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'ready_for_review',?,?,?,?)`, [batch.lastID, itemStore.id, draft.item_name, draft.brand, draft.variant, draft.category, draft.price, draft.regular_price, draft.sale_price, draft.size_text, draft.quantity, draft.unit, draft.price_basis, draft.comparison_price, draft.comparison_unit, draft.estimated_item_price, draft.approximate_item_weight, draft.approximate_item_weight_unit, now, itemSourceUrl, draft.item_name, sourceDomain, draft.source_checked_at || now, cleanText(input.raw_size_text || input.raw_price_text, 500), draft.item_name, draft.price, draft.quantity, Number.isFinite(Number(input.item_size)) ? Number(input.item_size) : null, draft.unit, draft.extraction_confidence, `Category methods: ${methods.join(", ") || "admin reviewed"}. ${warnings.join(" ")}${retailerDescription ? ` Retailer description evidence: ${retailerDescription}` : ""}`.slice(0, 1000), duplicateWarning, cleanText(input.notes, 500), request.adminUser.id, now, request.adminUser.id, now]);
       let imageSource = "";
       if (input.use_image_source && input.image_source_url) {
         try { imageSource = validateRemoteUrl(input.image_source_url).toString(); } catch { imageSource = ""; warnings.push("Invalid image source URL was not retained."); }

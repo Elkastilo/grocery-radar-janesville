@@ -4128,6 +4128,10 @@ function confidenceBadge(value) {
   return `<span class="badge confidence-${confidence}">${escapeHtml(titleCase(value || "unknown"))}</span>`;
 }
 
+function importerCategoryOptions(selected) {
+  return optionRows([...categories, "prepared food", "health / personal care"], selected || "other");
+}
+
 function positiveImporterPrice(value) {
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const number = Number(value);
@@ -4266,7 +4270,7 @@ function renderProductUrlPreview(data) {
       ${importerField("name", "Product name", fields.name, confidence.name, { maxlength: 120 })}
       ${importerField("brand", "Brand", fields.brand, confidence.brand, { maxlength: 80 })}
       ${importerField("variant", "Variant", fields.variant, confidence.variant, { maxlength: 80 })}
-      <label><span>Category</span><select name="category">${optionRows(categories, "other")}</select></label>
+      <label><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>
       ${importerField("price", "Current price", fields.price, confidence.price, { type: "number", min: 0.01, step: "0.01" })}
       ${importerField("regular_price", "Regular/original price", fields.regular_price, confidence.regular_price, { type: "number", min: 0.01, step: "0.01" })}
       <label><span>Sale price?</span><select name="sale_price"><option value="false">No / unclear</option><option value="true" ${fields.regular_price && fields.price < fields.regular_price ? "selected" : ""}>Yes</option></select></label>
@@ -4357,6 +4361,7 @@ function renderCategoryUrlPreview(data) {
         <div class="importer-edit-grid">
           ${importerField("name", "Product name", fields.name, product.confidence?.name, { maxlength: 120 })}
           ${importerField("brand", "Brand", fields.brand, product.confidence?.brand, { maxlength: 80 })}
+          <label><span>Category</span><select name="category">${importerCategoryOptions(fields.catalog_category)}</select></label>
           ${importerField("price", "Current price", fields.price, product.confidence?.price, { type: "number", min: 0.01, step: "0.01" })}
           ${importerField("regular_price", "Regular price", fields.regular_price, product.confidence?.regular_price, { type: "number", min: 0.01, step: "0.01" })}
           ${importerField("quantity", "Quantity", fields.quantity, product.confidence?.quantity, { type: "number", min: 0, step: "0.01" })}
@@ -4649,9 +4654,18 @@ function categoryImportPayload(card) {
   const fields = source.fields || {};
   const priceSource = source.price_source || {};
   const values = collectImporterRowData(card);
+  const hasPackageEstimate = source.field_origins?.price === "aldi_graphql_collection:verified_per_lb"
+    && positiveImporterPrice(values.price) === positiveImporterPrice(fields.per_lb_price)
+    && values.unit_price_unit === "lb";
   return {
     ...values,
     idempotency_key: card.dataset.importKey,
+    category: values.category || fields.catalog_category || "other",
+    ...(hasPackageEstimate ? {
+      estimated_item_price: fields.estimated_package_price,
+      approximate_item_weight: fields.package_weight,
+      approximate_item_weight_unit: "lb"
+    } : {}),
     product_url: values.product_url || fields.product_url || category.source_url,
     image_source_url: fields.image_url || "",
     use_image_source: values.use_image_source === true,

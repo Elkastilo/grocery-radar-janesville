@@ -212,6 +212,7 @@ function productCandidate(product, method) {
     image_url: imageUrl(product.image), sku: normalizeRetailerText(product.sku || product.mpn, 100),
     gtin: normalizeRetailerText(product.gtin14 || product.gtin13 || product.gtin12 || product.gtin8 || product.gtin, 40),
     price: offer.price, regular_price: offer.regular_price, price_conflict: offer.price_conflict, unit_price: parsePrice(product.unitPrice || product.offers?.unitPrice), currency: offer.currency,
+    category: typeof product.category === "string" ? normalizeRetailerText(product.category, 100) : "",
     availability: offer.availability, product_url: offer.url || text(product.url, 1000),
     raw_price_text: offer.price === null ? "" : normalizeRetailerText(product.offers?.price ?? product.offers?.lowPrice ?? offer.price, 120),
     raw_size_text: packageInfo.raw_text, package: packageInfo,
@@ -317,7 +318,7 @@ function extractProduct(htmlInput, sourceUrl, stores = []) {
   const best = products.sort((a, b) => candidateScore(b) - candidateScore(a))[0];
   if (best) {
     const confidence = best.method === "json_ld" ? "high" : "medium";
-    for (const name of ["name", "brand", "variant", "image_url", "sku", "gtin", "price", "regular_price", "price_conflict", "unit_price", "currency", "availability", "raw_price_text", "raw_size_text"]) applyField(result, name, best[name], confidence, best.method);
+    for (const name of ["name", "brand", "variant", "category", "image_url", "sku", "gtin", "price", "regular_price", "price_conflict", "unit_price", "currency", "availability", "raw_price_text", "raw_size_text"]) applyField(result, name, best[name], confidence, best.method);
     for (const name of ["quantity", "item_size", "unit", "package_type"]) applyField(result, name, best.package[name], best.package.raw_text ? "medium" : "unknown", "size_normalization");
   }
 
