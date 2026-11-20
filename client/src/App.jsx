@@ -11,7 +11,6 @@ import {
   FileCheck2,
   Heart,
   HelpCircle,
-  Leaf,
   Loader2,
   LogIn,
   LogOut,
@@ -24,6 +23,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   SlidersHorizontal,
+  Snowflake,
   Star,
   Store,
   Tag,
@@ -817,7 +817,7 @@ function SearchScreen({
     <div className="mx-auto w-full max-w-6xl px-4 pt-8 sm:px-6 sm:pt-10">
       <ScreenTitle
         eyebrow="Products · Janesville, WI"
-        title={meatDepartment ? "Meat & Seafood" : "Fresh local picks for fall"}
+        title={meatDepartment ? "Meat & Seafood" : "Find local grocery prices"}
         subtitle={meatDepartment ? "Browse Janesville prices by animal, product type, and cut." : "Shop real products and current community-verified prices from stores around Janesville."}
       />
       <div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-2xl font-extrabold tracking-tight text-slate-950">All Products</h2><span className="hidden items-center gap-2 text-sm font-semibold text-slate-500 sm:flex"><SlidersHorizontal className="h-4 w-4" /> Curated from Grocery Radar data</span></div>
@@ -1181,7 +1181,7 @@ function DealsScreen({ arena, loading, error, openProduct, reload, onControlsCha
   const routeTitle = { home: 'Savings across every store', drops: 'Price Drops', showdown: 'Janesville Store Showdown', categories: "Who's cheaper by category?" }[section] || 'Savings across every store'
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
     <ScreenTitle eyebrow="Janesville price arena" title={routeTitle} subtitle="All active Janesville stores compete when Grocery Radar has current, comparable, verified prices." />
-    {section === 'home' ? <><section className="seasonal-savings-intro mb-5 flex items-center gap-4 rounded-3xl p-5 sm:p-6"><span className="season-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl"><Leaf className="h-6 w-6" aria-hidden="true" /></span><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-900">Plan smarter. Spend less.</p><h2 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">Fresh savings for the season</h2><p className="mt-1 font-medium text-slate-600">Explore only current, verified Grocery Radar price comparisons.</p></div></section><section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className="seasonal-destination min-h-40 rounded-2xl p-5 text-left shadow-soft focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-extrabold">{title}</p><p className="mt-2 font-medium text-slate-600">{body}</p><span className="mt-4 block font-extrabold text-emerald-700">Open page →</span></a>)}</section></> : null}
+    {section === 'home' ? <><section className="seasonal-savings-intro mb-5 flex items-center gap-4 rounded-3xl p-5 sm:p-6"><span className="season-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl"><Snowflake className="h-6 w-6" aria-hidden="true" /></span><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-900">Plan smarter. Spend less.</p><h2 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950">Fresh savings for the season</h2><p className="mt-1 font-medium text-slate-600">Explore only current, verified Grocery Radar price comparisons.</p></div></section><section className="grid gap-4 sm:grid-cols-3" aria-label="Savings destinations">{[['drops','Price Drops','See verified prices that decreased around Janesville.'],['showdown','Store Showdown','Compare which stores had the lowest verified prices.'],['categories','By Category','Compare current store leaders across grocery categories.']].map(([id,title,body]) => <a key={id} href={publicPathFor('deals', { savingsSection: id })} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onSectionChange(id) }} className="seasonal-destination min-h-40 rounded-2xl p-5 text-left shadow-soft focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300"><p className="text-2xl font-extrabold">{title}</p><p className="mt-2 font-medium text-slate-600">{body}</p><span className="mt-4 block font-extrabold text-emerald-700">Open page →</span></a>)}</section></> : null}
     {section !== 'home' ? <>
     <section className="mb-5 grid gap-3 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-100 sm:grid-cols-2 lg:grid-cols-5">
       <label className="font-black text-slate-700">Time window<select className="field mt-1" value={controls.window} onChange={(event) => onControlsChange({ window: event.target.value })}><option value="today">Today</option><option value="week">This week</option><option value="last7">Last 7 days</option></select></label>
@@ -1319,7 +1319,7 @@ function CartScreen({ cart, comparison, cartMode, setCartMode, offerMode, setOff
     <div className="segmented-control mb-5" role="group" aria-label="Maximum stores">{[['1','One store'],['2','Two stores'],['any','Any stores']].map(([value,label]) => <button key={value} type="button" onClick={() => setCartMode(value)} aria-pressed={cartMode === value} className={cartMode === value ? 'is-selected' : ''}>{label}</button>)}<button type="button" onClick={() => setOfferMode(offerMode === 'all' ? 'unconditional' : 'all')} aria-pressed={offerMode === 'all'} className={offerMode === 'all' ? 'is-selected' : ''}>{offerMode === 'all' ? 'Including conditional offers' : 'No special requirements'}</button></div>
     {loading ? <LoadingCard label="Optimizing current verified prices..." /> : null}{error ? <ApiError message={error} onRetry={reload} /> : null}
     <section className="grid gap-3 sm:grid-cols-3"><SummaryCard icon={Store} label="Best one-store" value={one?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={one ? `${one.matched_count}/${one.requested_count} matched · ${money(one.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={Store} label="Best two-store" value={two?.stores?.map((store) => store.name).join(' + ') || 'Need prices'} note={two ? `${two.matched_count}/${two.requested_count} matched · ${money(two.estimated_total)}` : 'No comparable plan'} /><SummaryCard icon={CircleDollarSign} label="Selected plan" value={selected ? money(selected.estimated_total) : '$0.00'} note={savings > 0 ? `${money(savings)} below best one-store plan` : 'Approved current prices only'} /></section>
-    {selected ? <section className="seasonal-plan relative mt-5 overflow-hidden rounded-3xl p-5 text-white shadow-lg shadow-emerald-950/10 sm:p-6"><Leaf className="seasonal-plan-leaf" aria-hidden="true" /><div className="relative z-10 flex flex-wrap items-start justify-between gap-5"><div><p className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-[0.12em] text-emerald-100"><span className="h-2 w-2 rounded-full bg-amber-300" />Recommended {cartMode === '1' ? 'one-store' : cartMode === '2' ? 'two-store' : 'all-store'} plan</p><h2 className="mt-2 text-2xl font-extrabold leading-tight sm:text-3xl">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 font-semibold text-emerald-50">{selected.matched_count} of {selected.requested_count} products matched</p></div><div className="rounded-2xl bg-white/10 px-5 py-4 text-right ring-1 ring-amber-200/30"><p className="text-xs font-bold uppercase tracking-wide text-amber-100">Estimated basket</p><p className="mt-1 text-4xl font-extrabold tracking-tight text-amber-50">{money(selected.estimated_total)}</p></div></div></section> : null}
+    {selected ? <section className="seasonal-plan relative mt-5 overflow-hidden rounded-3xl p-5 text-white shadow-lg shadow-emerald-950/10 sm:p-6"><Snowflake className="seasonal-plan-snowflake" aria-hidden="true" /><div className="relative z-10 flex flex-wrap items-start justify-between gap-5"><div><p className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-[0.12em] text-emerald-100"><span className="h-2 w-2 rounded-full bg-amber-300" />Recommended {cartMode === '1' ? 'one-store' : cartMode === '2' ? 'two-store' : 'all-store'} plan</p><h2 className="mt-2 text-2xl font-extrabold leading-tight sm:text-3xl">{selected.stores?.map((store) => store.name).join(' + ') || 'No matched store'}</h2><p className="mt-2 font-semibold text-emerald-50">{selected.matched_count} of {selected.requested_count} products matched</p></div><div className="rounded-2xl bg-white/10 px-5 py-4 text-right ring-1 ring-amber-200/30"><p className="text-xs font-bold uppercase tracking-wide text-amber-100">Estimated basket</p><p className="mt-1 text-4xl font-extrabold tracking-tight text-amber-50">{money(selected.estimated_total)}</p></div></div></section> : null}
     {savings > 0 ? <section className="savings-snapshot mt-4 flex flex-wrap items-center justify-between gap-4 rounded-2xl p-4 sm:px-5"><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-900">Savings snapshot</p><p className="mt-1 font-semibold text-slate-700">With your selected store plan</p></div><div className="text-right"><p className="text-sm font-bold text-slate-600">You could save</p><p className="text-3xl font-extrabold tracking-tight text-emerald-800">{money(savings)}</p></div></section> : null}
     {comparison?.coverage_warning ? <p className="mt-4 rounded-2xl bg-amber-50 p-4 font-bold text-amber-900"><AlertTriangle className="mr-2 inline h-5 w-5" />{comparison.coverage_warning}</p> : null}
     {shoppingMatches.length ? <section className="mt-7 space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><SectionHeader title="Shopping plan" />{knownLocationCount >= 2 ? <button type="button" onClick={() => setLocationSort((value) => !value)} className="btn-secondary min-h-11 px-4 py-2 text-sm">{locationSort ? 'Use list order' : 'Sort by store location'}</button> : null}</div>{shoppingMatches.map((match) => <article key={`${match.item.product_id}-${match.report.store_id}`} className="shopping-plan-row"><ProductImage item={match.report} label={match.item.item_name || match.report.product_name} size="sm" /><div className="min-w-0 flex-1"><h3 className="font-extrabold leading-snug text-slate-950">{displayText(match.item.item_name || match.report.product_name)}</h3><p className="mt-0.5 text-sm font-medium text-slate-500">{match.report.product_size_text || match.report.size_text || 'Package size varies'}</p><p className="mt-1 text-sm font-bold text-slate-700">{match.report.store_name}{Number(match.item.quantity || 1) > 1 ? ` · Qty ${match.item.quantity}` : ''}</p>{match.report.promotion_conditions ? <p className="mt-1 text-xs font-semibold text-amber-800">{match.report.promotion_conditions}</p> : null}<StoreProductLocation report={match.report} /></div><div className="shrink-0 text-right"><p className="text-2xl font-extrabold tracking-tight text-emerald-700">{money(match.line_total)}</p>{Number(match.item.quantity || 1) > 1 ? <p className="text-xs font-semibold text-slate-500">{money(match.item_price)} each</p> : null}</div></article>)}</section> : null}
@@ -2513,7 +2513,7 @@ function UpdatesScreen({ releases, releaseState, version, markRead, homepageServ
   )
 }
 
-const mapleFaqs = [
+const snowyFaqs = [
   ['How do prices get added?', 'Prices come from community submissions and retailer sources, then are reviewed before they appear as verified.'],
   ['How do I compare stores?', 'Add products to My List and open the list to compare current eligible prices across Janesville stores.'],
   ['How do rewards work?', 'Submit useful grocery price proof and earn points when the community can use it.'],
@@ -2521,21 +2521,21 @@ const mapleFaqs = [
   ['How does My List work?', 'Tap the green plus button on any product to save it, then use My List to plan and compare your trip.'],
 ]
 
-function MapleAssistant({ open, setOpen, me, onToast }) {
+function SnowyAssistant({ open, setOpen, me, onToast }) {
   const [faq, setFaq] = useState(null)
   const [message, setMessage] = useState('')
   const [status, setStatus] = useState({ loading: false, error: '', success: '' })
   const submit = async () => {
     const text = message.trim()
-    if (!text) return setStatus({ loading: false, error: 'Tell Maple what you need help with first.', success: '' })
+    if (!text) return setStatus({ loading: false, error: 'Tell Snowy what you need help with first.', success: '' })
     if (text.length > 500) return setStatus({ loading: false, error: 'Please keep your message under 500 characters.', success: '' })
     if (!me.loggedIn) return setStatus({ loading: false, error: 'Please sign in before sending a message to the Grocery Radar team.', success: '' })
     setStatus({ loading: true, error: '', success: '' })
     try {
-      await postJson('/api/feedback', { category: 'suggestion', title: 'Maple shopper question', message: text })
+      await postJson('/api/feedback', { category: 'suggestion', title: 'Snowy shopper question', message: text })
       setMessage('')
       setStatus({ loading: false, error: '', success: 'Sent to the Grocery Radar team. Thanks for helping us improve.' })
-      onToast?.('Maple sent your message to the Grocery Radar Inbox.')
+      onToast?.('Snowy sent your message to the Grocery Radar Inbox.')
     } catch (error) {
       setStatus({ loading: false, error: error.message, success: '' })
     }
@@ -2543,12 +2543,12 @@ function MapleAssistant({ open, setOpen, me, onToast }) {
 
   return (
     <>
-      {open ? <aside className="maple-panel" aria-label="Ask Maple" role="dialog" aria-modal="false">
-        <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-amber-700">Grocery Radar helper</p><h2 className="mt-1 text-2xl font-extrabold text-slate-950">Ask Maple</h2><p className="mt-1 text-sm font-medium text-slate-600">I can help with common questions.</p></div><button type="button" onClick={() => setOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Close Ask Maple"><X className="h-5 w-5" /></button></div>
-        <div className="mt-5 space-y-2">{mapleFaqs.map(([question, answer]) => <div key={question} className="rounded-2xl border border-orange-100 bg-orange-50/50"><button type="button" onClick={() => setFaq(faq === question ? null : question)} className="flex w-full items-center gap-3 p-3 text-left text-sm font-extrabold text-slate-800"><HelpCircle className="h-5 w-5 shrink-0 text-amber-700" />{question}<span className="ml-auto text-lg text-amber-700">{faq === question ? '−' : '+'}</span></button>{faq === question ? <p className="px-3 pb-3 pl-11 text-sm font-medium leading-relaxed text-slate-600">{answer}</p> : null}</div>)}</div>
+      {open ? <aside className="snowy-panel" aria-label="Ask Snowy" role="dialog" aria-modal="false">
+        <div className="snowy-panel-heading flex items-center gap-3"><img src="/winter/snowy-top-hat.webp" width="52" height="52" alt="" /><h2 className="flex-1 text-2xl font-extrabold text-slate-950">Ask Snowy</h2><button type="button" onClick={() => setOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Close Ask Snowy"><X className="h-5 w-5" /></button></div>
+        <div className="mt-5 space-y-2">{snowyFaqs.map(([question, answer]) => <div key={question} className="rounded-2xl border border-sky-100 bg-sky-50/60"><button type="button" onClick={() => setFaq(faq === question ? null : question)} className="flex w-full items-center gap-3 p-3 text-left text-sm font-extrabold text-slate-800"><HelpCircle className="h-5 w-5 shrink-0 text-emerald-700" />{question}<span className="ml-auto text-lg text-amber-700">{faq === question ? '−' : '+'}</span></button>{faq === question ? <p className="px-3 pb-3 pl-11 text-sm font-medium leading-relaxed text-slate-600">{answer}</p> : null}</div>)}</div>
         <div className="mt-6 border-t border-slate-100 pt-5"><p className="font-extrabold text-slate-950">Have a question or suggestion?</p><textarea value={message} onChange={(event) => setMessage(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder="Share a thought with the Grocery Radar team…" className="field mt-3 resize-none" aria-label="Question or suggestion" /><div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500"><span>{message.length}/500</span><button type="button" onClick={submit} disabled={status.loading || !message.trim()} className="btn-primary min-h-11 px-4 py-2 text-sm"><Send className="h-4 w-4" />{status.loading ? 'Sending…' : 'Send to Inbox'}</button></div>{status.error ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800" role="alert">{status.error}</p> : null}{status.success ? <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800" role="status">{status.success}</p> : null}</div>
       </aside> : null}
-      {!open ? <button type="button" onClick={() => setOpen(true)} className="maple-fab" aria-label="Need help? Ask Maple!"><span className="maple-face" aria-hidden="true">🍁</span><span className="maple-tooltip">Need help? Ask Maple!</span></button> : null}
+      {!open ? <button type="button" onClick={() => setOpen(true)} className="snowy-fab" aria-label="Need help? Ask Snowy!"><img className="snowy-face" src="/winter/snowy-top-hat.webp" width="48" height="48" alt="" /><span className="snowy-tooltip">Need help? Ask Snowy!</span></button> : null}
     </>
   )
 }
@@ -2558,9 +2558,9 @@ function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnrea
     <header className="shopper-header sticky top-0 z-30 border-b backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
         <button type="button" onClick={() => openScreen('home')} className="flex min-w-0 items-center gap-2.5 rounded-xl pr-2 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
-          <span className="brand-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white"><Search className="h-5 w-5" aria-hidden="true" /></span>
+          <span className="brand-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white"><Snowflake className="h-6 w-6" aria-hidden="true" /></span>
           <span className="min-w-0"><span className="block truncate text-sm font-extrabold tracking-tight text-slate-950 min-[380px]:text-base">Grocery Radar</span>
-          <span className="season-location mt-0.5 hidden w-fit items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold min-[430px]:flex sm:text-xs"><MapPin className="h-3.5 w-3.5 text-emerald-700" />Janesville, WI <Leaf className="h-3 w-3 text-amber-700" aria-hidden="true" /></span></span>
+          <span className="season-location mt-0.5 hidden w-fit items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold min-[430px]:flex sm:text-xs"><MapPin className="h-3.5 w-3.5 text-emerald-700" />Janesville, WI</span></span>
         </button>
         <nav className="hidden items-center gap-1 lg:flex" aria-label="Shopper navigation">
           {[['search', 'Products'], ['deals', 'Savings'], ['stores', 'Stores'], ['cart', 'My List']].map(([id, label]) => <a key={id} href={publicPathFor(id)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); openScreen(id) }} className={`header-nav-link ${active === id ? 'is-active' : ''}`}>{label}{id === 'cart' && listCount ? <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 text-[10px]">{listCount}</span> : null}</a>)}
@@ -2672,7 +2672,7 @@ function App() {
   const [profileState, setProfileState] = useState({ loading: false, error: '' })
   const [selectedProofId, setSelectedProofId] = useState(initialRouteRef.current.proofId || '')
   const [toast, setToast] = useState('')
-  const [mapleOpen, setMapleOpen] = useState(false)
+  const [snowyOpen, setSnowyOpen] = useState(false)
 
   const applyRoute = useCallback((nextRoute, navigationType = 'push') => {
     navigationTypeRef.current = navigationType
@@ -3133,7 +3133,7 @@ function App() {
   const listCount = cart?.items?.length ?? readLocalList().length
 
   return (
-    <div className={`shopper-shell season-${screen === 'home' ? 'winter' : 'fall'} min-h-screen text-slate-950`} data-season={screen === 'home' ? 'winter' : 'fall'}>
+    <div className="shopper-shell season-winter min-h-screen text-slate-950" data-season="winter">
       <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} active={activeNav} listCount={listCount} />
       {toast ? (
         <button
@@ -3280,7 +3280,7 @@ function App() {
           />
         ) : null}
       </main>
-      <MapleAssistant open={mapleOpen} setOpen={setMapleOpen} me={me} onToast={setToast} />
+      <SnowyAssistant open={snowyOpen} setOpen={setSnowyOpen} me={me} onToast={setToast} />
       <footer className={`${screen === 'home' ? 'winter-footer' : ''} pb-32 pt-12 text-center text-sm font-medium text-slate-600 sm:pb-36`}>
         <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
         <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy" onClick={(event) => { event.preventDefault(); openScreen('privacy') }}>Privacy</a><a className="underline" href="/terms" onClick={(event) => { event.preventDefault(); openScreen('terms') }}>Terms &amp; acceptable use</a></p>
