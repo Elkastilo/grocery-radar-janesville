@@ -622,3 +622,45 @@
   }
   .winter-hero-content { padding-block: 2.25rem 2.75rem; }
 }
+
+.winter-home,
+.winter-updates {
+  background:
+    radial-gradient(circle at 18px 22px, #fff 1.4px, transparent 2.5px) 0 0 / 73px 89px,
+    radial-gradient(circle at 39px 59px, #c9e2f0 1px, transparent 2px) 0 0 / 101px 107px,
+    linear-gradient(#eaf4fa, #f8fbfd 45%, #e9f4fa);
+}
+
+.winter-department-section {
+  border-block: 1px solid #dbe9f0;
+  padding-block: 1.25rem;
+}
+
+.winter-home .winter-list-banner {
+  background:
+    radial-gradient(circle at 20px 19px, #fff 1.5px, transparent 3px) 0 0 / 44px 41px,
+    linear-gradient(105deg, #dbeef9, #edf6ef, #dbeef9);
+  border: 1px solid #d2e5ee;
+  padding: 1.25rem;
+}
+
+.winter-home .winter-coverage {
+  background: linear-gradient(100deg, #ffffff, #f0f7fb);
+}
+
+.winter-footer {
+  position: relative;
+  overflow: hidden;
+  padding-top: 0;
+  background: linear-gradient(#eaf4fa, #f6fafc);
+}
+
+.winter-footer::before {
+  display: block;
+  height: clamp(9rem, 22vw, 19rem);
+  margin-bottom: 1.5rem;
+  background:
+    linear-gradient(to bottom, #e9f4fa 0%, transparent 16%, transparent 75%, #eef6fa 100%),
+    url('/winter/janesville-walkway.webp') center 59% / cover no-repeat;
+  content: "";
+}
