@@ -53,20 +53,8 @@ const categories = [
   { label: 'Other', value: 'other' },
 ]
 
-const seasonalTheme = Object.freeze({
-  id: 'fall',
-  label: 'Fall',
-  heroTitle: 'Fresh finds for fall',
-  heroCopy: 'Seasonal picks. Local prices. A smarter way to plan your Janesville grocery trip.',
-  discoveryTitle: 'Fall favorites near you',
-  discoveryCopy: 'Current local prices for seasonal grocery staples already in the Grocery Radar catalog.',
-  productTerms: ['apple', 'pear', 'pumpkin', 'squash', 'sweet potato', 'cranberry', 'cranberries', 'cider'],
-})
-
-const matchesSeasonalProduct = (product = {}) => {
-  const searchable = `${product.display_name || ''} ${product.preferred_brand || ''} ${product.category || ''}`.toLowerCase()
-  return seasonalTheme.productTerms.some((term) => searchable.includes(term))
-}
+const homeDepartments = ['produce', 'meat', 'dairy', 'pantry', 'frozen']
+  .map((value) => categories.find((category) => category.value === value))
 
 const filters = ['cheapest', 'verified', 'deals', 'food', 'household']
 
@@ -1059,74 +1047,90 @@ function CatalogTile({ product, reports, openProduct }) {
   )
 }
 
+function HomePriceCard({ product, openProduct }) {
+  const estimated = numericPrice(product.best_estimated_item_price)
+  const perPound = estimated !== null && product.best_price_unit === 'lb'
+  const weight = numericPrice(product.best_approximate_item_weight)
+  return (
+    <button type="button" className="winter-price-card" onClick={() => openProduct(product.id)}>
+      <ProductImage item={product} label={product.display_name} size="lg" />
+      <div className="min-w-0">
+        <h3 className="line-clamp-2 font-extrabold text-slate-950">{displayText(product.display_name)}</h3>
+        <p className="mt-1 text-2xl font-extrabold tracking-tight text-emerald-800">{productPrice(product)}{perPound ? '/lb' : ''}</p>
+        {perPound ? <p className="text-xs text-slate-600">{money(estimated)} estimated per package{weight !== null && product.best_approximate_item_weight_unit === 'lb' ? ` · About ${weight} lb` : ''}</p> : null}
+        <p className="mt-1 text-sm font-bold text-slate-800">{product.best_store_name}</p>
+        {product.best_price_freshness ? <p className="text-xs text-slate-600">{product.best_price_freshness}</p> : null}
+      </div>
+    </button>
+  )
+}
+
 function HomeScreen(props) {
-  const { browse, stores, loading, error, homepageServiceState, searchTerm, setSearchTerm, openScreen, openProduct, openStore, arena } = props
-  const products = (browse.products || []).filter(isRenderableProduct)
-  const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
-  const visibleCategories = categories.map((category) => ({ ...category, products: products.filter((product) => product.category === category.value).slice(0, 4) })).filter((category) => category.products.length)
-  const seasonalProducts = products.filter(matchesSeasonalProduct).slice(0, 4)
+  const { browse, stores, loading, error, searchTerm, setSearchTerm, openScreen, openProduct, openStore, arena } = props
+  const pricedProducts = (browse.products || []).filter(isRenderableProduct).filter(hasApprovedProductPrice)
+  const byDepartment = new Map()
+  for (const product of pricedProducts) {
+    if (!byDepartment.has(product.category)) byDepartment.set(product.category, product)
+  }
+  const highlights = [...byDepartment.values()]
+  const featured = [...highlights, ...pricedProducts.filter((product) => !highlights.includes(product))].slice(0, 3)
+  const browseDepartment = (category) => {
+    setSearchTerm('')
+    openScreen('search', { category })
+  }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
-      <section className="seasonal-hero premium-hero relative overflow-hidden rounded-3xl px-5 py-7 text-white sm:px-8 sm:py-10">
-        <Leaf className="seasonal-leaf seasonal-leaf-one" aria-hidden="true" />
-        <Leaf className="seasonal-leaf seasonal-leaf-two" aria-hidden="true" />
-        <div className="relative z-10 max-w-4xl">
-          <p className="seasonal-badge inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ring-1 ring-white/20">
-            <Leaf className="h-4 w-4" />
-            {seasonalTheme.label} in Janesville
-          </p>
-          <h1 data-route-heading tabIndex="-1" className="mt-4 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight outline-none sm:text-5xl">
-            {seasonalTheme.heroTitle}
-          </h1>
-          <p className="mt-3 max-w-2xl text-base font-medium leading-relaxed text-emerald-50 sm:text-xl">
-            {seasonalTheme.heroCopy}
-          </p>
-        </div>
-        <div className="mt-6 max-w-3xl"><SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} /></div>
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-          <button type="button" onClick={() => openScreen('search')} className="btn-primary bg-white text-emerald-900 hover:bg-emerald-50">
-            <Search className="h-5 w-5" /> Search prices
-          </button>
-          {seasonalProducts.length ? <a href="#fall-favorites" className="seasonal-cta inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-5 py-3 font-extrabold focus-visible:ring-4 focus-visible:ring-white/30"><Leaf className="h-5 w-5" />Explore fall favorites</a> : null}
-          <button type="button" onClick={() => openScreen('submit')} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-white/25 bg-emerald-900/30 px-5 py-3 font-extrabold text-white transition hover:bg-emerald-900/50 focus-visible:ring-4 focus-visible:ring-white/30">
-            <Upload className="h-5 w-5" /> Submit proof
-          </button>
-        </div>
-        <div className="mt-6 grid gap-2 border-t border-white/15 pt-5 text-sm font-semibold text-emerald-50 sm:grid-cols-3">
-          <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Community submitted</span>
-          <span className="flex items-center gap-2"><BadgeCheck className="h-4 w-4" /> Reviewed before publishing</span>
-          <span className="flex items-center gap-2"><Clock3 className="h-4 w-4" /> Recency shown with prices</span>
+    <div className="winter-home">
+      <section className="winter-hero" aria-labelledby="winter-home-heading">
+        <div className="winter-home-width winter-hero-content">
+          <div className="max-w-2xl">
+            <h1 id="winter-home-heading" data-route-heading tabIndex="-1" className="text-4xl font-extrabold leading-tight tracking-tight outline-none sm:text-5xl lg:text-6xl">What are you shopping for?</h1>
+            <p className="mt-3 text-base font-semibold sm:text-lg">Compare grocery prices around Janesville.</p>
+            <form className="winter-search mt-5" onSubmit={(event) => { event.preventDefault(); openScreen('search', { category: '' }) }}>
+              <Search className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
+              <input type="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search milk, eggs, ground beef…" aria-label="Search groceries" enterKeyHint="search" />
+              <button type="submit">Search</button>
+            </form>
+          </div>
         </div>
       </section>
 
-      <section className="surface-card mt-6 p-5 sm:p-6"><SectionHeader title="Janesville price check" action="Compare stores" onAction={() => openScreen('deals')} />{arena?.homepage_module_eligible ? <><p className="font-medium text-slate-600">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0,3).map((row, index) => <div key={row.store_id} className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4"><p className="text-xs font-extrabold uppercase tracking-wide text-emerald-700">#{index + 1} current coverage</p><strong className="mt-1 block text-lg text-slate-950">{row.store_name}</strong><p className="mt-1 text-sm font-semibold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div><p className="mt-3 text-sm font-medium text-slate-600">Based only on products currently verified in Grocery Radar. Coverage varies by store.</p></> : <p className="font-medium leading-relaxed text-slate-600">We’re still building store coverage. Product-level comparisons remain available whenever current comparable prices exist.</p>}</section>
-
-      {homepageServiceState?.error ? <p className="mt-4 rounded-2xl bg-amber-50 p-3 font-bold text-amber-900">Service notes are temporarily unavailable. Grocery search is still working.</p> : null}
-      {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
-      {loading ? <div className="mt-5"><LoadingCard label="Loading products..." /></div> : null}
-
-      {!loading && !error && !products.length ? <div className="mt-6"><EmptyState title="Products are being prepared" body="Search still includes approved prices, and community proof can be submitted now." icon={PackageCheck} /></div> : null}
-
-      {seasonalProducts.length ? <section id="fall-favorites" className="seasonal-discovery mt-8 scroll-mt-24 rounded-3xl p-4 sm:p-6" aria-labelledby="fall-favorites-heading"><div className="mb-5 flex items-start gap-3"><span className="season-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl"><Leaf className="h-6 w-6" aria-hidden="true" /></span><div><p className="text-xs font-extrabold uppercase tracking-[0.12em] text-amber-800">Seasonal discovery</p><h2 id="fall-favorites-heading" className="mt-1 text-2xl font-extrabold tracking-tight text-slate-950 sm:text-3xl">{seasonalTheme.discoveryTitle}</h2><p className="mt-1 max-w-2xl font-medium text-slate-600">{seasonalTheme.discoveryCopy}</p></div></div><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{seasonalProducts.map((product) => <CatalogTile key={`seasonal-${product.id}`} product={product} reports={reports} openProduct={openProduct} />)}</div></section> : null}
-
-      {visibleCategories.map((category) => (
-        <section key={category.value} className="mt-8" aria-labelledby={`home-category-${category.value.replaceAll(' ', '-')}`}>
-          <SectionHeader title={category.label} action="View all" onAction={() => openScreen('search', { category: category.value })} />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">{category.products.map((product) => <CatalogTile key={product.id} product={product} reports={reports} openProduct={openProduct} />)}</div>
+      <div className="winter-home-width pb-8">
+        <section className="winter-prices" aria-label="Current local prices">
+          <SectionHeader title="Current local prices" action="All prices" onAction={() => browseDepartment('')} />
+          {error ? <ApiError message={error} /> : loading && !featured.length ? <LoadingCard label="Loading local prices…" /> : featured.length ? (
+            <div className="grid gap-3 md:grid-cols-3">{featured.map((product) => <HomePriceCard key={product.id} product={product} openProduct={openProduct} />)}</div>
+          ) : <EmptyState title="Current prices are coming in" body="Search the catalog or share a price you found in Janesville." icon={PackageCheck} />}
         </section>
-      ))}
 
-      <section className="local-stores-section mt-9 rounded-[2rem] p-5 shadow-soft sm:p-6">
-        <div className="mb-4 flex items-center gap-2"><Leaf className="h-5 w-5 text-amber-700" aria-hidden="true" /><h2 className="text-xl font-extrabold tracking-tight text-slate-950 sm:text-2xl">Janesville Stores</h2></div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
-        <button type="button" onClick={() => openScreen('stores')} className="mt-4 min-h-12 rounded-2xl bg-emerald-50 px-5 font-black text-emerald-800">View all stores</button>
-      </section>
+        <section className="mt-7" aria-label="Shop by department">
+          <SectionHeader title="Shop by department" action="All departments" onAction={() => browseDepartment('')} />
+          <div className="winter-departments">
+            {homeDepartments.map(({ value, label }) => (
+              <button key={value} type="button" className="winter-department" onClick={() => browseDepartment(value)}>
+                <img src={`/winter/${value}.webp`} alt="" width="264" height="145" loading="lazy" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+        <div className="winter-list-banner mt-7">
+          <button type="button" className="btn-primary" onClick={() => openScreen('cart')}>Compare my grocery list</button>
+        </div>
 
-      <details className="surface-card mt-8 p-4">
-        <summary className="cursor-pointer rounded-lg font-extrabold text-slate-700">About data coverage and community updates</summary>
-        <div className="mt-4"><LegacyHomeScreen {...props} /></div>
-      </details>
+        <section className="surface-card mt-7 p-5 sm:p-6">
+          <SectionHeader title="Janesville price check" action="Compare stores" onAction={() => openScreen('deals')} />
+          {arena?.homepage_module_eligible ? <><p className="font-medium text-slate-600">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0, 3).map((row) => <div key={row.store_id} className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4"><strong className="block text-lg text-slate-950">{row.store_name}</strong><p className="mt-1 text-sm font-semibold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div></> : <p className="font-medium text-slate-600">Compare products with current prices while store coverage grows.</p>}
+        </section>
+        {stores.length ? <section className="mt-7">
+          <SectionHeader title="Janesville stores" action="All stores" onAction={() => openScreen('stores')} />
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
+        </section> : null}
+        <details className="surface-card mt-7 p-4">
+          <summary className="cursor-pointer font-extrabold text-slate-700">Data coverage and community updates</summary>
+          <div className="mt-4"><LegacyHomeScreen {...props} /></div>
+        </details>
+      </div>
     </div>
   )
 }
@@ -3032,7 +3036,7 @@ function App() {
   }, [applyRoute])
 
   const openScreen = useCallback((nextScreen, options = {}) => {
-    if (options.category) setActiveCategory(options.category)
+    if (options.category !== undefined) setActiveCategory(options.category)
     if (options.proofId) setSelectedProofId(options.proofId)
     if (options.productId) setSelectedProductId(Number(options.productId))
     let path = publicPathFor(nextScreen, options)
@@ -3447,7 +3451,7 @@ function App() {
   const listCount = cart?.items?.length ?? readLocalList().length
 
   return (
-    <div className={`shopper-shell season-${seasonalTheme.id} min-h-screen text-slate-950`} data-season={seasonalTheme.id}>
+    <div className={`shopper-shell season-${screen === 'home' ? 'winter' : 'fall'} min-h-screen text-slate-950`} data-season={screen === 'home' ? 'winter' : 'fall'}>
       <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} active={activeNav} listCount={listCount} />
       {toast ? (
         <button

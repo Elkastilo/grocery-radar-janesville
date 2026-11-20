@@ -524,3 +524,101 @@
     }
   }
 }
+
+.winter-home {
+  background: linear-gradient(#eef6fb, #f9fbfc 720px);
+}
+
+.winter-home-width {
+  width: min(100% - 2rem, 76rem);
+  margin-inline: auto;
+}
+
+.winter-hero {
+  color: #10372b;
+  background:
+    linear-gradient(90deg, rgba(244, 250, 253, .97), rgba(244, 250, 253, .88) 32%, rgba(244, 250, 253, .08) 72%),
+    url('/winter/janesville-riverfront.webp') center 55% / cover no-repeat,
+    #e1eef6;
+}
+
+.winter-hero-content {
+  padding-block: clamp(2.75rem, 6vw, 5.5rem);
+}
+
+.winter-search {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  max-width: 42rem;
+  padding: .375rem .375rem .375rem .875rem;
+  border: 1px solid #c4d5dd;
+  border-radius: .9rem;
+  background: white;
+  box-shadow: 0 8px 25px #16394c20;
+}
+
+.winter-search:focus-within { outline: 2px solid #247257; outline-offset: 2px; }
+.winter-search input { flex: 1; min-width: 0; min-height: 2.875rem; }
+.winter-search input:focus { outline: none; }
+.winter-search button {
+  flex: none;
+  min-height: 2.875rem;
+  padding-inline: clamp(.75rem, 3vw, 1.5rem);
+  border-radius: .65rem;
+  background: #14553c;
+  color: white;
+  font-weight: 800;
+}
+.winter-search button:hover { background: #0d402d; }
+
+.winter-prices { padding-top: 1.5rem; }
+
+.winter-price-card,
+.winter-department {
+  overflow: hidden;
+  border: 1px solid #dbe6ea;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 3px 12px #152f3e0a;
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.winter-price-card:hover,
+.winter-department:hover { border-color: #8cb49e; box-shadow: 0 5px 16px #152f3e15; }
+
+.winter-price-card {
+  display: flex;
+  align-items: center;
+  gap: .875rem;
+  padding: .875rem;
+  text-align: left;
+}
+
+.winter-departments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: .75rem;
+}
+
+.winter-department { color: #153d2e; font-weight: 800; }
+.winter-department img { display: block; width: 100%; height: auto; aspect-ratio: 264 / 145; object-fit: cover; }
+.winter-department span { display: block; padding: .7rem .45rem; }
+
+.winter-list-banner {
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #e0efe8;
+}
+
+@media (max-width: 640px) {
+  .winter-hero {
+    background:
+      linear-gradient(90deg, rgba(244, 250, 253, .97), rgba(244, 250, 253, .84)),
+      url('/winter/janesville-riverfront.webp') 72% center / cover no-repeat,
+      #e1eef6;
+  }
+  .winter-hero-content { padding-block: 2.25rem 2.75rem; }
+}
