@@ -107,31 +107,35 @@
     transform: scale(1.05);
   }
 
-  .maple-fab {
-    @apply fixed bottom-24 right-4 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-700 text-white shadow-xl transition hover:scale-105 hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-amber-200 sm:bottom-6 sm:right-6;
+  .snowy-fab {
+    @apply fixed bottom-24 right-4 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-700 text-white shadow-xl transition hover:scale-105 hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky-200 sm:bottom-6 sm:right-6;
   }
 
-  .maple-face {
-    @apply text-2xl leading-none;
+  .snowy-face {
+    @apply h-12 w-12 object-contain;
   }
 
-  .maple-tooltip {
+  .snowy-tooltip {
     @apply pointer-events-none absolute bottom-full right-0 mb-2 w-max max-w-[calc(100vw-2rem)] rounded-xl bg-slate-950 px-3 py-2 text-xs font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100;
   }
 
-  .maple-fab:hover .maple-tooltip,
-  .maple-fab:focus-visible .maple-tooltip {
+  .snowy-fab:hover .snowy-tooltip,
+  .snowy-fab:focus-visible .snowy-tooltip {
     opacity: 1;
   }
 
-  .maple-panel {
-    @apply fixed bottom-24 right-4 z-50 w-[min(24rem,calc(100%-2rem))] rounded-[1.25rem] border border-orange-100 bg-white p-5 shadow-2xl sm:bottom-6 sm:right-6;
+  .snowy-panel-heading {
+    @apply rounded-xl bg-sky-50 px-3 py-2;
+  }
+
+  .snowy-panel {
+    @apply fixed bottom-24 right-4 z-50 w-[min(24rem,calc(100%-2rem))] rounded-[1.25rem] border border-sky-100 bg-white p-5 shadow-2xl sm:bottom-6 sm:right-6;
     max-height: calc(100svh - 7rem);
     overflow-y: auto;
   }
 
   @media (max-width: 639px) {
-    .maple-panel {
+    .snowy-panel {
       bottom: 5.5rem;
       left: 0.75rem;
       right: 0.75rem;
@@ -180,13 +184,13 @@
     transform: translateY(0) scale(0.995);
   }
 
-  .season-fall {
-    --season-accent: #c75b1c;
-    --season-accent-soft: #ffedd5;
-    --season-surface: #fffaf0;
-    --season-warm: #d99a28;
-    --season-decoration: #8a4b22;
-    --season-cream: #fbf7ef;
+  .season-winter {
+    --season-accent: #20648a;
+    --season-accent-soft: #e0f2fe;
+    --season-surface: #f6fbfe;
+    --season-warm: #e7b865;
+    --season-decoration: #397b9e;
+    --season-cream: #f0f8fc;
   }
 
   .shopper-shell {
@@ -293,8 +297,8 @@
 
   .season-location {
     color: #475569;
-    background: #fff7ed;
-    box-shadow: inset 0 0 0 1px #fed7aa;
+    background: #edf7fc;
+    box-shadow: inset 0 0 0 1px #cfe5f0;
   }
 
   .seasonal-plan {
@@ -304,7 +308,7 @@
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 22px 48px rgb(6 78 59 / 0.19);
   }
 
-  .seasonal-plan-leaf {
+  .seasonal-plan-snowflake {
     position: absolute;
     right: 1.5rem;
     bottom: -2rem;
@@ -508,7 +512,7 @@
     }
 
     .seasonal-leaf-two,
-    .seasonal-plan-leaf {
+    .seasonal-plan-snowflake {
       display: none;
     }
   }
