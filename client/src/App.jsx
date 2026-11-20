@@ -652,382 +652,7 @@ function SummaryCard({ icon: Icon, label, value, note }) {
   )
 }
 
-const fallbackHomepageService = {
-  service: {
-    location: { city: 'Janesville', region: 'Wisconsin' },
-    service_status: 'online',
-    version_label: 'Early Access',
-    current_focus: 'Adding and verifying Janesville grocery prices.',
-    main_message:
-      'Grocery Radar is live, but the radar is still filling up. We are actively adding and verifying grocery prices from Janesville stores using receipts, shelf tags, weekly ads, and community submissions.',
-    community_mission_title: 'Help fill the Janesville radar.',
-    community_mission_body: 'One receipt, shelf tag, weekly ad, or store link can help shoppers across Janesville.',
-    homepage_announcement: '',
-    maintenance: { enabled: false },
-    updated_at: '',
-  },
-  patch_notes: [],
-  known_issues: [],
-  community_counts: {
-    verified_prices: 0,
-    products_with_active_prices: 0,
-    janesville_stores_tracked: 0,
-    prices_updated_today: 0,
-    community_submissions_awaiting_review: 0,
-  },
-}
-
-const serviceStatusStyles = {
-  online: 'bg-emerald-100 text-emerald-900 ring-emerald-200',
-  maintenance: 'bg-amber-100 text-amber-900 ring-amber-200',
-  degraded: 'bg-rose-100 text-rose-900 ring-rose-200',
-  updating: 'bg-sky-100 text-sky-900 ring-sky-200',
-}
-
-function ServiceBadge({ status }) {
-  const safeStatus = status || 'online'
-  return (
-    <span className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-black ring-1 ${serviceStatusStyles[safeStatus] || serviceStatusStyles.online}`}>
-      <span className="h-2.5 w-2.5 rounded-full bg-current" />
-      {titleCase(safeStatus)}
-    </span>
-  )
-}
-
-function PatchList({ title, items = [] }) {
-  if (!items.length) return null
-
-  return (
-    <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-100">
-      <p className="text-sm font-black uppercase tracking-wide text-slate-500">{title}</p>
-      <ul className="mt-2 space-y-2">
-        {items.map((item) => (
-          <li key={item} className="flex gap-2 text-sm font-bold text-slate-700">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-function MissionCount({ label, value }) {
-  return (
-    <div className="rounded-2xl bg-white p-4 text-left shadow-sm ring-1 ring-emerald-100">
-      <p className="text-3xl font-black text-emerald-800">{Number(value || 0).toLocaleString()}</p>
-      <p className="mt-1 text-sm font-black text-slate-600">{label}</p>
-    </div>
-  )
-}
-
-function LegacyHomeScreen({
-  browse,
-  stores,
-  loading,
-  error,
-  homepageService,
-  homepageServiceState,
-  searchTerm,
-  setSearchTerm,
-  openScreen,
-  openProduct,
-  addToCart,
-}) {
-  const live = homepageService || fallbackHomepageService
-  const service = live.service || fallbackHomepageService.service
-  const maintenance = service.maintenance || {}
-  const counts = live.community_counts || fallbackHomepageService.community_counts
-  const latestPatch = (live.patch_notes || [])[0]
-  const knownIssues = live.known_issues || []
-  const reports = (browse.recently_approved_reports || []).filter(hasNumericApprovedReportPrice)
-  const products = (browse.products || []).filter(hasApprovedProductPrice)
-  const dealReports = reports.filter(isDealReport)
-  const bestCards = dealReports.slice(0, 4)
-  const hasApprovedPrices = reports.length > 0 || products.length > 0
-  const quickActions = [
-    { label: 'Find the Cheapest Price', icon: Search, screen: 'search', tone: 'primary' },
-    { label: "Browse This Week's Deals", icon: Tag, screen: 'deals' },
-    { label: 'Compare My Grocery List', icon: ShoppingCart, screen: 'cart' },
-    { label: 'Submit Proof', icon: Upload, screen: 'submit' },
-  ]
-
-  return (
-    <div className="mx-auto w-full max-w-5xl px-4 pt-4 sm:px-6">
-      <section className="rounded-[2rem] bg-slate-950 p-5 text-white shadow-soft sm:p-7">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-2 text-sm font-black text-emerald-100">
-              <MapPin className="h-4 w-4" />
-              Janesville, Wisconsin
-            </p>
-            <h1 className="mt-5 max-w-2xl text-4xl font-black leading-tight sm:text-5xl">
-              GROCERY RADAR JANESVILLE
-            </h1>
-            <p className="mt-3 max-w-3xl text-xl font-bold text-slate-200">
-              {service.main_message}
-            </p>
-          </div>
-          <ServiceBadge status={service.service_status} />
-        </div>
-
-        <div className="mt-6 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
-            <p className="text-sm font-black text-slate-300">Current Version</p>
-            <p className="mt-1 text-2xl font-black">{service.version_label}</p>
-          </div>
-          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
-            <p className="text-sm font-black text-slate-300">Current Focus</p>
-            <p className="mt-1 text-base font-black">{service.current_focus}</p>
-          </div>
-          <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
-            <p className="text-sm font-black text-slate-300">Last Updated</p>
-            <p className="mt-1 text-base font-black">{shortDate(service.updated_at || service.published_at) || 'Update pending'}</p>
-          </div>
-        </div>
-
-        {service.homepage_announcement ? (
-          <div className="mt-5 rounded-2xl bg-emerald-400/15 p-4 font-bold text-emerald-50 ring-1 ring-emerald-300/30">
-            {service.homepage_announcement}
-          </div>
-        ) : null}
-
-        {maintenance.enabled ? (
-          <div className="mt-5 rounded-2xl bg-amber-100 p-4 text-amber-950 ring-1 ring-amber-200">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-1 h-6 w-6 shrink-0" />
-              <div>
-                <p className="text-lg font-black">{maintenance.title || 'Maintenance Notice'}</p>
-                <p className="mt-1 font-bold">{maintenance.message || 'Grocery Radar maintenance is currently posted.'}</p>
-                {maintenance.impact ? <p className="mt-2 text-sm font-bold">{maintenance.impact}</p> : null}
-                <p className="mt-2 text-sm font-black">
-                  {titleCase(maintenance.status || 'monitoring')}
-                  {maintenance.expected_end_at ? ` | Expected end ${shortDate(maintenance.expected_end_at)}` : ''}
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="mt-5 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-emerald-100 sm:p-7">
-        <SectionHeader title="Search Grocery Prices" />
-        <SearchBox value={searchTerm} onChange={setSearchTerm} onFocus={() => openScreen('search')} />
-        <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {quickActions.map((action) => {
-            const Icon = action.icon
-            const isPrimary = action.tone === 'primary'
-            return (
-              <button
-                key={action.label}
-                type="button"
-                onClick={() => openScreen(action.screen)}
-                className={`flex min-h-24 flex-col items-start justify-between rounded-2xl p-4 text-left font-black shadow-sm ring-1 ${
-                  isPrimary
-                    ? 'bg-emerald-700 text-white ring-emerald-700'
-                    : 'bg-emerald-50 text-emerald-950 ring-emerald-100'
-                }`}
-              >
-                <Icon className={`h-7 w-7 ${isPrimary ? 'text-white' : 'text-emerald-700'}`} />
-                <span className="text-base leading-tight">{action.label}</span>
-              </button>
-            )
-          })}
-        </div>
-        {homepageServiceState?.error ? (
-          <p className="mt-4 rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
-            Service notes are temporarily unavailable. Search and approved prices can still load below.
-          </p>
-        ) : null}
-      </section>
-
-      {error ? <div className="mt-5"><ApiError message={error} /></div> : null}
-
-      <section className="mt-7 rounded-[2rem] bg-emerald-50 p-5 shadow-soft ring-1 ring-emerald-100 sm:p-7">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-2xl">
-            <p className="text-sm font-black uppercase tracking-wide text-emerald-800">Current Community Mission</p>
-            <h2 className="mt-2 text-3xl font-black text-slate-950">{service.community_mission_title}</h2>
-            <p className="mt-2 text-lg font-bold text-slate-600">{service.community_mission_body}</p>
-          </div>
-          <div className="rounded-2xl bg-emerald-700 p-3 text-white">
-            <UsersRound className="h-8 w-8" />
-          </div>
-        </div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <MissionCount label="Verified prices" value={counts.verified_prices} />
-          <MissionCount label="Products with active prices" value={counts.products_with_active_prices} />
-          <MissionCount label="Janesville stores tracked" value={counts.janesville_stores_tracked} />
-          <MissionCount label="Prices updated today" value={counts.prices_updated_today} />
-          <MissionCount label="Submissions awaiting review" value={counts.community_submissions_awaiting_review} />
-        </div>
-        <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <button type="button" onClick={() => openScreen('search')} className="rounded-2xl bg-emerald-700 px-4 py-4 font-black text-white">
-            Search Prices
-          </button>
-          <button type="button" onClick={() => openScreen('submit')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
-            Submit Proof
-          </button>
-          <button type="button" onClick={() => openScreen('profile')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
-            Report a Problem
-          </button>
-          <button type="button" onClick={() => openScreen('profile')} className="rounded-2xl bg-white px-4 py-4 font-black text-emerald-900 ring-1 ring-emerald-100">
-            Suggest an Idea
-          </button>
-        </div>
-      </section>
-
-      <section className="mt-7">
-        <SectionHeader title="Latest Patch Notes" />
-        {latestPatch ? (
-          <article className="rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100 sm:p-7">
-            <p className="text-sm font-black uppercase tracking-wide text-emerald-700">
-              {latestPatch.version_label} — {latestPatch.title}
-            </p>
-            <h2 className="mt-2 text-3xl font-black text-slate-950">{latestPatch.summary}</h2>
-            <p className="mt-2 text-sm font-bold text-slate-500">Published {shortDate(latestPatch.published_at || latestPatch.updated_at) || 'recently'}</p>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <PatchList title="Added" items={latestPatch.added} />
-              <PatchList title="Changed" items={latestPatch.changed} />
-              <PatchList title="Fixed" items={latestPatch.fixed} />
-              <PatchList title="Known Issues" items={latestPatch.known_issues} />
-              <PatchList title="Next Focus" items={latestPatch.next_focus} />
-            </div>
-          </article>
-        ) : (
-          <EmptyState title="Patch notes are being prepared" body="Service updates will appear here after the Owner publishes them." icon={FileCheck2} />
-        )}
-      </section>
-
-      <section className="mt-7">
-        <SectionHeader title="Known Issues" />
-        <div className="grid gap-3 sm:grid-cols-2">
-          {knownIssues.length ? knownIssues.map((issue) => (
-            <article key={issue.id} className="rounded-2xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
-              <div className="flex items-start justify-between gap-3">
-                <h3 className="text-lg font-black text-slate-950">{issue.title}</h3>
-                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-900">{titleCase(issue.status)}</span>
-              </div>
-              <p className="mt-2 font-bold text-slate-600">{issue.description}</p>
-              {issue.workaround ? <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-700">Workaround: {issue.workaround}</p> : null}
-              <p className="mt-3 text-sm font-black text-slate-500">
-                Opened {shortDate(issue.opened_at) || 'recently'} | Updated {shortDate(issue.last_updated_at) || 'recently'}
-              </p>
-            </article>
-          )) : (
-            <EmptyState title="No published known issues" body="If something looks wrong, send feedback from your account." icon={CheckCircle2} />
-          )}
-        </div>
-      </section>
-
-      <section className="mt-7 rounded-[2rem] bg-white p-5 shadow-soft ring-1 ring-slate-100 sm:p-7">
-        <h2 className="text-2xl font-black text-slate-950">Why am I not seeing many prices yet?</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {[
-            'Grocery Radar only shows approved prices.',
-            'Community submissions must be reviewed before becoming public.',
-            'Old, expired, or disputed prices may be hidden.',
-            'Some Janesville stores and categories are still being populated.',
-            'Prices are continuously updated to keep them useful and current.',
-            'We do not publish unverified bulk data simply to make the site look full.',
-          ].map((item) => (
-            <div key={item} className="flex gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-100">
-              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
-              <p className="font-bold text-slate-700">{item}</p>
-            </div>
-          ))}
-        </div>
-        <p className="mt-4 text-sm font-bold text-slate-500">
-          Prices can change at the store. Check size, promotion, membership rules, and availability before purchase.
-        </p>
-      </section>
-
-      <section className="mt-7 rounded-[2rem] bg-emerald-700 p-5 text-white shadow-lift sm:p-7">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-2xl">
-            <p className="text-sm font-black uppercase tracking-wide text-emerald-100">Help Build the Radar</p>
-            <h2 className="mt-2 text-3xl font-black">Built in Janesville. Powered by neighbors.</h2>
-            <p className="mt-2 text-lg font-bold text-emerald-50">
-              Upload a receipt, shelf tag, weekly ad, screenshot, or store link. We review it before any price becomes public.
-            </p>
-          </div>
-          <ReceiptText className="h-10 w-10 text-emerald-100" />
-        </div>
-        <button
-          type="button"
-          onClick={() => openScreen('submit')}
-          className="mt-5 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 font-black text-emerald-800"
-        >
-          <Upload className="h-5 w-5" />
-          Submit Proof
-        </button>
-      </section>
-
-      {!loading && !error && !hasApprovedPrices ? (
-        <section className="mt-5">
-          <EmptyState
-            title="New deals are being added"
-            body="No approved prices are public right now. Submit proof to help Janesville shoppers."
-            icon={ReceiptText}
-          />
-        </section>
-      ) : null}
-
-      <section className="mt-7">
-        <SectionHeader title="Best Deals Near You" action="See all" onAction={() => openScreen('deals')} />
-        {loading ? <LoadingCard /> : null}
-        {!loading && !error && !bestCards.length ? (
-          <EmptyState title="No approved deals yet" body="Sale prices and weekly ad deals will appear here after review." icon={Tag} />
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {bestCards.map((report) => (
-            <ReportCard key={report.id} report={report} onOpenProduct={openProduct} onAddToCart={addToCart} compact />
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-7">
-        <SectionHeader title="Recently Checked Prices" action="Search" onAction={() => openScreen('search')} />
-        {!loading && !error && hasApprovedPrices && !reports.length ? (
-          <EmptyState title="No recent approved prices" body="Newly checked prices will appear here after review." icon={Clock3} />
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {reports.slice(0, 6).map((report) => (
-            <ReportCard key={report.id} report={report} onOpenProduct={openProduct} onAddToCart={addToCart} compact />
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-7">
-        <SectionHeader title="Popular Searches" />
-        <div className="flex flex-wrap gap-2">
-          {categories.map((category) => (
-            <button
-              key={category.value}
-              type="button"
-              onClick={() => {
-                setSearchTerm(category.label)
-                openScreen('search', { category: category.value })
-              }}
-              className="rounded-full bg-white px-4 py-3 text-base font-black text-slate-800 shadow-sm ring-1 ring-slate-100"
-            >
-              {category.label}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-7">
-        <SectionHeader title="Janesville Stores" />
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {stores.slice(0, 8).map((store) => (
-            <StoreCard key={store.id} store={store} />
-          ))}
-        </div>
-      </section>
-    </div>
-  )
-}
+const fallbackHomepageService = { service: {}, known_issues: [] }
 
 function CatalogTile({ product, reports, openProduct }) {
   const report = bestReportForProduct(product, reports)
@@ -1103,7 +728,7 @@ function HomeScreen(props) {
           ) : <EmptyState title="Current prices are coming in" body="Search the catalog or share a price you found in Janesville." icon={PackageCheck} />}
         </section>
 
-        <section className="mt-7" aria-label="Shop by department">
+        <section className="winter-department-section mt-7" aria-label="Shop by department">
           <SectionHeader title="Shop by department" action="All departments" onAction={() => browseDepartment('')} />
           <div className="winter-departments">
             {homeDepartments.map(({ value, label }) => (
@@ -1118,7 +743,7 @@ function HomeScreen(props) {
           <button type="button" className="btn-primary" onClick={() => openScreen('cart')}>Compare my grocery list</button>
         </div>
 
-        <section className="surface-card mt-7 p-5 sm:p-6">
+        <section className="winter-coverage surface-card mt-7 p-5 sm:p-6">
           <SectionHeader title="Janesville price check" action="Compare stores" onAction={() => openScreen('deals')} />
           {arena?.homepage_module_eligible ? <><p className="font-medium text-slate-600">{arena.leaderboard.comparable_product_count} comparable groceries · {arena.window?.label}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{arena.leaderboard.rankings.slice(0, 3).map((row) => <div key={row.store_id} className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4"><strong className="block text-lg text-slate-950">{row.store_name}</strong><p className="mt-1 text-sm font-semibold text-slate-600">Lowest on {row.lowest_count}</p></div>)}</div></> : <p className="font-medium text-slate-600">Compare products with current prices while store coverage grows.</p>}
         </section>
@@ -1126,10 +751,7 @@ function HomeScreen(props) {
           <SectionHeader title="Janesville stores" action="All stores" onAction={() => openScreen('stores')} />
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{stores.slice(0, 4).map((store) => <StoreCard key={store.id} store={store} onOpen={openStore} />)}</div>
         </section> : null}
-        <details className="surface-card mt-7 p-4">
-          <summary className="cursor-pointer font-extrabold text-slate-700">Data coverage and community updates</summary>
-          <div className="mt-4"><LegacyHomeScreen {...props} /></div>
-        </details>
+
       </div>
     </div>
   )
@@ -2835,16 +2457,60 @@ function StoreDetailScreen({ detail, loading, error, openProduct, onBack }) {
   </div>
 }
 
-function UpdatesScreen({ releases, version, markRead }) {
-  return <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
-    <ScreenTitle eyebrow="Grocery Radar" title="What's New" subtitle={version ? `Grocery Radar v${version}` : 'Published Grocery Radar updates'} />
-    <div className="space-y-4">{releases.map((release) => <article key={release.id} className="rounded-3xl bg-white p-5 shadow-soft ring-1 ring-slate-100" onFocus={() => markRead(release)}>
-      <p className="text-sm font-black text-emerald-700">{release.version_label}</p><h2 className="mt-1 text-2xl font-black">{release.title}</h2><p className="mt-2 font-semibold text-slate-600">{release.summary}</p>
-      {[['New', release.added], ['Improved', release.improved || release.changed], ['Fixed', release.fixed], ['Known issues', release.known_issues]].map(([label, items]) => items?.length ? <section key={label} className="mt-4"><h3 className="font-black">{label}</h3><ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">{items.map((item) => <li key={item}>{item}</li>)}</ul></section> : null)}
-      <button type="button" onClick={() => markRead(release)} className="mt-4 min-h-11 rounded-xl bg-emerald-50 px-4 font-black text-emerald-800">Mark as read</button>
-    </article>)}</div>
-    {!releases.length ? <EmptyState title="No published updates yet" body="Release notes appear here after the Owner verifies and publishes them." icon={FileCheck2} /> : null}
-  </div>
+function UpdatesScreen({ releases, releaseState, version, markRead, homepageService, homepageServiceState, community, reload }) {
+  const service = homepageService.service || {}
+  const maintenance = service.maintenance
+  const issues = homepageService.known_issues || []
+  const notes = [
+    ...(maintenance?.enabled ? [{ id: 'maintenance', title: maintenance.title || 'Maintenance', body: maintenance.message, detail: maintenance.impact }] : []),
+    ...(service.homepage_announcement ? [{ id: 'homepage', title: 'Community note', body: service.homepage_announcement, date: service.published_at }] : []),
+    ...community.announcements.map((announcement) => ({ ...announcement, date: announcement.published_at }))
+  ]
+  const communityLoading = community.loading || homepageServiceState.loading
+  const communityError = community.error || homepageServiceState.error
+  return (
+    <div className="winter-updates">
+      <div className="mx-auto w-full max-w-3xl px-4 pb-8 pt-6 sm:px-6">
+        <ScreenTitle title="What's New" subtitle="Community notes, service notices, and Grocery Radar updates." />
+        <section className="mb-7" aria-labelledby="community-notes-heading">
+          <h2 id="community-notes-heading" className="mb-3 text-xl font-extrabold text-slate-950 sm:text-2xl">Community notes</h2>
+          {communityError ? <ApiError message="Some community updates couldn’t load." onRetry={reload} /> : null}
+          {communityLoading && !notes.length ? <LoadingCard label="Loading community notes…" /> : null}
+          {!communityLoading && !communityError && !notes.length ? <p className="text-sm text-slate-600">No community notes right now.</p> : null}
+          <div className="space-y-3">{notes.map((note) => (
+            <article key={note.id} className="surface-card p-5">
+              {note.date ? <p className="mb-1 text-sm text-slate-600">{shortDate(note.date)}</p> : null}
+              <h3 className="text-lg font-extrabold text-slate-950">{note.title}</h3>
+              {note.body ? <p className="mt-2 whitespace-pre-line leading-relaxed text-slate-700">{note.body}</p> : null}
+              {note.detail ? <p className="mt-2 text-sm leading-relaxed text-slate-600">{note.detail}</p> : null}
+            </article>
+          ))}</div>
+        </section>
+        {issues.length ? <section className="mb-7" aria-labelledby="service-issues-heading">
+          <h2 id="service-issues-heading" className="mb-3 text-xl font-extrabold text-slate-950 sm:text-2xl">Service issues</h2>
+          <div className="space-y-3">{issues.map((issue) => <article key={issue.id} className="surface-card p-5">
+            <h3 className="text-lg font-extrabold text-slate-950">{issue.title}</h3>
+            <p className="mt-1 text-sm font-semibold text-slate-600">{titleCase(issue.status)}</p>
+            <p className="mt-2 whitespace-pre-line leading-relaxed text-slate-700">{issue.description}</p>
+            {issue.workaround ? <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-700">{issue.workaround}</p> : null}
+          </article>)}</div>
+        </section> : null}
+        <section aria-labelledby="release-notes-heading">
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2"><h2 id="release-notes-heading" className="text-xl font-extrabold text-slate-950 sm:text-2xl">Release notes</h2>{version ? <span className="text-sm text-slate-600">Current version {version}</span> : null}</div>
+          {releaseState.error ? <ApiError message="Release notes couldn’t load." onRetry={reload} /> : null}
+          {releaseState.loading && !releases.length ? <LoadingCard label="Loading release notes…" /> : null}
+          {!releaseState.loading && !releaseState.error && !releases.length ? <p className="text-sm text-slate-600">No published release notes yet.</p> : null}
+          <div className="space-y-4">{releases.map((release) => <article key={release.id} className="surface-card p-5">
+            <p className="text-sm font-bold text-emerald-800">{[release.version_label, shortDate(release.release_date || release.published_at)].filter(Boolean).join(' · ')}</p>
+            <h3 className="mt-1 text-xl font-extrabold text-slate-950">{release.title}</h3>
+            <p className="mt-2 whitespace-pre-line leading-relaxed text-slate-700">{release.summary}</p>
+            {[['New', release.added], ['Improved', release.improved || release.changed], ['Fixed', release.fixed], ['Known issues', release.known_issues]].map(([label, items]) => items?.length ? <section key={label} className="mt-4"><h4 className="font-bold">{label}</h4><ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">{items.map((item) => <li key={item}>{item}</li>)}</ul></section> : null)}
+            {!release.is_read ? <button type="button" onClick={() => markRead(release)} className="mt-4 min-h-11 rounded-xl bg-emerald-50 px-4 font-bold text-emerald-800">Mark as read</button> : null}
+          </article>)}</div>
+        </section>
+      </div>
+    </div>
+  )
 }
 
 const mapleFaqs = [
@@ -2971,6 +2637,8 @@ function App() {
   const [storeDetail, setStoreDetail] = useState(null)
   const [storeState, setStoreState] = useState({ loading: initialRouteRef.current.screen === 'store', error: '' })
   const [releaseData, setReleaseData] = useState({ application_version: '', releases: [], has_unread: false })
+  const [releaseState, setReleaseState] = useState({ loading: true, error: '' })
+  const [community, setCommunity] = useState({ loading: true, error: '', announcements: [] })
   const [browse, setBrowse] = useState({ products: [], recently_approved_reports: [], needs_prices: [] })
   const [browseState, setBrowseState] = useState({ loading: true, error: '' })
   const [homepageService, setHomepageService] = useState(fallbackHomepageService)
@@ -3082,12 +2750,28 @@ function App() {
   }, [])
 
   const loadReleases = useCallback(async () => {
+    setReleaseState({ loading: true, error: '' })
     try {
       const data = await getJson('/api/releases')
       const seenId = Number(window.localStorage.getItem('groceryRadarSeenReleaseId') || 0)
-      setReleaseData({ ...data, has_unread: data.has_unread ?? Boolean(data.newest_release_id && Number(data.newest_release_id) !== seenId) })
-    } catch { setReleaseData((current) => ({ ...current, releases: [] })) }
+      setReleaseData({ ...data, releases: (data.releases || []).map((release) => ({ ...release, is_read: release.is_read ?? Number(release.id) === seenId })), has_unread: data.has_unread ?? Boolean(data.newest_release_id && Number(data.newest_release_id) !== seenId) })
+      setReleaseState({ loading: false, error: '' })
+    } catch (error) { setReleaseState({ loading: false, error: error.message }) }
   }, [])
+
+  const loadCommunity = useCallback(async () => {
+    setCommunity((current) => ({ ...current, loading: true, error: '' }))
+    try {
+      const data = await getJson('/api/announcements')
+      setCommunity({ loading: false, error: '', announcements: data.announcements || [] })
+    } catch (error) {
+      setCommunity((current) => ({ ...current, loading: false, error: error.message }))
+    }
+  }, [])
+
+  useEffect(() => {
+    if (screen === 'updates') loadCommunity()
+  }, [screen, loadCommunity])
 
   const loadStoreDetail = useCallback(async () => {
     if (!selectedStoreId) return
@@ -3348,13 +3032,11 @@ function App() {
     })
   }
   const markReleaseRead = async (release) => {
-    window.localStorage.setItem('groceryRadarSeenReleaseId', String(release.id))
+    if (release.id === releaseData.releases?.[0]?.id) window.localStorage.setItem('groceryRadarSeenReleaseId', String(release.id))
     if (me.loggedIn) { try { await postJson(`/api/releases/${release.id}/read`, {}) } catch { /* local seen-state remains available */ } }
-    setReleaseData((current) => ({ ...current, has_unread: false, releases: current.releases.map((item) => item.id === release.id ? { ...item, is_read: true } : item) }))
+    setReleaseData((current) => ({ ...current, has_unread: current.releases[0]?.id === release.id ? false : current.has_unread, releases: current.releases.map((item) => item.id === release.id ? { ...item, is_read: true } : item) }))
   }
   const openUpdates = () => {
-    const newest = releaseData.releases?.[0]
-    if (newest) markReleaseRead(newest)
     openScreen('updates')
   }
 
@@ -3464,15 +3146,13 @@ function App() {
           {toast}
         </button>
       ) : null}
-      <main id="publicRouteMain" tabIndex="-1" className="safe-bottom outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
+      <main id="publicRouteMain" tabIndex="-1" className={`${screen === 'home' ? '' : 'safe-bottom'} outline-none focus-visible:ring-4 focus-visible:ring-emerald-200`}>
         {screen === 'home' ? (
           <HomeScreen
             browse={browse}
             stores={stores}
             loading={browseState.loading}
             error={browseState.error}
-            homepageService={homepageService}
-            homepageServiceState={homepageServiceState}
             searchTerm={searchTerm}
             setSearchTerm={setSearchTerm}
             openScreen={openScreen}
@@ -3507,7 +3187,7 @@ function App() {
         ) : null}
         {screen === 'stores' ? <StoresScreen stores={stores} openStore={openStore} /> : null}
         {screen === 'store' ? <StoreDetailScreen detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} onBack={() => goBack('stores')} /> : null}
-        {screen === 'updates' ? <UpdatesScreen releases={releaseData.releases || []} version={releaseData.application_version || homepageService.application_version} markRead={markReleaseRead} /> : null}
+        {screen === 'updates' ? <UpdatesScreen releases={releaseData.releases || []} releaseState={releaseState} version={releaseData.application_version || homepageService.application_version} markRead={markReleaseRead} homepageService={homepageService} homepageServiceState={homepageServiceState} community={community} reload={() => { loadReleases(); loadHomepageService(); loadCommunity() }} /> : null}
         {screen === 'product' ? (
           <ProductDetailScreen
             detail={productDetail}
@@ -3601,7 +3281,7 @@ function App() {
         ) : null}
       </main>
       <MapleAssistant open={mapleOpen} setOpen={setMapleOpen} me={me} onToast={setToast} />
-      <footer className="pb-32 pt-12 text-center text-sm font-medium text-slate-600 sm:pb-36">
+      <footer className={`${screen === 'home' ? 'winter-footer' : ''} pb-32 pt-12 text-center text-sm font-medium text-slate-600 sm:pb-36`}>
         <p>Grocery Radar{releaseData.application_version || homepageService.application_version ? ` v${releaseData.application_version || homepageService.application_version}` : ''}</p>
         <p className="mt-3 flex flex-wrap justify-center gap-4"><a className="underline" href="/privacy" onClick={(event) => { event.preventDefault(); openScreen('privacy') }}>Privacy</a><a className="underline" href="/terms" onClick={(event) => { event.preventDefault(); openScreen('terms') }}>Terms &amp; acceptable use</a></p>
         <p className="mx-auto mt-3 max-w-2xl px-4">Grocery Radar is an independent price-information service and is not affiliated with or endorsed by listed retailers unless explicitly stated.</p>
