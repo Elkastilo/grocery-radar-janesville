@@ -2525,9 +2525,11 @@ const snowyFaqs = [
 function SnowyAssistant({ open, setOpen, me, onToast }) {
   const [faq, setFaq] = useState(null)
   const [message, setMessage] = useState('')
+  const [replyEmail, setReplyEmail] = useState('')
   const [status, setStatus] = useState({ loading: false, error: '', success: '' })
   const user = me.user || me
-  const canMessage = Boolean(me.loggedIn && user.email && user.is_email_verified)
+  const guestMessaging = me.ownerOnlyAccounts === true
+  const canMessage = guestMessaging ? Boolean(replyEmail.trim()) : Boolean(me.loggedIn && user.email && user.is_email_verified)
   const submit = async () => {
     const text = message.trim()
     if (!text) return setStatus({ loading: false, error: 'Tell Snowy what you need help with first.', success: '' })
@@ -2535,9 +2537,9 @@ function SnowyAssistant({ open, setOpen, me, onToast }) {
     if (!canMessage || status.loading) return
     setStatus({ loading: true, error: '', success: '' })
     try {
-      await postJson('/api/snowy/messages', { message: text })
+      await postJson('/api/snowy/messages', { message: text, ...(guestMessaging ? { email: replyEmail.trim() } : {}) })
       setMessage('')
-      setStatus({ loading: false, error: '', success: 'Message sent. We’ll reply to your account email.' })
+      setStatus({ loading: false, error: '', success: 'Message sent. We’ll reply by email.' })
       onToast?.('Snowy sent your message to the Grocery Radar Inbox.')
     } catch (error) {
       setStatus({ loading: false, error: error.message, success: '' })
@@ -2549,7 +2551,7 @@ function SnowyAssistant({ open, setOpen, me, onToast }) {
       {open ? <aside className="snowy-panel" aria-label="Ask Snowy" role="dialog" aria-modal="false">
         <div className="snowy-panel-heading flex items-center gap-3"><img src="/winter/snowy-top-hat.webp" width="52" height="52" alt="" /><h2 className="flex-1 text-2xl font-extrabold text-slate-950">Ask Snowy</h2><button type="button" onClick={() => setOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100" aria-label="Close Ask Snowy"><X className="h-5 w-5" /></button></div>
         <div className="mt-5 space-y-2">{snowyFaqs.map(([question, answer]) => <div key={question} className="rounded-2xl border border-sky-100 bg-sky-50/60"><button type="button" onClick={() => setFaq(faq === question ? null : question)} className="flex w-full items-center gap-3 p-3 text-left text-sm font-extrabold text-slate-800"><HelpCircle className="h-5 w-5 shrink-0 text-emerald-700" />{question}<span className="ml-auto text-lg text-amber-700">{faq === question ? '−' : '+'}</span></button>{faq === question ? <p className="px-3 pb-3 pl-11 text-sm font-medium leading-relaxed text-slate-600">{answer}</p> : null}</div>)}</div>
-        <div className="mt-6 border-t border-slate-100 pt-5"><p className="font-extrabold text-slate-950">Message the Grocery Radar team</p><p className="mt-1 text-sm text-slate-600">{canMessage ? `We’ll reply to ${user.email}.` : me.loggedIn ? 'Verify your email in your account to send a message.' : 'Sign in with a verified email to send a message.'}</p><textarea disabled={!canMessage} value={message} onChange={(event) => setMessage(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder="Share a thought with the Grocery Radar team…" className="field mt-3 resize-none" aria-label="Question or suggestion" /><div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500"><span>{message.length}/500</span><button type="button" onClick={submit} disabled={!canMessage || status.loading || !message.trim()} className="btn-primary min-h-11 px-4 py-2 text-sm"><Send className="h-4 w-4" />{status.loading ? 'Sending…' : 'Send to Inbox'}</button></div>{status.error ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800" role="alert">{status.error}</p> : null}{status.success ? <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800" role="status">{status.success}</p> : null}</div>
+        <div className="mt-6 border-t border-slate-100 pt-5"><p className="font-extrabold text-slate-950">Message the Grocery Radar team</p><p className="mt-1 text-sm text-slate-600">{guestMessaging ? 'Enter the email where you want us to reply.' : canMessage ? `We’ll reply to ${user.email}.` : me.loggedIn ? 'Verify your email in your account to send a message.' : 'Sign in with a verified email to send a message.'}</p>{guestMessaging ? <label className="mt-3 block text-sm font-bold">Reply email<input type="email" autoComplete="email" maxLength={254} value={replyEmail} onChange={(event) => setReplyEmail(event.target.value)} className="field mt-1" /></label> : null}<textarea disabled={!guestMessaging && !canMessage} value={message} onChange={(event) => setMessage(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder="Share a thought with the Grocery Radar team…" className="field mt-3 resize-none" aria-label="Question or suggestion" /><div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500"><span>{message.length}/500</span><button type="button" onClick={submit} disabled={!canMessage || status.loading || !message.trim()} className="btn-primary min-h-11 px-4 py-2 text-sm"><Send className="h-4 w-4" />{status.loading ? 'Sending…' : 'Send to Inbox'}</button></div>{status.error ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800" role="alert">{status.error}</p> : null}{status.success ? <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800" role="status">{status.success}</p> : null}</div>
       </aside> : null}
       {!open ? <button type="button" onClick={() => setOpen(true)} className="snowy-fab" aria-label="Need help? Ask Snowy!"><img className="snowy-face" src="/winter/snowy-top-hat.webp" width="48" height="48" alt="" /><span className="snowy-tooltip">Need help? Ask Snowy!</span></button> : null}
     </>

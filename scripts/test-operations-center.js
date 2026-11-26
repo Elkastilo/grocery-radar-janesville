@@ -331,6 +331,32 @@ async function main() {
     assert.equal(ownerLogin.response.status, 200, JSON.stringify(ownerLogin.body));
     assert.equal(ownerLogin.body.user.username, OWNER_USERNAME);
     assert.equal(ownerLogin.body.user.is_super_admin, true);
+    if (process.env.OWNER_ONLY_ACCOUNTS === "1") {
+      const guest = await normal.get("/api/auth/me");
+      assert.equal(guest.body.ownerOnlyAccounts, true);
+      assert.equal(guest.body.loggedIn, false);
+      assert.equal((await normal.post("/api/auth/register", {})).response.status, 410);
+      const seed = await queryTempDb(app.dataDir, "SELECT password_hash FROM users WHERE id = ?", [ownerLogin.body.user.id]);
+      await updateTempUser(app.dataDir, "INSERT INTO users (username, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        ["oldshopper", "oldshopper@example.invalid", seed.password_hash, new Date().toISOString()]);
+      const oldShopper = await normal.post("/api/auth/login", { email: "oldshopper@example.invalid", password: OWNER_PASSWORD });
+      assert.equal(oldShopper.response.status, 401);
+      assert.equal((await normal.post("/api/snowy/messages", { email: "a@example.invalid,b@example.invalid", message: "Hello" })).response.status, 400);
+      for (let count = 0; count < 5; count += 1) {
+        const sent = await normal.post("/api/snowy/messages", { email: "shopper@example.invalid", message: "Owner-only Snowy test" });
+        assert.equal(sent.response.status, 201, JSON.stringify(sent.body));
+        assert.equal(sent.body.ticket, undefined);
+      }
+      assert.equal((await normal.post("/api/snowy/messages", { email: "shopper@example.invalid", message: "Over limit" })).response.status, 429);
+      const queue = await owner.get("/api/admin/operations/feedback");
+      const ticket = queue.body.tickets.find((entry) => entry.message === "Owner-only Snowy test");
+      assert.equal(ticket.reporter.email, "shopper@example.invalid");
+      assert.equal(ticket.can_email_reply, true);
+      const reply = await owner.post(`/api/admin/operations/feedback/${ticket.id}`, { action: "email_reply", public_response: "Thanks for writing." });
+      assert.equal(reply.response.status, 200, JSON.stringify(reply.body));
+      console.log("Owner-only login and guest Snowy tests passed.");
+      return;
+    }
     const normalRegistration = await register(normal, {
       username: "operationshopper",
       email: "operationshopper@example.invalid"

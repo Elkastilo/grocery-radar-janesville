@@ -185,6 +185,7 @@ const VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
 );
 const SESSION_SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === "production" ? "" : crypto.randomBytes(32).toString("hex"));
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
+const OWNER_ONLY_ACCOUNTS = process.env.OWNER_ONLY_ACCOUNTS === "1";
 const PUBLIC_REGISTRATION_ENABLED = process.env.NODE_ENV === "test" || ["1", "true", "yes", "on"].includes(String(process.env.PUBLIC_REGISTRATION_ENABLED || "").toLowerCase());
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CLIENT_DIST_DIR = process.env.CLIENT_DIST_DIR
@@ -5090,6 +5091,7 @@ async function getSessionUser(request) {
   }
 
   const user = await get("SELECT * FROM users WHERE id = ?", [request.session.userId]);
+  if (OWNER_ONLY_ACCOUNTS && !isOwnerAccount(user)) return null;
   return applyBootstrapSuperAdminFlags(user);
 }
 
@@ -5103,7 +5105,7 @@ async function getAdminAccess(request) {
 
   const pin = request.body && request.body.pin;
 
-  if (pin && pin === ADMIN_PIN) {
+  if (!OWNER_ONLY_ACCOUNTS && pin && pin === ADMIN_PIN) {
     return { allowed: true, user: null, viaPin: true };
   }
 
@@ -6199,14 +6201,14 @@ function formatFeedbackTicket(row = {}, includeAdminFields = false) {
           username: row.reporter_username,
           email: row.reporter_email || ""
         }
-      : null;
+      : row.guest_reply_email ? { id: null, username: "Guest shopper", email: row.guest_reply_email } : null;
     ticket.assigned_admin = row.assigned_admin_username
       ? {
           id: row.assigned_admin_id,
           username: row.assigned_admin_username
         }
       : null;
-    ticket.can_email_reply = row.title === SNOWY_MESSAGE_TITLE && Boolean(row.reporter_email && row.reporter_email_verified);
+    ticket.can_email_reply = row.title === SNOWY_MESSAGE_TITLE && Boolean(row.guest_reply_email || (row.reporter_email && row.reporter_email_verified));
     ticket.assigned_admin_id = row.assigned_admin_id || null;
     ticket.duplicate_of_ticket_id = row.duplicate_of_ticket_id || null;
     ticket.internal_notes = row.internal_notes || "";
@@ -8432,7 +8434,7 @@ app.get("/api/cart/compare", requireLogin, asyncRoute(async (request, response) 
 }));
 
 app.post("/api/auth/register", asyncRoute(async (request, response) => {
-  if (!PUBLIC_REGISTRATION_ENABLED) {
+  if (OWNER_ONLY_ACCOUNTS || !PUBLIC_REGISTRATION_ENABLED) {
     response.status(410).json({ error: "Public account creation is disabled. Grocery Radar browsing and proof submission do not require an account." });
     return;
   }
@@ -8641,7 +8643,7 @@ app.post("/api/auth/login", asyncRoute(async (request, response) => {
     [login.email]
   );
 
-  if (!user || !user.password_hash) {
+  if (!user || !user.password_hash || (OWNER_ONLY_ACCOUNTS && !isOwnerAccount(user))) {
     response.status(401).json({ error: "Email or password is incorrect." });
     return;
   }
@@ -8709,7 +8711,7 @@ app.get("/api/auth/me", asyncRoute(async (request, response) => {
   const user = await getSessionUser(request);
 
   if (!user) {
-    response.json({ loggedIn: false });
+    response.json({ ownerOnlyAccounts: OWNER_ONLY_ACCOUNTS, loggedIn: false });
     return;
   }
 
@@ -8717,7 +8719,7 @@ app.get("/api/auth/me", asyncRoute(async (request, response) => {
     await sessionDestroy(request);
     response.clearCookie("grocery_radar_sid");
     response.json({
-      loggedIn: false,
+      ownerOnlyAccounts: OWNER_ONLY_ACCOUNTS, loggedIn: false,
       error: blockedAccountMessage(user)
     });
     return;
@@ -8727,6 +8729,7 @@ app.get("/api/auth/me", asyncRoute(async (request, response) => {
   await markUserSeen(user.id);
 
   response.json({
+    ownerOnlyAccounts: OWNER_ONLY_ACCOUNTS,
     loggedIn: true,
     ...safeUser,
     user: safeUser
@@ -8871,6 +8874,39 @@ app.get("/api/feedback/categories", asyncRoute(async (request, response) => {
     categories: FEEDBACK_CATEGORIES,
     statuses: FEEDBACK_STATUSES
   });
+}));
+
+app.post("/api/snowy/messages", asyncRoute(async (request, response, next) => {
+  if (!OWNER_ONLY_ACCOUNTS) return next();
+  const email = validateEmail(request.body.email);
+  if (!/^[a-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(email)) {
+    return response.status(400).json({ error: "Enter one valid reply email address." });
+  }
+  const message = cleanText(request.body.message, 501);
+  if (!message || message.length > 500) {
+    return response.status(400).json({ error: "Enter a message between 1 and 500 characters." });
+  }
+  const now = new Date().toISOString();
+  const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const sender = crypto.createHmac("sha256", SESSION_SECRET).update(requestIpAddress(request)).digest("hex");
+  const result = await run(
+    `INSERT INTO feedback_tickets (category, title, message, guest_reply_email, guest_sender_hash, created_at, updated_at)
+     SELECT 'suggestion', ?, ?, ?, ?, ?, ?
+     WHERE (
+       SELECT COUNT(*) FROM feedback_tickets
+       WHERE guest_sender_hash IS NOT NULL AND created_at >= ?
+         AND (guest_sender_hash = ? OR guest_reply_email = ?)
+     ) < 5 AND (
+       SELECT COUNT(*) FROM feedback_tickets WHERE guest_sender_hash IS NOT NULL AND created_at >= ?
+     ) < 60`,
+    [SNOWY_MESSAGE_TITLE, message, email, sender, now, now, since, sender, email, since]
+  );
+  if (!result.changes) return response.status(429).json({ error: "Snowy is receiving too many messages. Try again later." });
+  await createAdminNotification("feedback_submitted", "New Ask Snowy message", "A guest shopper sent a message.", {
+    related_type: "feedback_ticket", related_id: result.lastID, target_tab: "operationsTab", target_url: "/admin/operations"
+  });
+  void notifyAdminOfSnowyMessage(result.lastID);
+  return response.status(201).json({ message: "Message sent." });
 }));
 
 app.post(["/api/feedback", "/api/snowy/messages"], requireLogin, asyncRoute(async (request, response) => {
@@ -16047,7 +16083,7 @@ app.post("/api/admin/operations/feedback/:id", requireSuperAdminAccess, asyncRou
     const recipient = await feedbackTicketById(ticketId);
     if (!recipient) return response.status(404).json({ error: "Feedback ticket was not found." });
     if (!formatFeedbackTicket(recipient, true).can_email_reply) {
-      return response.status(409).json({ error: "This message has no verified reply address." });
+      return response.status(409).json({ error: "This message has no usable reply address." });
     }
     const reply = cleanText(request.body.public_response, 1000);
     if (!reply) return response.status(400).json({ error: "Enter a reply before sending." });
@@ -16055,7 +16091,7 @@ app.post("/api/admin/operations/feedback/:id", requireSuperAdminAccess, asyncRou
     const sent = await sendSnowyReply(recipient, reply);
     return response.status(sent ? 200 : 502).json(sent
       ? { message: "Reply saved and accepted by the email provider.", ticket: formatFeedbackTicket(ticket, true) }
-      : { error: "Reply saved in the shopper’s account. Email could not be sent." });
+      : { error: recipient.guest_reply_email ? "Reply saved in Admin. Email could not be sent." : "Reply saved in the shopper’s account. Email could not be sent." });
   }
   const ticket = await updateFeedbackTicket(ticketId, request.body, request.adminUser, request);
 

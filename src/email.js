@@ -585,9 +585,9 @@ function notifyAdminOfSnowyMessage(ticketId) {
 
 function sendSnowyReply(ticket, reply) {
   return sendSnowyEmail({
-    to: ticket.reporter_email,
+    to: ticket.guest_reply_email || ticket.reporter_email,
     subject: `Grocery Radar reply to your Ask Snowy message #${ticket.id}`,
-    text: `${reply}\n\nView your message in your Grocery Radar account: ${appBaseUrl()}/legacy-account`
+    text: ticket.guest_reply_email ? reply : `${reply}\n\nView your message in your Grocery Radar account: ${appBaseUrl()}/legacy-account`
   });
 }
 
