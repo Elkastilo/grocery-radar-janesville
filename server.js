@@ -72,6 +72,7 @@ const {
   sendReportRejectionEmail,
   sendAccountBanEmail,
   notifyAdminOfSnowyMessage,
+  notifyAdminOfLoginThrottle,
   sendSnowyReply
 } = require("./src/email");
 const { calculateUnitPrice, formatUnitPrice } = require("./src/unitPrice");
@@ -7737,6 +7738,20 @@ async function operationsOverview(adminUser) {
   };
 }
 
+const publicWriteOrigin = new URL(PUBLIC_APP_URL).origin;
+app.use(["/api/admin", "/api/auth", "/api/account"], (request, response, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return next();
+
+  const origin = request.get("Origin");
+  const site = request.get("Sec-Fetch-Site");
+  const localOrigin = !isProduction && `${request.protocol}://${request.get("Host")}`;
+  if (site === "cross-site" || (origin && origin !== publicWriteOrigin && origin !== localOrigin)) {
+    return response.status(403).json({ error: "This action must come from Grocery Radar." });
+  }
+
+  return next();
+});
+
 app.use("/api/admin", adminAuditMiddleware);
 app.use("/api/admin", adminV2RoleGuard);
 
@@ -8662,8 +8677,37 @@ app.post("/api/auth/resend-verification", asyncRoute(async (request, response) =
   response.json({ message: "Verification email sent." });
 }));
 
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_ATTEMPT_LIMIT = 8;
+
+async function reserveLoginAttempt(connectionHash, now) {
+  await run("DELETE FROM login_attempt_windows WHERE expires_at <= ?", [now]);
+  return run(`INSERT INTO login_attempt_windows (connection_hash, attempts, expires_at)
+    VALUES (?, 1, ?)
+    ON CONFLICT(connection_hash) DO UPDATE SET attempts = attempts + 1
+    WHERE attempts < ?`, [connectionHash, now + LOGIN_WINDOW_MS, LOGIN_ATTEMPT_LIMIT]);
+}
+
 app.post("/api/auth/login", asyncRoute(async (request, response) => {
   const login = validateLogin(request.body);
+  const now = Date.now();
+  const connectionHash = crypto.createHmac("sha256", SESSION_SECRET)
+    .update(request.ip || request.socket.remoteAddress || "unknown").digest("hex");
+  const reservation = await reserveLoginAttempt(connectionHash, now);
+  if (!reservation.changes) {
+    const bucket = await get("SELECT expires_at FROM login_attempt_windows WHERE connection_hash = ?", [connectionHash]);
+    const retrySeconds = Math.max(1, Math.ceil(((bucket?.expires_at || now) - now) / 1000));
+    const alert = await run(`UPDATE login_attempt_windows SET alert_claimed = 1
+      WHERE connection_hash = ? AND expires_at > ? AND alert_claimed = 0
+      AND NOT EXISTS (
+        SELECT 1 FROM login_attempt_windows WHERE alert_claimed = 1 AND expires_at > ?
+      )`, [connectionHash, now, now]);
+    if (alert.changes) void notifyAdminOfLoginThrottle();
+    return response.set("Retry-After", String(retrySeconds)).status(429).json({
+      error: "Too many sign-in attempts from this connection. Try again shortly."
+    });
+  }
+
   let user = await get(
     "SELECT * FROM users WHERE lower(email) = lower(?)",
     [login.email]
@@ -8688,6 +8732,7 @@ app.post("/api/auth/login", asyncRoute(async (request, response) => {
 
   user = await applyBootstrapSuperAdminFlags(user);
 
+  await run("DELETE FROM login_attempt_windows WHERE connection_hash = ? AND expires_at > ?", [connectionHash, now]);
   await logInSessionUser(request, user);
   await markUserSeen(user.id);
   await recordLoginEvent(request, user, true);

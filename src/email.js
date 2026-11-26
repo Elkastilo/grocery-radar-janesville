@@ -560,7 +560,7 @@ async function sendAccountBanEmail(user, ban) {
   }
 }
 
-async function sendSnowyEmail({ to, subject, text }) {
+async function sendPlainTextEmail({ to, subject, text }) {
   if (!to) return false;
   if (emailTestMode()) return true;
   const transporter = createTransporter();
@@ -570,13 +570,21 @@ async function sendSnowyEmail({ to, subject, text }) {
     const result = await transporter.sendMail({ from: emailConfig().from, to, subject, text });
     return result.accepted.length > 0;
   } catch (error) {
-    console.error("Snowy email failed", safeSmtpErrorDetails(error).code);
+    console.error("Notification email failed", safeSmtpErrorDetails(error).code);
     return false;
   }
 }
 
+function notifyAdminOfLoginThrottle() {
+  return sendPlainTextEmail({
+    to: adminNotifyEmail(),
+    subject: "Grocery Radar sign-in attempts temporarily limited",
+    text: "Grocery Radar temporarily limited repeated sign-in attempts from one connection. The limit expires automatically."
+  });
+}
+
 function notifyAdminOfSnowyMessage(ticketId) {
-  return sendSnowyEmail({
+  return sendPlainTextEmail({
     to: adminNotifyEmail(),
     subject: "New Ask Snowy message",
     text: `A shopper sent a message. Open Grocery Radar Admin to reply:\n${appBaseUrl()}/admin/operations\n\nMessage #${ticketId}`
@@ -584,7 +592,7 @@ function notifyAdminOfSnowyMessage(ticketId) {
 }
 
 function sendSnowyReply(ticket, reply) {
-  return sendSnowyEmail({
+  return sendPlainTextEmail({
     to: ticket.guest_reply_email || ticket.reporter_email,
     subject: `Grocery Radar reply to your Ask Snowy message #${ticket.id}`,
     text: ticket.guest_reply_email ? reply : `${reply}\n\nView your message in your Grocery Radar account: ${appBaseUrl()}/legacy-account`
@@ -604,5 +612,6 @@ module.exports = {
   sendReportRejectionEmail,
   sendAccountBanEmail,
   notifyAdminOfSnowyMessage,
+  notifyAdminOfLoginThrottle,
   sendSnowyReply
 };

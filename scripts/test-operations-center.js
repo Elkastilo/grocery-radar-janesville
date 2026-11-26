@@ -354,6 +354,20 @@ async function main() {
       assert.equal(ticket.can_email_reply, true);
       const reply = await owner.post(`/api/admin/operations/feedback/${ticket.id}`, { action: "email_reply", public_response: "Thanks for writing." });
       assert.equal(reply.response.status, 200, JSON.stringify(reply.body));
+      await updateTempUser(app.dataDir, "DELETE FROM login_attempt_windows", []);
+      const loginProbe = new TestClient(app.baseUrl);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const denied = await loginProbe.post("/api/auth/login", { email: OWNER_EMAIL, password: "incorrect-test-password" });
+        assert.equal(denied.response.status, 401);
+      }
+      const limited = await loginProbe.post("/api/auth/login", { email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      assert.equal(limited.response.status, 429);
+      assert.ok(Number(limited.response.headers.get("retry-after")) > 0);
+      const window = await queryTempDb(app.dataDir, "SELECT alert_claimed FROM login_attempt_windows");
+      assert.equal(window.alert_claimed, 1);
+      await updateTempUser(app.dataDir, "UPDATE login_attempt_windows SET expires_at = 0", []);
+      const recovered = await loginProbe.post("/api/auth/login", { email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      assert.equal(recovered.response.status, 200);
       console.log("Owner-only login and guest Snowy tests passed.");
       return;
     }
@@ -1370,8 +1384,16 @@ async function main() {
     assert.equal(errorCenter.response.status, 200);
     assert.ok(Number.isInteger(errorCenter.body.failed_emails));
 
+    const crossSiteWrite = await owner.request("/api/admin/operations/backups", {
+      method: "POST", json: {}, headers: { Origin: "https://untrusted.example.invalid" }
+    });
+    assert.equal(crossSiteWrite.response.status, 403);
+    const crossSiteLogin = await normal.request("/api/auth/login", {
+      method: "POST", json: { email: OWNER_EMAIL, password: OWNER_PASSWORD }, headers: { "Sec-Fetch-Site": "cross-site" }
+    });
+    assert.equal(crossSiteLogin.response.status, 403);
     const liveApprovedBeforeBackup = await approvedReportCount(app.dataDir);
-    const backup = await owner.post("/api/admin/operations/backups", {});
+    const backup = await owner.request("/api/admin/operations/backups", { method: "POST", json: {}, headers: { Origin: app.baseUrl } });
     assert.equal(backup.response.status, 201, JSON.stringify(backup.body));
     assert.equal(backup.body.backup.status, "success");
     assert.equal(await approvedReportCount(app.dataDir), liveApprovedBeforeBackup);
