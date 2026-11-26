@@ -7852,13 +7852,39 @@ app.get("/api/stores/:id", asyncRoute(async (request, response) => {
   const reports = await all(`${reportSelectWithProduct()} WHERE pr.store_id = ? AND ${publicPriceEligibilitySql("pr")} AND COALESCE(users.account_status, 'active') NOT IN ('suspended','banned','deleted','deactivated') ORDER BY pr.category, COALESCE(pr.comparison_price, pr.unit_price, pr.price), pr.submitted_at DESC`, [storeId]);
   const enrichedReports = await enrichRowsWithStoreProductLocations(reports);
   const publicReports = enrichedReports.map(formatPublicReport);
-  const categoryCounts = {};
-  for (const report of enrichedReports) categoryCounts[report.category || "other"] = (categoryCounts[report.category || "other"] || 0) + 1;
+  const timestamps = new Map(enrichedReports.map((report) => [report.id, Date.parse(priceSourceTimestamp(report)) || 0]));
+  const timestamp = (report) => timestamps.get(report?.id) || 0;
+  const latestByProduct = new Map();
+  for (const report of publicReports) {
+    const id = Number(report.product_id);
+    const previous = latestByProduct.get(id);
+    if (!previous || timestamp(report) > timestamp(previous) ||
+        (timestamp(report) === timestamp(previous) && report.id > previous.id)) {
+      latestByProduct.set(id, report);
+    }
+  }
+  const categoryCounts = Object.create(null);
   const products = rows.map((row) => {
     const product = formatPublicProduct(row);
-    const bestHere = publicReports.filter((report) => Number(report.product_id) === Number(product.id)).sort((left, right) => Number(left.comparison_price ?? left.unit_price ?? left.price) - Number(right.comparison_price ?? right.unit_price ?? right.price))[0];
-    return bestHere ? { ...product, best_price: bestHere.price, best_price_unit: bestHere.comparison_unit || bestHere.unit, best_price_label: bestHere.price_label, best_store_id: store.id, best_store_name: store.name, best_price_freshness: bestHere.freshness_label, best_store_location: bestHere.store_product_location || null } : product;
-  });
+    const latest = latestByProduct.get(Number(product.id));
+    const inferredMeat = product.category === "other" ? classifyMeat(product.display_name) : null;
+    const category = inferredMeat?.type ? "meat" : product.category || "other";
+    categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+    return latest ? {
+      ...product, category,
+      catalog_facets: category === "meat" ? product.catalog_facets || inferredMeat : product.catalog_facets,
+      best_price: latest.price,
+      best_price_unit: latest.comparison_unit || latest.unit,
+      best_price_label: latest.price_label,
+      best_store_id: store.id,
+      best_store_name: store.name,
+      best_price_freshness: latest.freshness_label,
+      best_price_age_days: latest.age_days,
+      best_store_location: latest.store_product_location || null
+    } : product;
+  }).sort((left, right) =>
+    timestamp(latestByProduct.get(Number(right.id)) || {}) - timestamp(latestByProduct.get(Number(left.id)) || {}) ||
+    left.display_name.localeCompare(right.display_name));
   const week = arenaDateWindow("week");
   const [competitionRows, drops] = await Promise.all([arenaCurrentRows({ window: week }), arenaPriceDrops({ window: week, storeId })]);
   const leaderboard = storeLeaderboard(competitionRows, await arenaSettings(), "all");

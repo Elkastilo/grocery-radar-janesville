@@ -654,21 +654,29 @@ function SummaryCard({ icon: Icon, label, value, note }) {
 
 const fallbackHomepageService = { service: {}, known_issues: [] }
 
-function CatalogTile({ product, reports, openProduct }) {
-  const report = bestReportForProduct(product, reports)
-  const storeName = report?.store_name || product.best_store_name || ''
+function CatalogTile({ product, openProduct, addToCart }) {
+  const category = categories.find((entry) => entry.value === product.category)?.label || titleCase(product.category)
+  const priceMayHaveChanged = product.best_price_age_days >= 2
 
   return (
-    <button type="button" onClick={() => openProduct(product.id)} className="surface-card product-card grocery-product-card min-w-0 p-3 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200 sm:p-4">
-      <ProductImage item={product} label={product.display_name} size="tile" />
-      <h3 className="mt-3 line-clamp-2 text-base font-extrabold leading-snug text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
-      {product.default_size_text ? <p className="mt-1 truncate text-sm font-medium text-slate-500">{product.default_size_text}</p> : null}
-      <p className="mt-2 text-2xl font-extrabold tracking-tight text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
-      <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-700">{storeName || titleCase(product.category)}</p>
-      {product.best_store_location?.label ? <p className="mt-1 line-clamp-2 text-xs font-black text-slate-600">{product.best_store_location.label}</p> : null}
-      {hasApprovedProductPrice(product) ? <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-2 text-sm font-bold text-amber-800">Submit price</p>}
-      {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
-    </button>
+    <article className="surface-card product-card grocery-product-card flex min-w-0 flex-col p-3 sm:p-4">
+      <button type="button" onClick={() => openProduct(product.id)} className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-emerald-200">
+        <ProductImage item={product} label={product.display_name} size="tile" />
+        <h3 className="mt-3 line-clamp-2 text-base font-extrabold leading-snug text-slate-950 sm:text-lg">{displayText(product.display_name)}</h3>
+        {product.default_size_text ? <p className="mt-1 truncate text-sm font-medium text-slate-500">{product.default_size_text}</p> : null}
+        <p className="mt-2 text-2xl font-extrabold tracking-tight text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
+        <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-700">{[category, ...Object.values(product.catalog_facets || {})].filter(Boolean).join(" · ")}</p>
+        {product.best_store_location?.label ? <p className="mt-1 line-clamp-2 text-xs font-black text-slate-600">{product.best_store_location.label}</p> : null}
+        {hasApprovedProductPrice(product) ? <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-2 text-sm font-bold text-amber-800">Submit price</p>}
+        {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
+      </button>
+      {priceMayHaveChanged ? <p className="mt-2 text-xs font-semibold text-amber-900">Prices may have changed.</p> : null}
+      <div className="mt-auto pt-3">
+        <button type="button" onClick={() => addToCart(product)} className="btn-secondary min-h-11 w-full px-2 text-sm">
+          <ShoppingCart className="h-4 w-4 shrink-0" /> Add to My List
+        </button>
+      </div>
+    </article>
   )
 }
 
@@ -2449,11 +2457,13 @@ function ActivityList({ title, items, type }) {
   )
 }
 
-function StoreDetailScreen({ detail, loading, error, openProduct, onBack }) {
+function StoreDetailScreen({ detail, loading, error, openProduct, onBack, addToCart }) {
   const store = detail?.store
-  const grouped = Object.entries((detail?.products || []).filter(isRenderableProduct).reduce((result, product) => {
-    const key = product.category || 'other'; (result[key] ||= []).push(product); return result
-  }, {}))
+  const [selectedCategory, setSelectedCategory] = useState('')
+  const products = (detail?.products || []).filter(isRenderableProduct)
+  const availableCategories = categories.filter(({ value }) => products.some((product) => product.category === value))
+  const category = availableCategories.some(({ value }) => value === selectedCategory) ? selectedCategory : ''
+  const visibleProducts = category ? products.filter((product) => product.category === category) : products
   return <div className="mx-auto w-full max-w-6xl px-4 pt-5 sm:px-6">
     <button type="button" onClick={onBack} className="mb-4 rounded-full bg-white px-4 py-2 font-black ring-1 ring-slate-200">Back to stores</button>
     {loading ? <LoadingCard label="Loading current store prices..." /> : null}
@@ -2462,8 +2472,20 @@ function StoreDetailScreen({ detail, loading, error, openProduct, onBack }) {
     {store ? <><ScreenTitle eyebrow="Janesville store" title={store.name} subtitle={`${Number(store.current_price_count || 0)} current approved prices · Inventory is not live.`} />
       <section className="mb-6 grid gap-3 sm:grid-cols-4"><SummaryCard icon={CircleDollarSign} label="Current prices" value={store.current_price_count || 0} note="Verified and currently eligible" /><SummaryCard icon={Tag} label="Price drops this week" value={detail?.scorecard?.price_drops || 0} note="Verified decreases" /><SummaryCard icon={Store} label="Lowest among stores" value={detail?.scorecard?.lowest_count || 0} note={`${detail?.scorecard?.comparable_products || 0} comparable products`} /><SummaryCard icon={PackageCheck} label="Strongest observed category" value={titleCase(detail?.scorecard?.strongest_observed_category || 'Limited data')} note="Coverage varies by category" /></section>
       <p className="mb-5 rounded-xl bg-amber-50 p-3 font-bold text-amber-900">{detail?.scorecard?.disclaimer}</p>
-      {grouped.map(([category, products]) => <section key={category} className="mt-7"><SectionHeader title={titleCase(category)} /><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{products.map((product) => <CatalogTile key={product.id} product={product} reports={detail.reports || []} openProduct={openProduct} />)}</div></section>)}
-      {!grouped.length ? <EmptyState title="Prices needed" body="This store has no current approved product prices yet." icon={Store} /> : null}</> : null}
+      {products.length ? <section className="mt-7">
+        <SectionHeader title="Latest prices" />
+        <label className="filter-select-label mb-4 max-w-xs">
+          Category
+          <select className="filter-select" value={category} onChange={(event) => setSelectedCategory(event.target.value)}>
+            <option value="">All categories</option>
+            {availableCategories.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {visibleProducts.map((product) => <CatalogTile key={product.id} product={product} openProduct={openProduct} addToCart={addToCart} />)}
+        </div>
+      </section> : <EmptyState title="Prices needed" body="This store has no current approved product prices yet." icon={Store} />}
+      </> : null}
   </div>
 }
 
@@ -3200,7 +3222,7 @@ function App() {
           />
         ) : null}
         {screen === 'stores' ? <StoresScreen stores={stores} openStore={openStore} /> : null}
-        {screen === 'store' ? <StoreDetailScreen detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} onBack={() => goBack('stores')} /> : null}
+        {screen === 'store' ? <StoreDetailScreen key={selectedStoreId} addToCart={addToCart} detail={storeDetail} loading={storeState.loading} error={storeState.error} openProduct={openProduct} onBack={() => goBack('stores')} /> : null}
         {screen === 'updates' ? <UpdatesScreen releases={releaseData.releases || []} releaseState={releaseState} version={releaseData.application_version || homepageService.application_version} markRead={markReleaseRead} homepageService={homepageService} homepageServiceState={homepageServiceState} community={community} reload={() => { loadReleases(); loadHomepageService(); loadCommunity() }} /> : null}
         {screen === 'product' ? (
           <ProductDetailScreen
