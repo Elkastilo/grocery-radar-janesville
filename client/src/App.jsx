@@ -28,7 +28,6 @@ import {
   Store,
   Tag,
   Trash2,
-  Upload,
   UsersRound,
   X,
 } from 'lucide-react'
@@ -126,10 +125,7 @@ const readTrackedSubmissions = () => {
     return Array.isArray(parsed) ? parsed.filter((item) => item?.token) : []
   } catch { return [] }
 }
-const saveTrackedSubmission = (entry) => {
-  const current = readTrackedSubmissions().filter((item) => item.token !== entry.token)
-  window.localStorage.setItem(submissionStorageKey, JSON.stringify([entry, ...current].slice(0, 100)))
-}
+
 
 const timeAgo = (value) => {
   if (!value) return 'No update time'
@@ -667,7 +663,7 @@ function CatalogTile({ product, openProduct, addToCart }) {
         <p className="mt-2 text-2xl font-extrabold tracking-tight text-emerald-700">{hasApprovedProductPrice(product) ? productPrice(product) : 'Price needed'}</p>
         <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-700">{[category, ...Object.values(product.catalog_facets || {})].filter(Boolean).join(" · ")}</p>
         {product.best_store_location?.label ? <p className="mt-1 line-clamp-2 text-xs font-black text-slate-600">{product.best_store_location.label}</p> : null}
-        {hasApprovedProductPrice(product) ? <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-2 text-sm font-bold text-amber-800">Submit price</p>}
+        {hasApprovedProductPrice(product) ? <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">{product.best_price_freshness || 'Recently verified'}</p> : <p className="mt-2 text-sm font-bold text-amber-800">Price unavailable</p>}
         {Number(product.other_store_price_count || 0) > 0 ? <p className="mt-1 text-xs font-bold text-slate-500">Other stores available</p> : null}
       </button>
       {priceMayHaveChanged ? <p className="mt-2 text-xs font-semibold text-amber-900">Prices may have changed.</p> : null}
@@ -912,7 +908,7 @@ function SearchScreen({
 
       {!loading && !error && !reports.length && !products.length ? (
         <div className="mt-5">
-          <EmptyState title="No approved matches yet" body="Try another search, or submit proof to help fill the gap." icon={Search} />
+          <EmptyState title="No approved matches yet" body="Try another product or category." icon={Search} />
         </div>
       ) : null}
 
@@ -1031,13 +1027,12 @@ function ProductDetailScreen({ detail, loading, error, openScreen, onBack, addTo
             ) : (
               <div className="mt-5 rounded-2xl bg-amber-50 p-5 text-amber-900">
                 <p className="font-black">No approved price yet</p>
-                <p className="mt-1 font-semibold">Help verify this price. Submit proof to help fill this gap.</p>
+                <p className="mt-1 font-semibold">Check back for a verified price.</p>
               </div>
             )}
 
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <ActionButton label="Add to My List" icon={ShoppingCart} onClick={() => addToCart(product)} />
-              <ActionButton label="Submit Proof" icon={Plus} onClick={() => openScreen('submit')} />
               <ActionButton label="See Deals" icon={Tag} onClick={() => openScreen('deals')} />
               <ActionButton label="Search More" icon={Search} onClick={() => openScreen('search')} />
             </div>
@@ -1244,7 +1239,7 @@ function NotFoundScreen({ openScreen }) {
   </div>
 }
 
-function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Legacy accounts can still sign in for saved lists and points. Shopping and proof submission need no account.' }) {
+function AuthGate({ me, onAuthChanged, title = 'Sign in to continue', body = 'Legacy accounts can still sign in for saved lists and points. Shopping needs no account.' }) {
   const [form, setForm] = useState({ email: '', password: '' })
   const [status, setStatus] = useState({ loading: false, error: '', message: '' })
 
@@ -1573,257 +1568,7 @@ function _LegacyCartScreen({ me, cart, comparison, cartMode, setCartMode, loadin
   )
 }
 
-function SubmitScreen({ stores, selectedProduct, openScreen, setSelectedProofId }) {
-  const initialForm = {
-    store_id: stores[0]?.id || '',
-    proof_type: 'receipt',
-    notes: '',
-    source_url: '',
-    item_hint: selectedProduct?.display_name || '',
-    price_hint: '',
-    proof_photo: null,
-  }
-  const [form, setForm] = useState(initialForm)
-  const [status, setStatus] = useState({ loading: false, error: '', message: '', result: null })
-  const proofPreview = useMemo(
-    () => form.proof_photo ? URL.createObjectURL(form.proof_photo) : '',
-    [form.proof_photo],
-  )
-
-  useEffect(() => () => {
-    if (proofPreview) URL.revokeObjectURL(proofPreview)
-  }, [proofPreview])
-
-  useEffect(() => {
-    setForm((current) => ({
-      ...current,
-      store_id: current.store_id || stores[0]?.id || '',
-      item_hint: selectedProduct?.display_name || current.item_hint,
-    }))
-  }, [selectedProduct, stores])
-
-  const update = (field, value) => setForm((current) => ({ ...current, [field]: value }))
-
-  const submit = async (event) => {
-    event.preventDefault()
-    const sourceUrl = form.source_url.trim()
-
-    if (!form.store_id) {
-      setStatus({
-        loading: false,
-        error: 'Choose a store before submitting proof.',
-        message: '',
-        result: null,
-      })
-      return
-    }
-
-    if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
-      setStatus({
-        loading: false,
-        error: 'Source link must start with http:// or https://.',
-        message: '',
-        result: null,
-      })
-      return
-    }
-
-    if (!form.proof_photo && !sourceUrl) {
-      setStatus({
-        loading: false,
-        error: 'Upload a proof image or add a source link.',
-        message: '',
-        result: null,
-      })
-      return
-    }
-
-    setStatus({ loading: true, error: '', message: '', result: null })
-    try {
-      const payload = new FormData()
-      payload.append('store_id', form.store_id)
-      payload.append('proof_type', form.proof_type)
-      payload.append('notes', form.notes)
-      payload.append('item_hint', form.item_hint)
-      payload.append('price_hint', form.price_hint)
-      if (sourceUrl) {
-        payload.append('source_url', sourceUrl)
-      }
-      if (form.proof_photo) {
-        payload.append('proof_photo', form.proof_photo)
-      }
-      const result = await apiFetch('/api/proof-submissions', { method: 'POST', body: payload })
-      if (result.tracking_token) saveTrackedSubmission({ token: result.tracking_token, submitted_at: new Date().toISOString(), store_name: stores.find((store) => String(store.id) === String(form.store_id))?.name || '', proof_type: form.proof_type, last_status: 'waiting_for_review' })
-      setStatus({
-        loading: false,
-        error: '',
-        message: 'Proof accepted for review.',
-        result,
-      })
-    } catch (error) {
-      setStatus({ loading: false, error: error.message, message: '', result: null })
-    }
-  }
-
-  return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
-      <ScreenTitle
-        eyebrow="Submit Proof"
-        title="Submit Proof"
-        subtitle="Upload a receipt, shelf tag, weekly ad, screenshot, or source link. We will review it and add useful prices."
-      />
-      <button type="button" onClick={() => openScreen('submissions')} className="btn-secondary mb-4"><ReceiptText className="h-5 w-5" />My Submissions</button>
-
-      <div className="mb-5 grid gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4 sm:grid-cols-3">
-        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><CheckCircle2 className="h-5 w-5 text-emerald-700" /> Photograph the price clearly</p>
-        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><Store className="h-5 w-5 text-emerald-700" /> Include the store and item</p>
-        <p className="flex items-center gap-2 text-sm font-bold text-slate-700"><ShieldCheck className="h-5 w-5 text-emerald-700" /> Reviewed before publishing</p>
-      </div>
-
-      <form onSubmit={submit} className="surface-card p-5 sm:p-6">
-        <div className="space-y-5">
-          <FormStep number="1" label="Choose proof type">
-            <select
-              value={form.proof_type}
-              onChange={(event) => update('proof_type', event.target.value)}
-              className="field"
-              aria-label="Proof type"
-            >
-              <option value="receipt">Receipt</option>
-              <option value="shelf_tag">Shelf tag</option>
-              <option value="weekly_ad">Weekly ad</option>
-              <option value="store_page">Screenshot or source link</option>
-            </select>
-          </FormStep>
-
-          <FormStep number="2" label="Upload image or paste a link">
-            <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/70 px-4 py-7 text-center font-extrabold text-emerald-900 transition hover:border-emerald-500 hover:bg-emerald-50 focus-within:ring-4 focus-within:ring-emerald-200">
-              {proofPreview ? <img src={proofPreview} alt="Selected proof preview" className="max-h-64 w-full rounded-xl bg-white object-contain" /> : <Upload className="h-9 w-9" />}
-              <span className="max-w-full break-words">{form.proof_photo ? form.proof_photo.name : 'Choose a receipt, shelf tag, or ad image'}</span>
-              <span className="text-sm font-medium text-emerald-800">JPEG, PNG, or WebP · up to 5 MB</span>
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                capture="environment"
-                className="sr-only"
-                aria-label="Proof image"
-                onChange={(event) => update('proof_photo', event.target.files?.[0] || null)}
-              />
-            </label>
-            <p className="helper-text">A photo is optional when you include a public source link.</p>
-
-            <input
-              type="url"
-              value={form.source_url}
-              onChange={(event) => update('source_url', event.target.value)}
-              className="field mt-3"
-              placeholder="https://store.com/weekly-ad or product page"
-              aria-label="Source link optional"
-            />
-            <p className="helper-text">
-              Add a store page, weekly ad, or product link if you have one.
-            </p>
-          </FormStep>
-
-          <FormStep number="3" label="Store">
-            <select
-              value={form.store_id}
-              onChange={(event) => update('store_id', event.target.value)}
-              className="field"
-              aria-label="Store"
-            >
-              {stores.map((store) => (
-                <option key={store.id} value={store.id}>{store.name}</option>
-              ))}
-            </select>
-            <p className="helper-text">Choose the closest match so the reviewer can check the proof faster.</p>
-          </FormStep>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormStep number="4" label="Product name optional">
-              <input
-                value={form.item_hint}
-                onChange={(event) => update('item_hint', event.target.value)}
-                className="field"
-                placeholder="Optional, like eggs or bananas"
-                aria-label="Product name optional"
-              />
-            </FormStep>
-            <FormStep number="5" label="Price optional">
-              <div className="flex rounded-2xl border border-slate-200 bg-slate-50 focus-within:border-emerald-500">
-                <span className="flex items-center px-4 text-xl font-black text-slate-500">$</span>
-                <input
-                  value={form.price_hint}
-                  onChange={(event) => update('price_hint', event.target.value)}
-                  className="min-w-0 flex-1 bg-transparent py-4 pr-4 text-lg font-bold text-slate-900 outline-none"
-                  placeholder="Optional"
-                  inputMode="decimal"
-                  aria-label="Price optional"
-                />
-              </div>
-            </FormStep>
-          </div>
-
-          <FormStep number="6" label="Notes optional">
-            <textarea
-              value={form.notes}
-              onChange={(event) => update('notes', event.target.value)}
-              className="field min-h-28"
-              placeholder="Anything that helps the reviewer"
-              aria-label="Notes optional"
-            />
-          </FormStep>
-        </div>
-
-        {status.error ? <p role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 font-bold text-rose-800">{status.error}</p> : null}
-        {status.message ? (
-          <div role="status" aria-live="polite" className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 font-bold text-emerald-900">
-            <p className="flex items-center gap-2 text-lg"><CheckCircle2 className="h-6 w-6" />{status.message}</p>
-            <p className="mt-1 text-sm text-emerald-700">It will not appear publicly until an admin reviews it.</p>
-            <p className="mt-1 text-sm text-emerald-700">Return to My Submissions in this browser to see the result.</p>
-            {status.result?.batch_id ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (status.result.tracking_token) openScreen('submissions')
-                  else { setSelectedProofId(String(status.result.batch_id)); openScreen('profile') }
-                }}
-                className="mt-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-sm font-black text-emerald-800 ring-1 ring-emerald-100"
-              >
-                View proof status
-                <ChevronLeft className="h-4 w-4 rotate-180" />
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="mt-6 grid gap-3 sm:grid-cols-2">
-          <button
-            type="submit"
-            disabled={status.loading}
-            className="btn-primary text-lg"
-          >
-            {status.loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <CheckCircle2 className="h-6 w-6" />}
-            Submit for review
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setForm({ ...initialForm, store_id: form.store_id, proof_type: form.proof_type })
-              setStatus({ loading: false, error: '', message: '', result: null })
-            }}
-            className="btn-secondary text-lg"
-          >
-            <Plus className="h-6 w-6" />
-            Submit another proof
-          </button>
-        </div>
-      </form>
-    </div>
-  )
-}
-
-function MySubmissionsScreen({ openScreen }) {
+function MySubmissionsScreen() {
   const [state, setState] = useState({ loading: true, error: '', items: [] })
   const load = useCallback(async () => {
     const tracked = readTrackedSubmissions()
@@ -1840,28 +1585,13 @@ function MySubmissionsScreen({ openScreen }) {
   useEffect(() => { load() }, [load])
   return <div className="mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6">
     <ScreenTitle eyebrow="Privacy-first tracking" title="My Submissions" subtitle="No account required. Results are available only to this browser using private tracking capabilities." />
-    <button type="button" onClick={() => openScreen('submit')} className="mb-4 min-h-12 rounded-2xl bg-slate-100 px-4 font-black text-slate-800">Submit new proof</button>
     {state.loading ? <LoadingCard label="Checking submission results..." /> : null}
     <div className="space-y-4">{state.items.map((item) => <article key={item.token} className="rounded-3xl bg-white p-5 shadow-soft ring-1 ring-slate-100">
       <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black text-emerald-700">{item.store_name || proofTypeLabel(item.proof_type)}</p><h2 className="mt-1 text-2xl font-black">{item.status_label}</h2>{item.unread ? <span className="mt-2 inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-black uppercase text-amber-900">New result</span> : null}<p className="mt-1 font-semibold text-slate-500">Submitted {shortDate(item.submitted_at)}</p></div>{item.status === 'reviewed' ? <BadgeCheck className="h-8 w-8 text-emerald-700" /> : <Clock3 className="h-8 w-8 text-amber-600" />}</div>
       {item.status === 'reviewed' ? <div className="mt-4"><p className="font-black">{item.approved_count} approved · {item.not_approved_count} not approved</p>{item.outcome?.public_reason ? <p className="mt-2 rounded-2xl bg-rose-50 p-3 font-bold text-rose-800">Reason: {displayText(item.outcome.public_reason)}{item.outcome.public_explanation ? ` — ${item.outcome.public_explanation}` : ''}</p> : null}{item.outcome?.approved?.map((row, index) => <div key={`approved-${index}`} className="mt-3 rounded-2xl bg-emerald-50 p-4"><p className="font-black text-emerald-900">APPROVED · {row.product}</p><p className="text-xl font-black">{row.price}</p><p className="font-semibold">{row.store}{row.promotion_conditions ? ` · ${row.promotion_conditions}` : ''}{row.valid_through_date ? ` · Valid through ${shortDate(row.valid_through_date)}` : ''}</p></div>)}{item.outcome?.not_approved?.map((row, index) => <div key={`rejected-${index}`} className="mt-3 rounded-2xl bg-rose-50 p-4"><p className="font-black text-rose-900">NOT APPROVED · {row.product}</p><p className="font-semibold">Reason: {displayText(row.reason)}</p>{row.explanation ? <p>{row.explanation}</p> : null}</div>)}</div> : null}
     </article>)}</div>
-    {!state.loading && !state.items.length ? <EmptyState title="No tracked submissions" body="Submit proof anonymously from this browser. Clearing browser storage or changing devices removes local tracking." icon={ReceiptText} /> : null}
+    {!state.loading && !state.items.length ? <EmptyState title="No tracked submissions" body="Previously tracked submissions from this browser appear here." icon={ReceiptText} /> : null}
   </div>
-}
-
-function FormStep({ number, label, children }) {
-  return (
-    <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-      <div className="mb-3 flex items-center gap-2 text-base font-extrabold text-slate-900">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-sm text-white" aria-hidden="true">
-          {number}
-        </span>
-        {label}
-      </div>
-      {children}
-    </section>
-  )
 }
 
 function ProofResultCard({ proof, loading, error, onRetry, openProduct }) {
@@ -1909,7 +1639,7 @@ function ProofResultCard({ proof, loading, error, onRetry, openProduct }) {
         <div className="mt-4 rounded-2xl bg-amber-50 p-4 text-amber-900 ring-1 ring-amber-100">
           <p className="font-black">Send an updated proof</p>
           <p className="mt-1 text-sm font-bold">
-            Upload a clearer photo or add the missing source link so admin can review it again.
+            This submission needed additional evidence before it could be approved.
           </p>
         </div>
       ) : null}
@@ -2546,9 +2276,8 @@ function UpdatesScreen({ releases, releaseState, version, markRead, homepageServ
 }
 
 const snowyFaqs = [
-  ['How do prices get added?', 'Prices come from community submissions and retailer sources, then are reviewed before they appear as verified.'],
+  ['How do prices get added?', 'The Grocery Radar team reviews retailer sources and existing reports before publishing verified prices.'],
   ['How do I compare stores?', 'Add products to My List and open the list to compare current eligible prices across Janesville stores.'],
-  ['How do I submit a price?', 'Choose Submit in the navigation, select a store and product, then add the price and supporting proof.'],
   ['How does My List work?', 'Tap the green plus button on any product to save it, then use My List to plan and compare your trip.'],
 ]
 
@@ -2674,12 +2403,11 @@ function BottomNav({ active, openScreen }) {
     { id: 'deals', label: 'Savings', icon: Tag },
     { id: 'stores', label: 'Stores', icon: Store },
     { id: 'cart', label: 'My List', icon: ShoppingCart },
-    { id: 'submit', label: 'Submit', icon: Upload },
   ]
 
   return (
     <nav className="shopper-bottom-nav fixed inset-x-0 bottom-0 z-40 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-xl sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(46rem,calc(100%-2rem))] sm:-translate-x-1/2 sm:rounded-3xl sm:border sm:pb-0" aria-label="Primary navigation">
-      <div className="mx-auto grid max-w-4xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-1 sm:p-2">
+      <div className="mx-auto grid max-w-4xl grid-cols-4 gap-0.5 px-1 py-1.5 sm:gap-1 sm:p-2">
         {navItems.map((item) => {
           const Icon = item.icon
           const selected = active === item.id
@@ -3212,14 +2940,12 @@ function App() {
 
   const activeNav = useMemo(() => {
     if (['home', 'search', 'deals', 'stores', 'cart', 'submit', 'profile'].includes(screen)) return screen
-    if (screen === 'submissions') return 'submit'
     if (screen === 'store') return 'stores'
     if (screen === 'leaderboard') return 'profile'
     if (screen === 'product') return 'search'
     return ''
   }, [screen])
 
-  const selectedProduct = productDetail?.product
   const listCount = cart?.items?.length ?? readLocalList().length
 
   return (
@@ -3324,16 +3050,15 @@ function App() {
           />
         ) : null}
         {screen === 'submit' ? (
-          <SubmitScreen
-            me={me}
-            stores={stores}
-            selectedProduct={selectedProduct}
-            onAuthChanged={loadMe}
-            openScreen={openScreen}
-            setSelectedProofId={setSelectedProofId}
-          />
+          <div className="mx-auto w-full max-w-3xl px-4 py-8">
+            <ScreenTitle title="Price submissions are closed" subtitle="Browse verified prices or check a previous submission." />
+            <div className="flex flex-wrap gap-3">
+              <a className="btn-primary" href="/products">Browse products</a>
+              <a className="btn-secondary" href="/my-submissions">My submissions</a>
+            </div>
+          </div>
         ) : null}
-        {screen === 'submissions' ? <MySubmissionsScreen openScreen={openScreen} /> : null}
+        {screen === 'submissions' ? <MySubmissionsScreen /> : null}
         {screen === 'privacy' ? <PolicyScreen type="privacy" openScreen={openScreen} /> : null}
         {screen === 'terms' ? <PolicyScreen type="terms" openScreen={openScreen} /> : null}
         {screen === 'notFound' ? <NotFoundScreen openScreen={openScreen} /> : null}
