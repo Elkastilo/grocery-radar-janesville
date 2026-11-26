@@ -14,6 +14,7 @@ const publicStaticRoutes = new Map([
   ['/terms', { screen: 'terms' }],
   ['/updates', { screen: 'updates' }],
   ['/legacy-account', { screen: 'profile' }],
+  ['/owner-sign-in', { screen: 'ownerSignIn' }],
   ['/leaderboard', { screen: 'leaderboard' }],
 ])
 

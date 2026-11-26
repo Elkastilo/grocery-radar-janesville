@@ -2558,7 +2558,7 @@ function SnowyAssistant({ open, setOpen, me, onToast }) {
   )
 }
 
-function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnreadRelease = false, active = '', listCount = 0 }) {
+function DataBanner({ openScreen, openUpdates, showAccount, unreadNotifications = 0, hasUnreadRelease = false, active = '', listCount = 0 }) {
   return (
     <header className="shopper-header sticky top-0 z-30 border-b backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-6">
@@ -2572,10 +2572,10 @@ function DataBanner({ openScreen, openUpdates, unreadNotifications = 0, hasUnrea
         </nav>
         <div className="flex shrink-0 gap-1.5 sm:gap-2">
           <button type="button" onClick={openUpdates} className="header-action sm:w-auto sm:px-3" aria-label="What's new"><FileCheck2 className="h-5 w-5" /><span className="ml-2 hidden text-sm font-bold sm:inline">What's new</span>{hasUnreadRelease ? <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-white" aria-label="New update available" /> : null}</button>
-          <button type="button" onClick={() => openScreen('profile')} className="header-action header-action-brand" aria-label="Open account and notifications">
+          {showAccount ? <button type="button" onClick={() => openScreen('profile')} className="header-action header-action-brand" aria-label="Open account and notifications">
             <BellRing className="h-5 w-5" />
             {unreadNotifications ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-700 px-1 text-[10px] font-black text-white ring-2 ring-white">{unreadNotifications > 9 ? '9+' : unreadNotifications}</span> : null}
-          </button>
+          </button> : null}
           <button type="button" onClick={() => openScreen('submissions')} className="header-action" aria-label="Open My Submissions"><ReceiptText className="h-5 w-5" /></button>
         </div>
       </div>
@@ -3139,7 +3139,7 @@ function App() {
 
   return (
     <div className="shopper-shell season-winter min-h-screen text-slate-950" data-season="winter">
-      <DataBanner openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} active={activeNav} listCount={listCount} />
+      <DataBanner showAccount={me.ownerOnlyAccounts === false} openScreen={openScreen} openUpdates={openUpdates} unreadNotifications={unreadNotifications} hasUnreadRelease={releaseData.has_unread} active={activeNav} listCount={listCount} />
       {toast ? (
         <button
           type="button"
@@ -3252,7 +3252,29 @@ function App() {
         {screen === 'privacy' ? <PolicyScreen type="privacy" openScreen={openScreen} /> : null}
         {screen === 'terms' ? <PolicyScreen type="terms" openScreen={openScreen} /> : null}
         {screen === 'notFound' ? <NotFoundScreen openScreen={openScreen} /> : null}
-        {screen === 'profile' ? (
+        {screen === 'ownerSignIn' ? (
+          <div className="mx-auto w-full max-w-xl px-4 py-8">
+            {me.loggedIn && (me.user || me).is_owner ? (
+              <a className="btn-primary" href="/admin">Open admin workspace</a>
+            ) : (
+              <AuthGate me={me} onAuthChanged={() => window.location.replace('/admin')} title="Grocery Radar owner sign-in" body="Sign in to manage Grocery Radar." />
+            )}
+          </div>
+        ) : null}
+        {screen === 'profile' && me.ownerOnlyAccounts !== false ? (
+          <div className="mx-auto w-full max-w-xl px-4 py-8">
+            {me.loading ? <LoadingCard label="Checking account availability…" /> : (
+              <>
+                <ScreenTitle title="Shop Grocery Radar without an account" subtitle="Browse prices, make a list, or check proof you submitted." />
+                <div className="flex flex-wrap gap-3">
+                  <a className="btn-primary" href="/products">Browse products</a>
+                  <a className="btn-secondary" href="/my-submissions">My submissions</a>
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
+        {screen === 'profile' && me.ownerOnlyAccounts === false ? (
           <ProfileScreen
             me={me}
             profileStats={profileStats}
