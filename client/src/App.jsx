@@ -789,6 +789,7 @@ function SearchScreen({
   addToCart,
   reload,
 }) {
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [catalogFilters, setCatalogFilters] = useState({ animal: '', type: '', cut: '' })
   const meatDepartment = activeCategory === 'meat'
   const hasDepartmentFilters = Boolean(activeCategory && activeCategory !== 'other')
@@ -821,8 +822,15 @@ function SearchScreen({
         subtitle={meatDepartment ? "Browse Janesville prices by animal, product type, and cut." : "Shop real products and current community-verified prices from stores around Janesville."}
       />
       <div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-2xl font-extrabold tracking-tight text-slate-950">All Products</h2><span className="hidden items-center gap-2 text-sm font-semibold text-slate-500 sm:flex"><SlidersHorizontal className="h-4 w-4" /> Curated from Grocery Radar data</span></div>
-      <section className="browse-search-panel sticky top-[65px] z-20 -mx-4 border-y px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:rounded-2xl sm:border sm:p-4">
+      <section className="browse-search-panel -mx-4 border-y px-4 py-3 sm:mx-0 sm:rounded-2xl sm:border sm:p-4">
       <SearchBox value={searchTerm} onChange={setSearchTerm} compact />
+      <button type="button" className="btn-secondary mt-3 min-h-11 sm:hidden"
+        aria-expanded={filtersOpen} aria-controls="product-browse-filters"
+        onClick={() => setFiltersOpen((open) => !open)}>
+        <SlidersHorizontal className="h-4 w-4" />
+        {filtersOpen ? 'Hide filters' : 'Show filters'}
+      </button>
+      <div id="product-browse-filters" className={filtersOpen ? 'block' : 'hidden sm:block'}>
       <div className="scrollbar-none -mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0" role="group" aria-label="Search result filters">
         {filters.map((filter) => (
           <button
@@ -885,6 +893,7 @@ function SearchScreen({
         <label className="filter-select-label">Store<select value={activeStoreId} onChange={(event) => setActiveStoreId(event.target.value)} className="filter-select"><option value="">All stores</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
         <label className="filter-select-label">Price<select value={priceMode} onChange={(event) => setPriceMode(event.target.value)} className="filter-select"><option value="">Any price</option><option value="under10">Under $10</option></select></label>
         <label className="filter-select-label">Sort<select value={sortMode} onChange={(event) => setSortMode(event.target.value)} className="filter-select"><option value="cheapest_unit_price">Lowest price</option><option value="newest_report">Recently verified</option><option value="highest_confidence">Most trusted</option></select></label>
+      </div>
       </div>
       </section>
 
