@@ -174,6 +174,15 @@ function all(sql, params = []) {
 async function initDb() {
   await run("PRAGMA foreign_keys = ON");
 
+  await run(`CREATE TABLE IF NOT EXISTS login_attempt_windows (
+    connection_hash TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    alert_claimed INTEGER NOT NULL DEFAULT 0
+  )`);
+  await run("CREATE INDEX IF NOT EXISTS idx_login_attempt_expiry ON login_attempt_windows(expires_at)");
+
+
   await run(`
     CREATE TABLE IF NOT EXISTS stores (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
