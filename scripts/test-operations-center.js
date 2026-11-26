@@ -11,10 +11,10 @@ const sharp = require("sharp");
 const sqlite3 = require("sqlite3").verbose();
 
 const ROOT_DIR = path.join(__dirname, "..");
-const OWNER_EMAIL = "juricbu@gmail.com";
-const OWNER_USERNAME = "elcastilo";
-const OWNER_PASSWORD = "OwnerLaunchPass123!";
-const ADMIN_PIN = "1234";
+const OWNER_EMAIL = "owner@example.invalid";
+const OWNER_USERNAME = "testowner";
+const OWNER_PASSWORD = require("node:crypto").randomBytes(24).toString("hex");
+const ADMIN_PIN = String(require("node:crypto").randomInt(100000, 1000000));
 
 function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -207,9 +207,12 @@ async function startServer() {
     NODE_ENV: "test",
     HOST: "127.0.0.1",
     PORT: String(port),
+    ADMIN_PIN,
+    PROTECTED_OWNER_EMAIL: OWNER_EMAIL,
+    PROTECTED_OWNER_USERNAME: OWNER_USERNAME,
     DATA_DIR: dataDir,
     UPLOADS_DIR: uploadsDir,
-    SESSION_SECRET: "test-session-secret",
+    SESSION_SECRET: require("node:crypto").randomBytes(32).toString("hex"),
     PUBLIC_APP_URL: "https://thegroceryradar.com",
     SUPER_ADMIN_EMAIL: "attacker@example.invalid",
     OWNER_EMAIL: "attacker@example.invalid",
@@ -1081,6 +1084,22 @@ async function main() {
     assert.ok(categories.body.categories.includes("bug"));
     assert.ok(categories.body.categories.includes("feature_request"));
 
+    const snowyPath = "/api/snowy/messages";
+    const guestMessage = await new TestClient(app.baseUrl).post(snowyPath, { message: "Hi Snowy" });
+    assert.equal(guestMessage.response.status, 401);
+    await updateTempUser(app.dataDir, "UPDATE users SET is_email_verified = 0 WHERE id = ?", [normalRegistration.user.id]);
+    const unverifiedSnowy = await normal.post(snowyPath, { message: "Hi Snowy" });
+    assert.equal(unverifiedSnowy.response.status, 403);
+    await updateTempUser(app.dataDir, "UPDATE users SET is_email_verified = 1 WHERE id = ?", [normalRegistration.user.id]);
+    const snowy = await normal.post(snowyPath, { message: "Hi Snowy", email: "ignored@example.invalid" });
+    assert.equal(snowy.response.status, 201, JSON.stringify(snowy.body));
+    const replyPath = `/api/admin/operations/feedback/${snowy.body.ticket.id}`;
+    const reply = { action: "email_reply", public_response: "Hi! Thanks for reaching out." };
+    assert.equal((await normal.post(replyPath, reply)).response.status, 403);
+    const sent = await owner.post(replyPath, reply);
+    assert.equal(sent.response.status, 200, JSON.stringify(sent.body));
+    assert.equal(sent.body.ticket.reporter.email, "operationshopper@example.invalid");
+
     const feedback = await normal.post("/api/feedback", {
       category: "bug",
       title: "Operations test feedback",
@@ -1094,6 +1113,9 @@ async function main() {
     const userFeedback = await normal.get("/api/account/feedback");
     assert.equal(userFeedback.response.status, 200);
     assert.ok(userFeedback.body.tickets.some((ticket) => ticket.id === feedback.body.ticket.id));
+    const shopperTicket = userFeedback.body.tickets.find((ticket) => ticket.id === snowy.body.ticket.id);
+    assert.equal(shopperTicket.public_response, reply.public_response);
+    assert.equal(shopperTicket.reporter.email, undefined);
 
     const featureVotes = await normal.get("/api/feature-votes");
     assert.equal(featureVotes.response.status, 200);

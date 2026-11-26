@@ -2188,6 +2188,7 @@ function renderFeedbackWidget(data) {
             <label><span>Duplicate of ticket ID</span><input data-feedback-field="duplicate_of_ticket_id" type="number" min="1" value="${escapeHtml(ticket.duplicate_of_ticket_id || "")}" placeholder="Optional"></label>
             <label class="span-full"><span>Internal note</span><input data-feedback-field="internal_notes" type="text" maxlength="1000" value="${escapeHtml(ticket.internal_notes || "")}"></label>
             <label class="span-full"><span>Public response</span><input data-feedback-field="public_response" type="text" maxlength="1000" value="${escapeHtml(ticket.public_response || "")}"></label>
+            ${ticket.can_email_reply ? `<p class="span-full">Reply email: ${escapeHtml(ticket.reporter.email)}</p><button class="secondary-button" type="button" data-feedback-action="email_reply" data-feedback-id="${ticket.id}">Send email reply</button>` : ""}
             <button class="secondary-button" type="button" data-feedback-action="update" data-feedback-id="${ticket.id}">Save</button>
             <button class="quiet-button" type="button" data-feedback-action="close" data-feedback-id="${ticket.id}">Close</button>
             <button class="quiet-button" type="button" data-feedback-action="reopen" data-feedback-id="${ticket.id}">Reopen</button>
@@ -2582,7 +2583,15 @@ function bindOperationsControls() {
   }
 
   for (const button of operationsCenter.querySelectorAll("[data-feedback-action]")) {
-    button.addEventListener("click", () => updateOperationFeedback(button.dataset.feedbackId, button.dataset.feedbackAction));
+    button.addEventListener("click", async () => {
+      const buttons = button.closest("[data-feedback-ticket]").querySelectorAll("[data-feedback-action]");
+      buttons.forEach((control) => { control.disabled = true; });
+      try {
+        await updateOperationFeedback(button.dataset.feedbackId, button.dataset.feedbackAction);
+      } finally {
+        buttons.forEach((control) => { control.disabled = false; });
+      }
+    });
   }
 
   for (const button of operationsCenter.querySelectorAll("[data-save-feature-status]")) {
@@ -2663,12 +2672,13 @@ async function updateOperationFeedback(ticketId, action) {
   }
 
   try {
-    await fetchJson(`/api/admin/operations/feedback/${encodeURIComponent(ticketId)}${adminQuery()}`, {
+    const result = await fetchJson(`/api/admin/operations/feedback/${encodeURIComponent(ticketId)}${adminQuery()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
     await loadOperationsCenter();
+    if (action === "email_reply") setOperationsMessage(result.message, "success");
   } catch (error) {
     setOperationsMessage(error.message, "error");
   }
