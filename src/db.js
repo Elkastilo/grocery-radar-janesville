@@ -2116,6 +2116,9 @@ async function initDb() {
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_report ON notifications(related_report_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_import_batch ON notifications(related_import_batch_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notifications_related_import_row ON notifications(related_import_row_id)");
+  await addColumnIfMissing("feedback_tickets", "guest_reply_email", "TEXT");
+  await addColumnIfMissing("feedback_tickets", "guest_sender_hash", "TEXT");
+  await run("CREATE INDEX IF NOT EXISTS idx_feedback_guest_created ON feedback_tickets(created_at) WHERE guest_sender_hash IS NOT NULL");
   await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_status_priority ON feedback_tickets(status, priority, updated_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_reporter ON feedback_tickets(reporter_user_id, created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_feedback_tickets_category ON feedback_tickets(category, status, created_at)");
