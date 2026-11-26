@@ -125,23 +125,31 @@
   }
 
   .snowy-panel-heading {
-    @apply rounded-xl bg-sky-50 px-3 py-2;
+    @apply shrink-0 bg-sky-50 px-4 py-2;
   }
 
   .snowy-panel {
-    @apply fixed bottom-24 right-4 z-50 w-[min(24rem,calc(100%-2rem))] rounded-[1.25rem] border border-sky-100 bg-white p-5 shadow-2xl sm:bottom-6 sm:right-6;
-    max-height: calc(100svh - 7rem);
-    overflow-y: auto;
+    @apply fixed bottom-4 right-4 m-0 w-[min(24rem,calc(100%-2rem))] rounded-[1.25rem] border border-sky-100 bg-white p-0 shadow-2xl sm:bottom-6 sm:right-6;
+    inset-inline-start: auto;
+    inset-block-start: auto;
+    bottom: max(1rem, env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow: hidden;
   }
 
-  @media (max-width: 639px) {
-    .snowy-panel {
-      bottom: 5.5rem;
-      left: 0.75rem;
-      right: 0.75rem;
-      width: auto;
-    }
+  .snowy-panel[open] {
+    display: flex;
+    flex-direction: column;
   }
+
+  .snowy-panel::backdrop {
+    background: rgb(15 23 42 / 0.32);
+  }
+
+  .snowy-panel-body {
+    @apply min-h-0 overflow-y-auto overscroll-contain p-4;
+  }
+
 }
 
 @layer components {
