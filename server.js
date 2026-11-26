@@ -70,7 +70,9 @@ const {
   sendAdminRegistrationEmail,
   sendAdminReportReviewEmail,
   sendReportRejectionEmail,
-  sendAccountBanEmail
+  sendAccountBanEmail,
+  notifyAdminOfSnowyMessage,
+  sendSnowyReply
 } = require("./src/email");
 const { calculateUnitPrice, formatUnitPrice } = require("./src/unitPrice");
 const {
@@ -166,24 +168,22 @@ if (isProduction) {
 }
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
-const ADMIN_PIN = process.env.ADMIN_PIN || (process.env.NODE_ENV === "production" ? "" : "1234");
+const ADMIN_PIN = process.env.ADMIN_PIN || "";
 const APP_DOMAIN = "thegroceryradar.com";
 const PUBLIC_APP_URL = String(
   process.env.PUBLIC_APP_URL ||
   process.env.APP_BASE_URL ||
   (process.env.NODE_ENV === "production" ? `https://${APP_DOMAIN}` : "http://localhost:3000")
 ).replace(/\/+$/, "");
-const BOOTSTRAP_SUPER_ADMIN_EMAIL = "juricbu@gmail.com";
-const BOOTSTRAP_SUPER_ADMIN_USERNAME = "elcastilo";
-const OWNER_EMAIL = BOOTSTRAP_SUPER_ADMIN_EMAIL;
-const OWNER_USERNAME = BOOTSTRAP_SUPER_ADMIN_USERNAME;
+const OWNER_EMAIL = normalizedEmail(process.env.PROTECTED_OWNER_EMAIL);
+const OWNER_USERNAME = normalizedUsername(process.env.PROTECTED_OWNER_USERNAME);
 let protectedOwnerUserId = null;
 const VERIFICATION_TOKEN_TTL_MS = 1000 * 60 * 60 * 24;
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Math.max(
   60,
   Number.parseInt(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || "300", 10) || 300
 );
-const SESSION_SECRET = process.env.SESSION_SECRET || "change_this_secret";
+const SESSION_SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === "production" ? "" : crypto.randomBytes(32).toString("hex"));
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
 const PUBLIC_REGISTRATION_ENABLED = process.env.NODE_ENV === "test" || ["1", "true", "yes", "on"].includes(String(process.env.PUBLIC_REGISTRATION_ENABLED || "").toLowerCase());
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -3184,6 +3184,9 @@ async function applyBootstrapSuperAdminFlags(user) {
 }
 
 async function ensureBootstrapSuperAdmin() {
+  if (!OWNER_EMAIL || !OWNER_USERNAME || !SESSION_SECRET) {
+    throw new Error("Protected owner identity and session secret must be configured before starting Grocery Radar.");
+  }
   const ownerAccounts = await all(
     `
       SELECT *
@@ -3197,7 +3200,7 @@ async function ensureBootstrapSuperAdmin() {
 
   if (!ownerAccounts.length) {
     throw new Error(
-      "Owner identity conflict: no single account has both email juricbu@gmail.com and username elcastilo. Resolve this manually before deployment."
+      "Owner identity conflict: no account matches the configured owner email and username. Resolve this manually before deployment."
     );
   }
 
@@ -6163,6 +6166,8 @@ function formatUserSummary(row = {}) {
   };
 }
 
+const SNOWY_MESSAGE_TITLE = "Snowy shopper question";
+
 function formatFeedbackTicket(row = {}, includeAdminFields = false) {
   const ticket = {
     id: row.id,
@@ -6201,6 +6206,7 @@ function formatFeedbackTicket(row = {}, includeAdminFields = false) {
           username: row.assigned_admin_username
         }
       : null;
+    ticket.can_email_reply = row.title === SNOWY_MESSAGE_TITLE && Boolean(row.reporter_email && row.reporter_email_verified);
     ticket.assigned_admin_id = row.assigned_admin_id || null;
     ticket.duplicate_of_ticket_id = row.duplicate_of_ticket_id || null;
     ticket.internal_notes = row.internal_notes || "";
@@ -6215,6 +6221,7 @@ function feedbackSelectSql() {
       tickets.*,
       reporters.username AS reporter_username,
       reporters.email AS reporter_email,
+      reporters.is_email_verified AS reporter_email_verified,
       assignees.username AS assigned_admin_username
     FROM feedback_tickets tickets
     LEFT JOIN users reporters ON reporters.id = tickets.reporter_user_id
@@ -7098,7 +7105,7 @@ async function publicFeedbackForUser(userId) {
     `,
     [userId]
   );
-  return rows.map(formatFeedbackTicket);
+  return rows.map((row) => formatFeedbackTicket(row));
 }
 
 async function operationsSearchAnalytics() {
@@ -8866,10 +8873,14 @@ app.get("/api/feedback/categories", asyncRoute(async (request, response) => {
   });
 }));
 
-app.post("/api/feedback", requireLogin, asyncRoute(async (request, response) => {
-  const category = cleanFeedbackCategory(request.body.category);
-  const title = cleanText(request.body.title, 160);
-  const message = cleanText(request.body.message, 2000);
+app.post(["/api/feedback", "/api/snowy/messages"], requireLogin, asyncRoute(async (request, response) => {
+  const isSnowy = request.path.toLowerCase().replace(/\/$/, "") === "/api/snowy/messages";
+  if (isSnowy && (!request.currentUser.email || !request.currentUser.is_email_verified)) {
+    return response.status(403).json({ error: "Verify your account email before messaging Snowy." });
+  }
+  const category = isSnowy ? "suggestion" : cleanFeedbackCategory(request.body.category);
+  const title = isSnowy ? SNOWY_MESSAGE_TITLE : cleanText(request.body.title, 160);
+  const message = cleanText(request.body.message, isSnowy ? 500 : 2000);
   const priority = cleanFeedbackPriority(request.body.priority || "normal");
   const source = cleanSourceMetadata(request.body);
   const relatedReportId = Number.parseInt(request.body.related_report_id, 10);
@@ -8906,7 +8917,11 @@ app.post("/api/feedback", requireLogin, asyncRoute(async (request, response) => 
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      SELECT ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE ? = 0 OR (
+        SELECT COUNT(*) FROM feedback_tickets
+        WHERE reporter_user_id = ? AND title = ? AND created_at >= ?
+      ) < 5
     `,
     [
       request.currentUser.id,
@@ -8922,21 +8937,31 @@ app.post("/api/feedback", requireLogin, asyncRoute(async (request, response) => 
       cleanText(request.body.region || "WI", 80) || "WI",
       cleanText(request.body.country_code || "US", 8).toUpperCase() || "US",
       now,
-      now
+      now,
+      Number(isSnowy),
+      request.currentUser.id,
+      SNOWY_MESSAGE_TITLE,
+      new Date(Date.now() - 60 * 60 * 1000).toISOString()
     ]
   );
 
+  if (!result.changes) {
+    return response.status(429).json({ error: "You’ve reached the Ask Snowy message limit. Please try again later." });
+  }
+
   await createAdminNotification(
     "feedback_submitted",
-    "New feedback submitted",
+    isSnowy ? "New Ask Snowy message" : "New feedback submitted",
     `${request.currentUser.username} submitted ${category.replace(/_/g, " ")} feedback.`,
     {
       related_type: "feedback_ticket",
       related_id: result.lastID,
       target_tab: "operationsTab",
-      target_url: `/admin.html?tab=operationsTab&feedback=${result.lastID}`
+      target_url: isSnowy ? "/admin/operations" : `/admin.html?tab=operationsTab&feedback=${result.lastID}`
     }
   );
+
+  if (isSnowy) void notifyAdminOfSnowyMessage(result.lastID);
 
   response.status(201).json({
     message: "Feedback submitted.",
@@ -16017,6 +16042,21 @@ app.get("/api/admin/operations/feedback", requireSuperAdminAccess, asyncRoute(as
 
 app.post("/api/admin/operations/feedback/:id", requireSuperAdminAccess, asyncRoute(async (request, response) => {
   const ticketId = Number.parseInt(request.params.id, 10);
+  const emailReply = request.body.action === "email_reply";
+  if (emailReply) {
+    const recipient = await feedbackTicketById(ticketId);
+    if (!recipient) return response.status(404).json({ error: "Feedback ticket was not found." });
+    if (!formatFeedbackTicket(recipient, true).can_email_reply) {
+      return response.status(409).json({ error: "This message has no verified reply address." });
+    }
+    const reply = cleanText(request.body.public_response, 1000);
+    if (!reply) return response.status(400).json({ error: "Enter a reply before sending." });
+    const ticket = await updateFeedbackTicket(ticketId, { action: "email_reply", public_response: reply }, request.adminUser, request);
+    const sent = await sendSnowyReply(recipient, reply);
+    return response.status(sent ? 200 : 502).json(sent
+      ? { message: "Reply saved and accepted by the email provider.", ticket: formatFeedbackTicket(ticket, true) }
+      : { error: "Reply saved in the shopper’s account. Email could not be sent." });
+  }
   const ticket = await updateFeedbackTicket(ticketId, request.body, request.adminUser, request);
 
   if (!ticket) {

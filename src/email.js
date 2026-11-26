@@ -560,6 +560,37 @@ async function sendAccountBanEmail(user, ban) {
   }
 }
 
+async function sendSnowyEmail({ to, subject, text }) {
+  if (!to) return false;
+  if (emailTestMode()) return true;
+  const transporter = createTransporter();
+  if (!transporter) return false;
+
+  try {
+    const result = await transporter.sendMail({ from: emailConfig().from, to, subject, text });
+    return result.accepted.length > 0;
+  } catch (error) {
+    console.error("Snowy email failed", safeSmtpErrorDetails(error).code);
+    return false;
+  }
+}
+
+function notifyAdminOfSnowyMessage(ticketId) {
+  return sendSnowyEmail({
+    to: adminNotifyEmail(),
+    subject: "New Ask Snowy message",
+    text: `A shopper sent a message. Open Grocery Radar Admin to reply:\n${appBaseUrl()}/admin/operations\n\nMessage #${ticketId}`
+  });
+}
+
+function sendSnowyReply(ticket, reply) {
+  return sendSnowyEmail({
+    to: ticket.reporter_email,
+    subject: `Grocery Radar reply to your Ask Snowy message #${ticket.id}`,
+    text: `${reply}\n\nView your message in your Grocery Radar account: ${appBaseUrl()}/legacy-account`
+  });
+}
+
 module.exports = {
   emailStatus,
   getLastEmailDiagnostic,
@@ -571,5 +602,7 @@ module.exports = {
   sendAdminRegistrationEmail,
   sendAdminReportReviewEmail,
   sendReportRejectionEmail,
-  sendAccountBanEmail
+  sendAccountBanEmail,
+  notifyAdminOfSnowyMessage,
+  sendSnowyReply
 };

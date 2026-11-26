@@ -18,6 +18,10 @@ services:
         value: /opt/render/project/src/storage
       - key: UPLOADS_DIR
         value: /opt/render/project/src/storage/uploads
+      - key: PROTECTED_OWNER_EMAIL
+        sync: false
+      - key: PROTECTED_OWNER_USERNAME
+        sync: false
       - key: SESSION_SECRET
         sync: false
       - key: ADMIN_PIN
