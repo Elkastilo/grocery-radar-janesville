@@ -8476,7 +8476,7 @@ app.get("/api/cart/compare", requireLogin, asyncRoute(async (request, response) 
 
 app.post("/api/auth/register", asyncRoute(async (request, response) => {
   if (OWNER_ONLY_ACCOUNTS || !PUBLIC_REGISTRATION_ENABLED) {
-    response.status(410).json({ error: "Public account creation is disabled. Grocery Radar browsing and proof submission do not require an account." });
+    response.status(410).json({ error: "Public account creation is disabled. Grocery Radar browsing does not require an account." });
     return;
   }
   const registration = validateRegistration(request.body);
@@ -10142,6 +10142,12 @@ app.post("/api/admin/quality-reviews/:id/moderate", requireAdminAccess, requireL
   if (status !== "visible") await createUserNotification(review.user_id, "quality_review_moderated", "Your quality review was moderated", cleanText(request.body.reason, 300) || `Your quality review was ${status}.`, { related_type: "quality_review", related_id: id, target_tab: "productView", target_url: `/?tab=productView&product=${review.product_id}&review=${id}` });
   response.json({ message: `Review ${status}.` });
 }));
+
+// Retain the submission handlers for isolated intake tests and historical data.
+app.post(["/api/proof-submissions", "/api/reports"], (request, response, next) => {
+  if (process.env.NODE_ENV === "test") return next();
+  return response.status(410).json({ error: "Public price submissions are closed." });
+});
 
 app.post("/api/proof-submissions", upload.single("proof_photo"), asyncRoute(async (request, response) => {
   let photoPath = request.file ? uploadedFileUrl(request.file.filename) : "";
