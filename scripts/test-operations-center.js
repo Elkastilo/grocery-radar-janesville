@@ -352,6 +352,12 @@ async function main() {
       const ticket = queue.body.tickets.find((entry) => entry.message === "Owner-only Snowy test");
       assert.equal(ticket.reporter.email, "shopper@example.invalid");
       assert.equal(ticket.can_email_reply, true);
+      const inbox = await owner.get("/api/admin/v2/inbox");
+      assert.equal(inbox.response.status, 200);
+      const inboxMessage = inbox.body.items.find((entry) => entry.id === `snowy-${ticket.id}`);
+      assert.equal(inboxMessage.target_type, "feedback_ticket");
+      assert.equal(inboxMessage.subtitle, "Owner-only Snowy test");
+
       const reply = await owner.post(`/api/admin/operations/feedback/${ticket.id}`, { action: "email_reply", public_response: "Thanks for writing." });
       assert.equal(reply.response.status, 200, JSON.stringify(reply.body));
       await updateTempUser(app.dataDir, "DELETE FROM login_attempt_windows", []);

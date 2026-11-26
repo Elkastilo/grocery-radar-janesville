@@ -8974,9 +8974,9 @@ app.post("/api/snowy/messages", asyncRoute(async (request, response, next) => {
   );
   if (!result.changes) return response.status(429).json({ error: "Snowy is receiving too many messages. Try again later." });
   await createAdminNotification("feedback_submitted", "New Ask Snowy message", "A guest shopper sent a message.", {
-    related_type: "feedback_ticket", related_id: result.lastID, target_tab: "operationsTab", target_url: "/admin/operations"
+    related_type: "feedback_ticket", related_id: result.lastID, target_tab: "inboxTab", target_url: "/admin/inbox"
   });
-  void notifyAdminOfSnowyMessage(result.lastID);
+  void notifyAdminOfSnowyMessage(result.lastID, message, email);
   return response.status(201).json({ message: "Message sent." });
 }));
 
@@ -9063,12 +9063,12 @@ app.post(["/api/feedback", "/api/snowy/messages"], requireLogin, asyncRoute(asyn
     {
       related_type: "feedback_ticket",
       related_id: result.lastID,
-      target_tab: "operationsTab",
-      target_url: isSnowy ? "/admin/operations" : `/admin.html?tab=operationsTab&feedback=${result.lastID}`
+      target_tab: isSnowy ? "inboxTab" : "operationsTab",
+      target_url: isSnowy ? "/admin/inbox" : `/admin.html?tab=operationsTab&feedback=${result.lastID}`
     }
   );
 
-  if (isSnowy) void notifyAdminOfSnowyMessage(result.lastID);
+  if (isSnowy) void notifyAdminOfSnowyMessage(result.lastID, message, request.currentUser.email);
 
   response.status(201).json({
     message: "Feedback submitted.",
@@ -15574,7 +15574,23 @@ app.get("/api/admin/v2/home", requireAdminAccess, requireLoggedInAdminAction, as
 }));
 
 app.get("/api/admin/v2/inbox", requireAdminAccess, requireLoggedInAdminAction, asyncRoute(async (request, response) => {
-  response.json(await adminV2Inbox());
+  const inbox = await adminV2Inbox();
+  if (isSuperAdminAccount(request.adminUser)) {
+    const snowy = await all(`${feedbackSelectSql()}
+      WHERE tickets.title = ? AND tickets.status NOT IN ('closed', 'merged')
+      ORDER BY tickets.created_at DESC, tickets.id DESC LIMIT 100`, [SNOWY_MESSAGE_TITLE]);
+    inbox.items.unshift(...snowy.map((ticket) => ({
+      id: `snowy-${ticket.id}`,
+      type: "snowy_message",
+      title: "Ask Snowy message",
+      subtitle: ticket.message,
+      submitted_at: ticket.created_at,
+      status: ticket.status,
+      target_type: "feedback_ticket",
+      target_id: ticket.id
+    })));
+  }
+  response.json(inbox);
 }));
 
 app.get("/api/admin/v2/reviews/next", requireAdminAccess, requireLoggedInAdminAction, requireStaffPermission("review"), asyncRoute(async (request, response) => {
