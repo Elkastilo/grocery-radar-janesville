@@ -560,14 +560,14 @@ async function sendAccountBanEmail(user, ban) {
   }
 }
 
-async function sendPlainTextEmail({ to, subject, text }) {
+async function sendPlainTextEmail({ to, subject, text, replyTo }) {
   if (!to) return false;
   if (emailTestMode()) return true;
   const transporter = createTransporter();
   if (!transporter) return false;
 
   try {
-    const result = await transporter.sendMail({ from: emailConfig().from, to, subject, text });
+    const result = await transporter.sendMail({ from: emailConfig().from, to, subject, text, replyTo });
     return result.accepted.length > 0;
   } catch (error) {
     console.error("Notification email failed", safeSmtpErrorDetails(error).code);
@@ -583,12 +583,18 @@ function notifyAdminOfLoginThrottle() {
   });
 }
 
-function notifyAdminOfSnowyMessage(ticketId) {
-  return sendPlainTextEmail({
-    to: adminNotifyEmail(),
-    subject: "New Ask Snowy message",
-    text: `A shopper sent a message. Open Grocery Radar Admin to reply:\n${appBaseUrl()}/admin/operations\n\nMessage #${ticketId}`
+async function notifyAdminOfSnowyMessage(ticketId, message, replyEmail) {
+  const recipient = String(process.env.SNOWY_NOTIFY_EMAIL || process.env.PROTECTED_OWNER_EMAIL || adminNotifyEmail()).trim();
+  const accepted = await sendPlainTextEmail({
+    to: recipient,
+    replyTo: { address: replyEmail, name: "" },
+    subject: `New Ask Snowy message #${ticketId}`,
+    text: `A shopper sent a message through Ask Snowy.\n\n${message}\n\nShopper reply address: ${replyEmail}\nGrocery Radar Inbox: ${appBaseUrl()}/admin/inbox`
   });
+  if (!emailTestMode()) {
+    console.info(`Snowy email #${ticketId}: ${accepted ? "accepted by email provider" : "not sent; message retained in Inbox"}`);
+  }
+  return accepted;
 }
 
 function sendSnowyReply(ticket, reply) {

@@ -1230,6 +1230,7 @@ function renderInbox() {
     button.addEventListener("click", () => {
       const item = (adminV2InboxData.items || []).find((entry) => entry.id === button.dataset.openInbox);
       if (item?.target_type === "price_import_batch") openReceiptReview(item.target_id);
+      else if (item?.target_type === "feedback_ticket") window.location.assign(`/admin/operations#feedback-${encodeURIComponent(item.target_id)}`);
       else if (item) openAdminTab("pricesTab", { reportId: item.target_id, filter: "disputed" });
     });
   }
@@ -1953,6 +1954,9 @@ async function loadOperationsCenter() {
       sizes: widgets.layout?.sizes || {}
     };
     renderOperationsCenter();
+    if (/^#feedback-\d+$/.test(window.location.hash)) {
+      document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: "center" });
+    }
     setOperationsMessage(`Operations updated ${formatDate(overview.generated_at)}.`, "success");
     scheduleOperationsRefresh();
   } catch (error) {
@@ -2169,7 +2173,7 @@ function renderFeedbackWidget(data) {
     </div>
     <div class="admin-list">
       ${tickets.length ? tickets.map((ticket) => `
-        <article class="admin-card compact-card" data-feedback-ticket="${ticket.id}">
+        <article class="admin-card compact-card" id="feedback-${ticket.id}" data-feedback-ticket="${ticket.id}">
           <div class="card-topline">
             <h4>${escapeHtml(ticket.title)}</h4>
             <span class="badge status-${ticket.status === "closed" ? "ready" : ticket.priority === "urgent" ? "critical" : "warning"}">${escapeHtml(titleCase(ticket.status))}</span>
